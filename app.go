@@ -67,6 +67,9 @@ type app struct {
 	prompts []*hostKeyPrompt
 	asking  bool
 
+	fileOp     fileOpState
+	fileDelete *fileDeleteState
+
 	auth authSheet
 	form hostForm
 	// deleting 是等待确认删除的主机。

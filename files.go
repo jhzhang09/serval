@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -180,4 +183,181 @@ func (a *app) cancelTransfer(tr *fileTransfer) {
 	if tr.cancel != nil {
 		tr.cancel()
 	}
+}
+
+type fileOpKind int
+
+const (
+	fileOpNone fileOpKind = iota
+	fileOpNewFolder
+	fileOpRename
+	fileOpPermissions
+)
+
+type fileOpState struct {
+	open  bool
+	fresh bool
+	kind  fileOpKind
+	tab   *tab
+	path  string
+	name  string
+	input string
+	err   string
+	// busy 表示操作正在后台执行，期间按钮禁用。
+	busy bool
+}
+
+type fileDeleteState struct {
+	tab   *tab
+	path  string
+	name  string
+	isDir bool
+}
+
+func (a *app) openNewFolder(t *tab) {
+	if t.files == nil || t.dir == "" {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpNewFolder,
+		tab:   t,
+		path:  t.dir,
+		input: "新建文件夹",
+	}
+}
+
+func (a *app) openRenameFile(t *tab, fullPath, name string) {
+	if t.files == nil {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpRename,
+		tab:   t,
+		path:  fullPath,
+		name:  name,
+		input: name,
+	}
+}
+
+func (a *app) openPermissions(t *tab, fullPath, name string, mode fs.FileMode) {
+	if t.files == nil {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpPermissions,
+		tab:   t,
+		path:  fullPath,
+		name:  name,
+		input: fmt.Sprintf("%04o", mode.Perm()),
+	}
+}
+
+// validateFileName 检查新建或重命名用的名称。名称里带 / 或者是 ..，
+// 会把文件建到或移到别的目录去，这不是用户在这里想做的事。
+func validateFileName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("名称不能为空。")
+	case name == "." || name == "..":
+		return errors.New("名称不能是 . 或 ..。")
+	case strings.ContainsAny(name, "/\x00"):
+		return errors.New("名称里不能有 /。")
+	}
+	return nil
+}
+
+// submitFileOp 执行新建文件夹、重命名、修改权限。这些都是网络操作，放在后台，
+// 期间面板显示处理中，结果回到主线程。
+func (a *app) submitFileOp() {
+	op := &a.fileOp
+	if !op.open || op.busy || op.tab == nil || op.tab.files == nil {
+		return
+	}
+	t, files := op.tab, op.tab.files
+	input := strings.TrimSpace(op.input)
+	var run func() error
+	var done string
+	switch op.kind {
+	case fileOpNewFolder, fileOpRename:
+		if err := validateFileName(input); err != nil {
+			op.err = err.Error()
+			return
+		}
+		if op.kind == fileOpNewFolder {
+			dir := path.Join(op.path, input)
+			run, done = func() error { return files.Mkdir(dir) }, "已创建文件夹 "+input
+		} else {
+			from, to := op.path, path.Join(path.Dir(op.path), input)
+			run, done = func() error { return files.Rename(from, to) }, "已重命名为 "+input
+		}
+	case fileOpPermissions:
+		perm, err := strconv.ParseUint(input, 8, 32)
+		if err != nil || perm > 0o7777 {
+			op.err = "请输入八进制权限，例如 755 或 0644。"
+			return
+		}
+		target := op.path
+		run, done = func() error { return files.Chmod(target, fs.FileMode(perm)) }, "已把权限改为 "+fmt.Sprintf("%04o", perm)
+	default:
+		return
+	}
+	op.busy, op.err = true, ""
+	go func() {
+		err := run()
+		a.post(func() {
+			op := &a.fileOp
+			op.busy = false
+			if err != nil {
+				op.err = transferReason(err)
+				return
+			}
+			a.fileOp = fileOpState{}
+			a.toast(ui.Toast{Title: done})
+			if slices.Contains(a.tabs, t) {
+				a.openDir(t, t.dir)
+			}
+		})
+	}()
+}
+
+func (a *app) askDeleteFile(t *tab, fullPath, name string, isDir bool) {
+	a.fileDelete = &fileDeleteState{tab: t, path: fullPath, name: name, isDir: isDir}
+}
+
+// confirmDeleteFile 在后台删除文件或空目录。
+func (a *app) confirmDeleteFile() {
+	del := a.fileDelete
+	a.fileDelete = nil
+	if del == nil || del.tab == nil || del.tab.files == nil {
+		return
+	}
+	t, files := del.tab, del.tab.files
+	go func() {
+		var err error
+		if del.isDir {
+			err = files.RemoveDirectory(del.path)
+		} else {
+			err = files.Remove(del.path)
+		}
+		a.post(func() {
+			if err != nil {
+				reason := transferReason(err)
+				if del.isDir && !errors.Is(err, os.ErrPermission) && !errors.Is(err, os.ErrNotExist) {
+					reason = "只能删除空文件夹，请先删除里面的文件。"
+				}
+				a.toast(ui.Toast{Title: "没有删除 " + del.name, Description: reason, Type: "error"})
+				return
+			}
+			a.toast(ui.Toast{Title: "已删除 " + del.name})
+			if slices.Contains(a.tabs, t) {
+				a.openDir(t, t.dir)
+			}
+		})
+	}()
 }

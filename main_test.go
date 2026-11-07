@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1221,5 +1222,149 @@ func TestUploadAsksBeforeReplacing(t *testing.T) {
 	h.pump("上传完成", func() bool { return len(tb.transfers) == 1 && tb.transfers[0].done.Load() })
 	if data, _ := os.ReadFile(remote); string(data) != "new" || tb.transfers[0].err != "" {
 		t.Fatalf("确认后应替换远端文件: data=%q err=%q", data, tb.transfers[0].err)
+	}
+}
+
+func TestFileOperations(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+
+	// 打开文件抽屉
+	h.click("文件（⌘J）")
+	h.pump("打开文件列表", func() bool { return tb.dir != "" })
+
+	// 1. 新建文件夹
+	h.click("新建文件夹")
+	h.tt.Frame()
+	if !h.a.fileOp.open || h.a.fileOp.kind != fileOpNewFolder {
+		t.Fatal("新建文件夹弹窗未打开")
+	}
+	h.a.fileOp.input = "test-folder"
+	h.tt.Frame()
+	h.click("创建")
+
+	h.pump("列表中出现新建文件夹", func() bool {
+		for _, e := range tb.entries {
+			if e.Name == "test-folder" && e.IsDir {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 2. 复制路径
+	if err := h.tt.RightClick("test-folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("复制路径"); err != nil {
+		t.Fatalf("选择复制路径失败: %v", err)
+	}
+	h.tt.Frame()
+	expectedPath := path.Join(tb.dir, "test-folder")
+	if h.tt.Clipboard() != expectedPath {
+		t.Fatalf("复制路径不匹配: got %q, want %q", h.tt.Clipboard(), expectedPath)
+	}
+
+	// 3. 修改权限
+	if err := h.tt.RightClick("test-folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("修改权限"); err != nil {
+		t.Fatalf("选择修改权限失败: %v", err)
+	}
+	h.tt.Frame()
+	if !h.a.fileOp.open || h.a.fileOp.kind != fileOpPermissions {
+		t.Fatal("修改权限弹窗未打开")
+	}
+	h.a.fileOp.input = "0700"
+	h.tt.Frame()
+	h.click("修改权限")
+
+	h.pump("权限修改成功", func() bool {
+		for _, e := range tb.entries {
+			if e.Name == "test-folder" && e.Mode.Perm() == 0700 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 4. 重命名
+	if err := h.tt.RightClick("test-folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("重命名"); err != nil {
+		t.Fatalf("选择重命名失败: %v", err)
+	}
+	h.tt.Frame()
+	if !h.a.fileOp.open || h.a.fileOp.kind != fileOpRename {
+		t.Fatal("重命名弹窗未打开")
+	}
+	h.a.fileOp.input = "renamed-folder"
+	h.tt.Frame()
+	h.click("重命名")
+
+	h.pump("重命名成功", func() bool {
+		foundNew := false
+		foundOld := false
+		for _, e := range tb.entries {
+			if e.Name == "renamed-folder" {
+				foundNew = true
+			}
+			if e.Name == "test-folder" {
+				foundOld = true
+			}
+		}
+		return foundNew && !foundOld
+	})
+
+	// 5. 删除
+	if err := h.tt.RightClick("renamed-folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("删除"); err != nil {
+		t.Fatalf("选择删除失败: %v", err)
+	}
+	h.tt.Frame()
+	if h.a.fileDelete == nil {
+		t.Fatal("删除确认弹窗未打开")
+	}
+	h.click("删除")
+
+	h.pump("删除成功", func() bool {
+		for _, e := range tb.entries {
+			if e.Name == "renamed-folder" {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// 名称里带 / 或者是 ..，会把文件建到或移到别的目录，必须拒绝。
+func TestFileNameValidation(t *testing.T) {
+	for _, bad := range []string{"", ".", "..", "../x", "a/b", "x\x00"} {
+		if validateFileName(bad) == nil {
+			t.Errorf("%q 应被拒绝", bad)
+		}
+	}
+	for _, ok := range []string{"a.txt", "新建文件夹", ".bashrc", "a..b"} {
+		if err := validateFileName(ok); err != nil {
+			t.Errorf("%q 应被接受: %v", ok, err)
+		}
+	}
+
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click("文件（⌘J）")
+	h.pump("打开文件列表", func() bool { return tb.dir != "" })
+	h.click("新建文件夹")
+	h.tt.Frame()
+	h.a.fileOp.input = "../escape"
+	h.tt.Frame()
+	h.click("创建")
+	h.tt.Frame()
+	if !strings.Contains(h.a.fileOp.err, "/") || h.a.fileOp.busy {
+		t.Fatalf("应拒绝带 / 的名称: err=%q", h.a.fileOp.err)
 	}
 }

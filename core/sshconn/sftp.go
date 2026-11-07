@@ -196,3 +196,28 @@ func (f *Files) Exists(remotePath string) (bool, error) {
 
 // Close 关闭 SFTP 通道，不影响底层 SSH 连接。
 func (f *Files) Close() error { return f.client.Close() }
+
+// Mkdir 在远程创建目录。
+func (f *Files) Mkdir(remotePath string) error {
+	return f.client.Mkdir(remotePath)
+}
+
+// Rename 重命名或移动远程文件/目录。
+func (f *Files) Rename(oldPath, newPath string) error {
+	return f.client.Rename(oldPath, newPath)
+}
+
+// Remove 删除远程文件。
+func (f *Files) Remove(remotePath string) error {
+	return f.client.Remove(remotePath)
+}
+
+// RemoveDirectory 删除远程空目录。
+func (f *Files) RemoveDirectory(remotePath string) error {
+	return f.client.RemoveDirectory(remotePath)
+}
+
+// Chmod 修改远程文件或目录的权限。
+func (f *Files) Chmod(remotePath string, mode fs.FileMode) error {
+	return f.client.Chmod(remotePath, mode)
+}
