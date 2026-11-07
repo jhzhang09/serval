@@ -180,6 +180,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 		action("x", "关闭当前窗格", func() { a.closeFocused(t) })
 	}
 	action("folder", "显示或收起文件", a.toggleFiles)
+	action("terminal", "新建本地终端", a.openLocalTerminal)
 	action("panel-left", "显示或收起侧栏", func() { a.sidebarOpen = !a.sidebarOpen })
 	action("plus", "添加主机", func() { a.openAdd() })
 	action("key-round", "密钥", a.openKeys)

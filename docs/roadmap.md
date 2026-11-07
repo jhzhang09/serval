@@ -148,7 +148,7 @@
 - **验收**：测试里关闭再启动 devsshd（同一端口、同一主机密钥：给 devsshd 增加固定主机密钥选项），会话自动恢复；恢复布局的界面测试。
 - **依赖**：F2。
 
-### C5 本地终端（S，修改中：`feat/C5-local-terminal`）
+### C5 本地终端（S，已完成：`feat/C5-local-terminal`）
 
 - **背景**：MyGo 终端插件自带在伪终端里运行本机 shell 的能力（`terminal.New(terminal.Options{})`）。
 - **范围**：侧栏和命令面板“本地终端”；本地标签没有文件抽屉的 SFTP（以后可以接本地文件）；窗格拆分照常。

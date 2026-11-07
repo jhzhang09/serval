@@ -937,3 +937,60 @@ func TestQuickConnectAndSaveAsHost(t *testing.T) {
 		t.Fatal("保存后的主机未写入磁盘保险库")
 	}
 }
+
+func TestLocalTerminal(t *testing.T) {
+	h := newHarness(t)
+	before := len(h.a.tabs)
+	h.click("本地终端")
+	h.tt.Frame()
+	if len(h.a.tabs) != before+1 {
+		t.Fatalf("应该打开本地终端标签，tabs=%d", len(h.a.tabs))
+	}
+	tab := h.a.tabs[before]
+	if !tab.local || tab.host.Name != "本机" {
+		t.Fatalf("标签属性不正确: local=%v name=%s", tab.local, tab.host.Name)
+	}
+	texts := h.tt.Texts()
+	foundLocal := false
+	for _, txt := range texts {
+		if txt == "本地" {
+			foundLocal = true
+			break
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("窗格状态应该显示‘本地’，当前文字: %q", texts)
+	}
+
+	for _, txt := range texts {
+		if strings.Contains(txt, "文件（") || txt == "保存为主机" {
+			t.Fatalf("本地终端不应提供文件抽屉和“保存为主机”: %q", texts)
+		}
+	}
+	// 标签名和侧栏按钮不能同名（测试和读屏软件按文字找按钮）。
+	if n := strings.Count(strings.Join(texts, "\n"), "本地终端"); n > 2 { // 侧栏按钮的标签和文字各一次
+		t.Fatalf("“本地终端”出现了 %d 次，标签和侧栏按钮重名: %q", n, texts)
+	}
+
+	h.click("向右拆分（⌘D）")
+	h.pump("本地终端拆分", func() bool { return tab.root.leaves() == 2 })
+	if tab.root.leaves() != 2 {
+		t.Fatalf("本地终端应能正常拆分窗格，leaves=%d", tab.root.leaves())
+	}
+
+	h.a.closeFocused(tab)
+	h.tt.Frame()
+	if tab.root.leaves() != 1 {
+		t.Fatalf("关闭后应剩 1 个窗格，leaves=%d", tab.root.leaves())
+	}
+
+	h.click("搜索主机和操作")
+	h.tt.Frame()
+	h.a.pal.query = "新建本地终端"
+	h.tt.Frame()
+	h.click("新建本地终端")
+	h.tt.Frame()
+	if len(h.a.tabs) != before+2 {
+		t.Fatalf("应该从命令面板打开第二个本地终端，tabs=%d", len(h.a.tabs))
+	}
+}
