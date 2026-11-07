@@ -87,6 +87,7 @@ func main() {
 		})
 		// 后台任务的结果都通过 Update 回到主线程，再修改界面状态。
 		a.post = win.Update
+		a.startAutoLock()
 		win.OnClosed(func() {
 			stop()
 			a.closeAll()

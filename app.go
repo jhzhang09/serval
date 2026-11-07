@@ -70,6 +70,9 @@ type app struct {
 	setup         setupSheet
 	unlock        unlockState
 	pal           palette
+	askingLock    bool
+	now           func() time.Time
+	lastActive    time.Time
 	// pickFile 弹出文件选择框，返回选中的路径（取消时为空）。测试里替换掉。
 	pickFile func() (string, error)
 }
@@ -152,7 +155,76 @@ type pane struct {
 }
 
 func newApp() *app {
-	return &app{sidebarOpen: true, connecting: map[string]context.CancelFunc{}, arrived: map[int]bool{}}
+	a := &app{
+		sidebarOpen: true,
+		connecting:  map[string]context.CancelFunc{},
+		arrived:     map[int]bool{},
+		now:         time.Now,
+	}
+	a.lastActive = a.now()
+	return a
+}
+
+func (a *app) touchActive() {
+	if a.now != nil {
+		a.lastActive = a.now()
+	}
+}
+
+func (a *app) checkAutoLock() {
+	if a.local.AutoLockMinutes <= 0 || a.vault == nil || a.vault.State() != vault.Unlocked {
+		return
+	}
+	now := time.Now()
+	if a.now != nil {
+		now = a.now()
+	}
+	if now.Sub(a.lastActive) >= time.Duration(a.local.AutoLockMinutes)*time.Minute {
+		a.lockVault()
+	}
+}
+
+func (a *app) askLockVault() {
+	if a.vault == nil || a.vault.State() != vault.Unlocked {
+		return
+	}
+	if len(a.tabs) > 0 {
+		a.askingLock = true
+		return
+	}
+	a.lockVault()
+}
+
+func (a *app) lockVault() {
+	a.closeAll()
+	if a.vault != nil {
+		a.vault.Lock()
+	}
+	a.hosts = nil
+	a.keys = nil
+	a.hostsError = ""
+	a.form = hostForm{}
+	a.keyPanel = keyPanel{}
+	a.setup = setupSheet{}
+	a.settingsPanel = settingsPanel{}
+	a.pal = palette{}
+	a.unlock = unlockState{}
+	a.askingLock = false
+	a.toast(ui.Toast{Title: "保险库已锁定"})
+}
+
+func (a *app) startAutoLock() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if a.post != nil {
+				a.post(func() {
+					a.checkAutoLock()
+				})
+			}
+		}
+	}()
 }
 
 func (a *app) current() *tab {

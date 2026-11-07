@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 
+	"serval/core/vault"
 	"serval/design"
 
 	"github.com/egoist/mygo/ui"
@@ -17,6 +20,8 @@ const (
 
 var appearanceModes = []string{appearanceSystem, appearanceLight, appearanceDark}
 
+var autoLockChoices = []int{0, 5, 15, 30, 60}
+
 // settings 是随保险库同步的偏好设置（记录类型 settings，固定 ID settings）。
 //
 // 外观以及后续的终端字体与主题、代码片段默认值等跨设备一致的偏好都放在这里；
@@ -30,6 +35,8 @@ type settings struct {
 type deviceSettings struct {
 	// RecentHosts 是本机最近连接过的主机 ID，按时间从近到远排列。
 	RecentHosts []string `json:"recentHosts,omitempty"`
+	// AutoLockMinutes 是闲置指定分钟后自动锁定的时间，0 表示不自动锁定。
+	AutoLockMinutes int `json:"autoLockMinutes,omitempty"`
 }
 
 const maxRecentHosts = 20
@@ -38,11 +45,24 @@ const maxRecentHosts = 20
 type settingsPanel struct {
 	open, fresh bool
 	err         string
+
+	rememberDevice bool
+
+	// 修改主密码表单
+	changePwOpen    bool
+	currentPassword string
+	newPassword     string
+	confirmPassword string
+	changePwErr     string
 }
 
 // openSettings 打开设置面板。
 func (a *app) openSettings() {
-	a.settingsPanel = settingsPanel{open: true, fresh: true}
+	a.settingsPanel = settingsPanel{
+		open:           true,
+		fresh:          true,
+		rememberDevice: a.isRememberedOnDevice(),
+	}
 }
 
 // setAppearance 切换外观并写入保险库，让所有已打开的终端立即跟着更新。
@@ -86,6 +106,28 @@ func (a *app) removeRecentHost(id string) {
 	_ = a.saveLocal(next)
 }
 
+func (a *app) submitChangePassword() {
+	p := &a.settingsPanel
+	if p.newPassword != p.confirmPassword {
+		p.changePwErr = "两次输入的新主密码不一致。"
+		return
+	}
+	if err := a.vault.ChangePassword(p.currentPassword, p.newPassword); err != nil {
+		if errors.Is(err, vault.ErrWrongPassword) {
+			p.changePwErr = "当前主密码不正确。"
+			return
+		}
+		p.changePwErr = err.Error()
+		return
+	}
+	p.changePwOpen = false
+	p.currentPassword = ""
+	p.newPassword = ""
+	p.confirmPassword = ""
+	p.changePwErr = ""
+	a.toast(ui.Toast{Title: "已修改主密码"})
+}
+
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
@@ -104,6 +146,76 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					a.setAppearance(appearanceModes[mode])
 				})
 			}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
+
+			autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
+			if autoLockIdx < 0 {
+				autoLockIdx = 0
+			}
+			ui.Field(c, "自动锁定", func() {
+				c.Key("settingsAutoLock")
+				ui.Segmented(c, &autoLockIdx, "从不", "5分钟", "15分钟", "30分钟", "1小时").OnChange(func() {
+					next := a.local
+					next.AutoLockMinutes = autoLockChoices[autoLockIdx]
+					_ = a.saveLocal(next)
+				})
+			}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
+
+			if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
+				ui.Field(c, "记住主密码", func() {
+					c.Key("settingsRemember")
+					ui.Checkbox(c, &p.rememberDevice, "在这台设备上记住主密码").OnChange(func() {
+						a.rememberOnDevice(p.rememberDevice)
+						if p.rememberDevice {
+							a.toast(ui.Toast{Title: "已在这台设备上记住主密码"})
+						} else {
+							a.toast(ui.Toast{Title: "已清除在这台设备上记住的主密码"})
+						}
+					})
+				}).Description("关闭后，每次启动 Serval 都需要重新输入主密码。")
+			}
+
+			if a.vault != nil && a.vault.State() != vault.Unprotected {
+				if !p.changePwOpen {
+					ui.Row(c).Children(func() {
+						ui.Button(c, "修改主密码…").Key("settingsOpenChangePw").OnClick(func() {
+							p.changePwOpen = true
+							p.currentPassword = ""
+							p.newPassword = ""
+							p.confirmPassword = ""
+							p.changePwErr = ""
+						})
+					})
+				} else {
+					ui.Column(c).Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover).Children(func() {
+						ui.Text(c, "修改主密码").FontWeight(600)
+						ui.Field(c, "当前主密码", func() {
+							c.Key("settingsCurrentPw")
+							ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
+						})
+						ui.Field(c, "新主密码", func() {
+							c.Key("settingsNewPw")
+							ui.TextInput(c, &p.newPassword).Password()
+						}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
+						ui.Field(c, "确认新主密码", func() {
+							c.Key("settingsConfirmPw")
+							ui.TextInput(c, &p.confirmPassword).Password()
+						})
+						if p.changePwErr != "" {
+							ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
+						}
+						ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+							ui.Button(c, "取消").Key("settingsCancelPw").OnClick(func() {
+								p.changePwOpen = false
+								p.changePwErr = ""
+							})
+							ui.PrimaryButton(c, "保存新密码").Key("settingsSavePw").OnClick(func() {
+								a.submitChangePassword()
+							})
+						})
+					})
+				}
+			}
+
 			ui.Divider(c)
 			a.knownHostsSection(c, colors)
 			if p.err != "" {

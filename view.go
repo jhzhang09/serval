@@ -35,6 +35,7 @@ func shortcutText(key string) string {
 }
 
 func (a *app) view(c *ui.Context) {
+	a.touchActive()
 	dark := a.isDark(c.Theme().Dark)
 	c.SetTheme(design.Theme(dark))
 	colors := design.Of(dark)
@@ -63,6 +64,7 @@ func (a *app) view(c *ui.Context) {
 	a.settingsDialog(c, colors)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
+	a.lockConfirmDialog(c)
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
 }

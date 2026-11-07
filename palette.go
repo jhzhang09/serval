@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"serval/core/hosts"
+	"serval/core/vault"
 	"serval/design"
 
 	"github.com/egoist/mygo/ui"
@@ -130,6 +131,9 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("key-round", "密钥", a.openKeys)
 	action("settings", "打开设置", a.openSettings)
 	action("server", "已知主机", a.openSettings)
+	if a.vault != nil && a.vault.State() == vault.Unlocked {
+		action("lock", "锁定保险库", a.askLockVault)
+	}
 	action("sun-moon", "外观：跟随系统", func() { a.setAppearance(appearanceSystem) })
 	action("sun-moon", "外观：浅色", func() { a.setAppearance(appearanceLight) })
 	action("sun-moon", "外观：深色", func() { a.setAppearance(appearanceDark) })
