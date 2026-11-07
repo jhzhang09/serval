@@ -69,6 +69,25 @@ func SplitJumps(list string) []string {
 	return out
 }
 
+// RenameJump 把 ProxyJump 列表里按名称引用的 oldName 替换为 newName，并返回是否发生了替换。
+func RenameJump(list, oldName, newName string) (string, bool) {
+	if oldName == "" || newName == "" || oldName == newName {
+		return list, false
+	}
+	jumps := SplitJumps(list)
+	changed := false
+	for i, j := range jumps {
+		if j == oldName {
+			jumps[i] = newName
+			changed = true
+		}
+	}
+	if !changed {
+		return list, false
+	}
+	return strings.Join(jumps, ","), true
+}
+
 // ResolveRoute 返回连接 target 要依次经过的跳板机。
 //
 // 列表里的每一项可以是另一台主机的名称（使用那台主机的地址、用户名和私钥），

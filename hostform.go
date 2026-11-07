@@ -184,6 +184,15 @@ func (a *app) saveForm() {
 		h.ID = vault.NewID()
 	}
 	all := slices.DeleteFunc(slices.Clone(a.hosts), func(x hosts.Host) bool { return x.ID == h.ID })
+	changes := []vault.Change{hostChange(h)}
+	if f.editing != "" && previous.Name != "" && previous.Name != h.Name {
+		for i := range all {
+			if updated, ok := hosts.RenameJump(all[i].ProxyJump, previous.Name, h.Name); ok {
+				all[i].ProxyJump = updated
+				changes = append(changes, hostChange(all[i]))
+			}
+		}
+	}
 	// 保存前就把链路完整解析一遍：写错的地址、互相引用成环，在这里说清楚，
 	// 而不是等到连接时才失败。
 	if _, err := hosts.ResolveRoute(h, append(all, h), a.localUser); err != nil {
@@ -194,7 +203,7 @@ func (a *app) saveForm() {
 		a.requireProtection(a.saveForm)
 		return
 	}
-	if err := a.apply(hostChange(h)); err != nil {
+	if err := a.apply(changes...); err != nil {
 		f.err = err.Error()
 		return
 	}
@@ -218,6 +227,25 @@ func (a *app) dependents(h hosts.Host) []string {
 		}
 	}
 	return names
+}
+
+// renamingJumpCount 返回编辑表单改名时将同步更新跳板机引用的主机数量。
+func (a *app) renamingJumpCount(f *hostForm) int {
+	if f.editing == "" {
+		return 0
+	}
+	previous, ok := a.hostByID(f.editing)
+	if !ok || previous.Name == "" {
+		return 0
+	}
+	next := strings.TrimSpace(f.name)
+	if next == "" {
+		next = strings.TrimSpace(f.address)
+	}
+	if next == "" || next == previous.Name {
+		return 0
+	}
+	return len(a.dependents(previous))
 }
 
 // deleteHost 删除主机（连同保存的密码）。已打开的会话不受影响。
@@ -311,10 +339,13 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			})
 			ui.Row(c).Gap(10).Children(func() {
 				half(func() {
-					ui.Field(c, "名称", func() {
+					nameField := ui.Field(c, "名称", func() {
 						c.Key("addName")
 						ui.TextInput(c, &f.name).Placeholder("留空时使用地址")
 					})
+					if n := a.renamingJumpCount(f); n > 0 {
+						nameField.Description(fmt.Sprintf("将同时更新 %d 台主机的跳板机设置。", n))
+					}
 				})
 				half(func() {
 					ui.Field(c, "分组", func() {

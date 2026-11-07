@@ -314,3 +314,36 @@ func TestFormValidation(t *testing.T) {
 		t.Fatalf("私钥登录没选私钥应报错: %q", h.a.form.err)
 	}
 }
+
+// 改名时同步更新其他主机 ProxyJump 中的名称引用，并在表单里提示影响的主机数。
+func TestRenameHostUpdatesJumpReferences(t *testing.T) {
+	h := newHarness(t,
+		hosts.Host{ID: "b", Name: "bastion", Address: "10.0.0.1", Port: 22, User: "ops"},
+		hosts.Host{ID: "w1", Name: "web-1", Address: "10.0.0.2", Port: 22, User: "ops", ProxyJump: "bastion"},
+		hosts.Host{ID: "w2", Name: "web-2", Address: "10.0.0.3", Port: 22, User: "ops", ProxyJump: "bastion,gw:2222"},
+	)
+	h.a.openEdit(h.host("bastion"))
+	h.tt.Frame()
+	if h.tt.HasText("将同时更新") {
+		t.Fatal("还没改名时不应显示更新跳板机提示")
+	}
+
+	h.a.form.name = "bastion-prod"
+	h.tt.Frame()
+	if !h.tt.HasText("将同时更新 2 台主机的跳板机设置。") {
+		t.Fatalf("表单应提示将更新 2 台主机: %q", h.tt.Texts())
+	}
+	h.click("保存")
+	h.tt.Frame()
+
+	if got := h.host("web-1").ProxyJump; got != "bastion-prod" {
+		t.Fatalf("web-1 ProxyJump = %q，期望 bastion-prod", got)
+	}
+	if got := h.host("web-2").ProxyJump; got != "bastion-prod,gw:2222" {
+		t.Fatalf("web-2 ProxyJump = %q，期望 bastion-prod,gw:2222", got)
+	}
+	route, err := hosts.ResolveRoute(h.host("web-1"), h.a.hosts, h.a.localUser)
+	if err != nil || len(route) != 1 || route[0].ID != "b" || route[0].Name != "bastion-prod" {
+		t.Fatalf("改名后应能正常解析跳板机链路: route=%+v err=%v", route, err)
+	}
+}
