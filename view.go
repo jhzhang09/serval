@@ -59,6 +59,7 @@ func (a *app) view(c *ui.Context) {
 	})
 	a.hostKeyDialog(c)
 	a.authDialog(c, colors)
+	a.challengeDialog(c, colors)
 	a.hostDialog(c, colors)
 	a.keysDialog(c, colors)
 	a.settingsDialog(c, colors)

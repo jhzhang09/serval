@@ -30,6 +30,10 @@ type Options struct {
 	// Password 和 AuthorizedKey 至少提供一个。
 	Password      string
 	AuthorizedKey ssh.PublicKey
+	// KeyboardInteractive 启用 keyboard-interactive 认证。
+	KeyboardInteractive bool
+	KeyboardQuestions   []string
+	KeyboardAnswers     []string
 	// HostKeys 为空时生成一把临时 ed25519 密钥。
 	HostKeys []ssh.Signer
 	// Shell 是启动的 shell 命令及参数，默认 /bin/sh。
@@ -59,8 +63,8 @@ func Start(opts Options) (*Server, error) {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return nil, fmt.Errorf("devsshd 只允许监听回环地址，收到 %q", opts.Addr)
 	}
-	if opts.Password == "" && opts.AuthorizedKey == nil {
-		return nil, errors.New("devsshd 必须配置密码或公钥")
+	if opts.Password == "" && opts.AuthorizedKey == nil && !opts.KeyboardInteractive {
+		return nil, errors.New("devsshd 必须配置密码、公钥或多步验证")
 	}
 	if len(opts.Shell) == 0 {
 		opts.Shell = []string{"/bin/sh"}
@@ -82,6 +86,32 @@ func Start(opts Options) (*Server, error) {
 				return nil, nil
 			}
 			return nil, errors.New("公钥未授权")
+		}
+	}
+	if opts.KeyboardInteractive {
+		config.KeyboardInteractiveCallback = func(conn ssh.ConnMetadata, client ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+			questions := opts.KeyboardQuestions
+			if len(questions) == 0 {
+				questions = []string{"Verification code: "}
+			}
+			echos := make([]bool, len(questions))
+			answers, err := client(conn.User(), "Two-factor authentication", questions, echos)
+			if err != nil {
+				return nil, err
+			}
+			expected := opts.KeyboardAnswers
+			if len(expected) == 0 && opts.Password != "" {
+				expected = []string{opts.Password}
+			}
+			if len(answers) != len(expected) {
+				return nil, errors.New("答案数量不匹配")
+			}
+			for i := range answers {
+				if answers[i] != expected[i] {
+					return nil, errors.New("答案错误")
+				}
+			}
+			return nil, nil
 		}
 	}
 	if len(opts.HostKeys) == 0 {

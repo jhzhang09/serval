@@ -1368,3 +1368,68 @@ func TestFileNameValidation(t *testing.T) {
 		t.Fatalf("应拒绝带 / 的名称: err=%q", h.a.fileOp.err)
 	}
 }
+
+func TestKeyboardInteractiveChallengeFlow(t *testing.T) {
+	otpServer, err := devsshd.Start(devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"OTP 验证码: "},
+		KeyboardAnswers:     []string{"654321"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { otpServer.Close() })
+
+	host := hosts.Host{
+		ID:      "otp-host",
+		Name:    "otp-server",
+		Address: "127.0.0.1",
+		Port:    otpServer.Addr().Port,
+		User:    "tester",
+		Group:   defaultGroup,
+	}
+	h := newHarness(t, host)
+
+	// 没有保存任何凭据：先像普通主机一样问密码（服务器拒绝密码方式），再弹出验证码。
+	connect := func() {
+		h.click("otp-server")
+		for step := 0; h.a.currentChallenge() == nil; step++ {
+			if step > 3 {
+				t.Fatal("没有出现多步验证")
+			}
+			h.pump("下一步", func() bool { return h.a.auth.open || len(h.a.prompts) > 0 || h.a.currentChallenge() != nil })
+			switch {
+			case len(h.a.prompts) > 0:
+				h.click("信任并连接")
+			case h.a.auth.open:
+				h.a.auth.secret = "irrelevant"
+				h.tt.Frame()
+				h.click("连接")
+			}
+			h.tt.Frame()
+		}
+	}
+
+	// 第一次：用户取消验证码，提示已取消，不弹密码错误。
+	connect()
+	h.click("取消")
+	h.pump("取消提示", func() bool { return strings.Contains(h.a.notice, "已取消连接 otp-server") })
+	if h.a.auth.open || h.a.currentChallenge() != nil || len(h.a.tabs) != 0 {
+		t.Fatalf("取消后不应再有弹窗或会话: auth=%v tabs=%d", h.a.auth.open, len(h.a.tabs))
+	}
+
+	// 第二次：填写验证码后连上。
+	connect()
+	ch := h.a.currentChallenge()
+	if len(ch.questions) != 1 || ch.questions[0].Text != "OTP 验证码: " {
+		t.Fatalf("unexpected challenge questions: %+v", ch.questions)
+	}
+	ch.answers[0] = "654321"
+	h.tt.Frame()
+	h.click("验证")
+	h.tt.Frame()
+	h.pump("会话建立", func() bool { return len(h.a.tabs) > 0 })
+	if h.a.tabs[0].host.Name != "otp-server" {
+		t.Fatalf("连接未成功建立: %+v", h.a.tabs)
+	}
+}

@@ -123,7 +123,7 @@
 - **验收**：界面测试覆盖临时连接、保存为主机后出现在侧栏；临时主机的密码不被保存。
 - **依赖**：无。
 
-### C2 多步验证（keyboard-interactive）（M，返工：`feat/C2-keyboard-interactive`）
+### C2 多步验证（keyboard-interactive）（M，已完成：`feat/C2-keyboard-interactive`）
 
 - **背景**：现在只回答单个隐藏输入的提示；服务器要求多步验证（OTP、多个问题）时直接报错。
 - **范围**：
