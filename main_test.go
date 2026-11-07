@@ -142,6 +142,9 @@ func (h *harness) reopen() {
 		h.a.reload()
 	}
 	h.a.loadLocal()
+	if h.a.vault.State() != vault.Locked {
+		h.a.restoreSession()
+	}
 	h.tt.Frame()
 }
 
@@ -718,5 +721,117 @@ func TestExpandHome(t *testing.T) {
 		if got, err := expandHome(in); err != nil || got != want {
 			t.Errorf("expandHome(%q) = %q, %v", in, got, err)
 		}
+	}
+}
+
+func TestAutoReconnectOnServerRestart(t *testing.T) {
+	h := newHarness(t)
+	tab := h.connectDev()
+	h.a.pingInterval = 50 * time.Millisecond
+	h.a.reconnectBaseDelay = 50 * time.Millisecond
+
+	addr := h.server.Addr().String()
+	hostKeys := h.server.HostKeys()
+
+	h.server.Close()
+
+	h.pump("观察到正在重连", func() bool {
+		return tab.reconnecting && h.tt.HasText("正在重连")
+	})
+
+	newServer, err := devsshd.Start(devsshd.Options{
+		Addr:     addr,
+		Password: testPassword,
+		HostKeys: hostKeys,
+	})
+	if err != nil {
+		t.Fatalf("重启 devsshd 失败: %v", err)
+	}
+	defer newServer.Close()
+	h.server = newServer
+
+	h.pump("自动重连完成", func() bool {
+		return !tab.reconnecting && tab.client != nil && !tab.root.ended
+	})
+
+	if tab.reconnecting {
+		t.Fatal("仍然处于重连状态")
+	}
+	if tab.client == nil {
+		t.Fatal("重连后客户端为空")
+	}
+}
+
+func TestCancelAutoReconnect(t *testing.T) {
+	h := newHarness(t)
+	tab := h.connectDev()
+	h.a.pingInterval = 50 * time.Millisecond
+	h.a.reconnectBaseDelay = 50 * time.Millisecond
+
+	h.server.Close()
+
+	h.pump("观察到正在重连", func() bool {
+		return tab.reconnecting && h.tt.HasText("正在重连")
+	})
+
+	h.click("取消")
+	h.tt.Frame()
+
+	if tab.reconnecting {
+		t.Fatal("取消后重连标志未清除")
+	}
+	if !tab.root.ended {
+		t.Fatal("取消后窗格未标记为已结束")
+	}
+	if !h.tt.HasText("连接已结束") {
+		t.Fatalf("界面未显示连接已结束，界面文字: %q", h.tt.Texts())
+	}
+}
+
+func TestSessionRestoreAcrossRestart(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+	tab := h.connectDev()
+
+	h.a.split(tab, true)
+	h.pump("拆分窗格完成", func() bool {
+		return tab.root.leaves() == 2
+	})
+
+	h.reopen()
+
+	h.pump("会话恢复完成", func() bool {
+		return len(h.a.tabs) == 1 && h.a.tabs[0].root.leaves() == 2 && h.a.tabs[0].client != nil
+	})
+
+	if len(h.a.tabs) != 1 {
+		t.Fatalf("期望恢复 1 个标签，实际: %d", len(h.a.tabs))
+	}
+	if leaves := h.a.tabs[0].root.leaves(); leaves != 2 {
+		t.Fatalf("期望恢复 2 个窗格，实际: %d", leaves)
+	}
+}
+
+func TestDisableSessionRestore(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+	h.connectDev()
+
+	h.a.openSettings()
+	h.tt.Frame()
+	if !h.tt.HasText("会话恢复") {
+		t.Fatalf("设置中未找到会话恢复，文字: %q", h.tt.Texts())
+	}
+	h.click("启动时恢复上次打开的标签和窗格")
+	h.tt.Frame()
+	if !h.a.local.DisableRestoreSession {
+		t.Fatal("禁用会话恢复未生效")
+	}
+
+	h.reopen()
+	h.tt.Frame()
+
+	if len(h.a.tabs) != 0 {
+		t.Fatalf("禁用恢复后不应恢复会话，实际有 %d 个标签", len(h.a.tabs))
 	}
 }

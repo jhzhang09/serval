@@ -337,6 +337,7 @@ func (a *app) submitUnlock() {
 			a.rememberOnDevice(u.remember)
 			a.unlock = unlockState{}
 			a.reload()
+			a.restoreSession()
 		})
 	}()
 }

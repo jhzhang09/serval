@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -115,6 +116,11 @@ func NewSigner() (ssh.Signer, error) {
 
 // Addr 返回实际监听地址。
 func (s *Server) Addr() *net.TCPAddr { return s.listener.Addr().(*net.TCPAddr) }
+
+// HostKeys 返回服务器当前使用的主机密钥列表。
+func (s *Server) HostKeys() []ssh.Signer {
+	return slices.Clone(s.opts.HostKeys)
+}
 
 // Close 停止监听并断开所有连接。
 func (s *Server) Close() error {

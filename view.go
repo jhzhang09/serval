@@ -337,7 +337,10 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 				ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 			}).OnClick(func() { a.closeTab(t) })
 		}
-	}).OnClick(func() { a.active = i })
+	}).OnClick(func() {
+		a.active = i
+		a.saveSessionLayout()
+	})
 }
 
 func (a *app) workspace(c *ui.Context, colors design.Colors) {
@@ -459,6 +462,11 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			}
 		})
 		switch {
+		case t.reconnecting:
+			chip(c, fmt.Sprintf("正在重连（第 %d 次）", t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
+			ui.ButtonBase(c).Key("cancelReconnect").Label("取消").Shrink(0).Children(func() {
+				ui.Text(c, "取消").TextColor(theme.Accent).FontWeight(600).NoWrap()
+			}).OnClick(func() { a.cancelReconnect(t) })
 		case p.ended:
 			ui.Text(c, "连接已结束").Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
 			ui.ButtonBase(c).Key("reconnect").Label("重新连接").Shrink(0).Children(func() {

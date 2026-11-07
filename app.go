@@ -40,6 +40,10 @@ type app struct {
 	// localUser 是本机用户名。主机和跳板机没写用户名时用它，和 OpenSSH 一致。
 	localUser string
 
+	// pingInterval 和 reconnectBaseDelay 用于测试调节保活和重连退避时间，零值使用默认值。
+	pingInterval       time.Duration
+	reconnectBaseDelay time.Duration
+
 	sidebarOpen bool
 	filesOpen   bool
 
@@ -133,6 +137,10 @@ type tab struct {
 	// latency 是最近一次保活的往返时间；stalled 表示服务器长时间没有响应。
 	latency time.Duration
 	stalled bool
+
+	reconnecting     bool
+	reconnectAttempt int
+	reconnectCancel  context.CancelFunc
 
 	files      *sshconn.Files
 	filesBusy  bool
@@ -250,6 +258,7 @@ func (a *app) open(h hosts.Host) {
 			if _, ok := a.hostByID(h.ID); ok {
 				a.recordRecentHost(h.ID)
 			}
+			a.saveSessionLayout()
 			return
 		}
 	}
@@ -259,68 +268,49 @@ func (a *app) open(h hosts.Host) {
 // connect 在后台建立连接，有跳板机时逐跳连接。creds 是用户刚输入的密码或口令，
 // 按链路位置（见 authSheet.hop）索引，只用于这一次连接尝试；没输入的部分用保险库里保存的。
 func (a *app) connect(h hosts.Host, creds map[int]credential) {
+	a.connectWithLayout(h, creds, nil)
+}
+
+// connectWithLayout 在后台建立连接，并按 layout 恢复窗格结构（为 nil 时打开单个窗格）。
+func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *savedPane) {
 	if _, busy := a.connecting[h.ID]; busy {
 		return
 	}
-	// 调用方手里的可能是旧副本（例如标签里的主机，之后又保存了密码），以保险库里的为准。
-	if fresh, ok := a.hostByID(h.ID); ok {
-		h = fresh
-	}
 	a.notice = ""
-	route, err := hosts.ResolveRoute(h, a.hosts, a.localUser)
-	if err != nil {
-		a.notice = fmt.Sprintf("无法连接 %s：%v", h.Name, err)
-		return
-	}
-	// 代理只用于第一跳。目标主机没设代理时，沿用第一台跳板机自己的代理设置：
-	// 那台跳板机单独连接时要走这个代理，经由它连接时自然也要。
-	proxySpec := h.Proxy
-	if proxySpec == "" && len(route) > 0 {
-		proxySpec = route[0].Proxy
-	}
-	proxy, err := sshconn.ParseProxy(proxySpec)
-	if err != nil {
-		a.notice = fmt.Sprintf("无法连接 %s：代理设置有误，%v", h.Name, err)
-		return
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
+	cfg, route, used, chain, err := a.prepareDialConfig(ctx, h, creds)
+	if err != nil {
+		cancel()
+		a.notice = err.Error()
+		return
+	}
 	a.connecting[h.ID] = cancel
-	// 所有跳共用一个主机密钥策略：每台机器都要核对指纹，信任记录也存在同一处。
-	policy := &sshconn.HostKeyPolicy{
-		ReadOnlyFiles: a.knownHosts,
-		Trusted:       vaultTrust{a.vault},
-		Confirm:       func(info sshconn.HostKeyInfo) bool { return a.confirmHostKey(ctx, info) },
+
+	leafCount := 1
+	if layout != nil {
+		leafCount = layout.leaves()
 	}
-	chain := append(slices.Clone(route), h) // 链路上的全部机器，最后一台是目标
-	used := make(map[int]credential, len(chain))
-	configs := make([]sshconn.Config, len(chain))
-	for i, hh := range chain {
-		key, hasKey := a.keyByID(hh.KeyID)
-		if hh.Auth == hosts.AuthKey && !hasKey {
-			cancel()
-			delete(a.connecting, h.ID)
-			a.notice = fmt.Sprintf("%s 选用的私钥已经删除，请编辑这台主机，重新选择私钥。", hh.Name)
-			return
-		}
-		c := creds[i]
-		fillSaved(hh, key, hasKey, &c)
-		used[i] = c
-		configs[i] = hopConfig(hh, key, hasKey, c, a.localUser, policy)
+	if leafCount < 1 {
+		leafCount = 1
 	}
-	cfg := configs[len(route)]
-	cfg.Jumps = configs[:len(route)]
-	cfg.Proxy = proxy
 
 	// cancel 只能在回到主线程之后调用：connectFailed 靠 ctx 区分“用户主动取消”和
 	// 真正的连接失败，提前调用会把失败误判成取消，错误提示就丢了。
 	go func() {
 		client, err := sshconn.Dial(ctx, cfg)
-		var shell *sshconn.Shell
+		var shells []*sshconn.Shell
 		if err == nil {
-			shell, err = client.OpenShell(80, 24)
-			if err != nil {
-				client.Close()
+			shells = make([]*sshconn.Shell, leafCount)
+			for i := 0; i < leafCount; i++ {
+				shells[i], err = client.OpenShell(80, 24)
+				if err != nil {
+					for j := 0; j < i; j++ {
+						shells[j].Close()
+					}
+					client.Close()
+					shells = nil
+					break
+				}
 			}
 		}
 		a.post(func() {
@@ -333,15 +323,67 @@ func (a *app) connect(h hosts.Host, creds map[int]credential) {
 			if ctx.Err() != nil {
 				// 用户在连接刚好完成时取消了，不再打开会话。
 				go func() {
-					shell.Close()
+					for _, s := range shells {
+						s.Close()
+					}
 					client.Close()
 				}()
 				return
 			}
 			a.rememberCredentials(chain, used)
-			a.addTab(h, client, shell)
+			if layout != nil {
+				a.addTabWithLayout(h, client, shells, layout)
+			} else {
+				a.addTab(h, client, shells[0])
+			}
 		})
 	}()
+}
+
+// prepareDialConfig 准备连接一台主机所需的全部跳板机和认证配置。必须在主线程调用。
+func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int]credential) (sshconn.Config, []hosts.Host, map[int]credential, []hosts.Host, error) {
+	// 调用方手里的可能是旧副本（例如标签里的主机，之后又保存了密码），以保险库里的为准。
+	if fresh, ok := a.hostByID(h.ID); ok {
+		h = fresh
+	}
+	route, err := hosts.ResolveRoute(h, a.hosts, a.localUser)
+	if err != nil {
+		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：%w", h.Name, err)
+	}
+	// 代理只用于第一跳。目标主机没设代理时，沿用第一台跳板机自己的代理设置：
+	// 那台跳板机单独连接时要走这个代理，经由它连接时自然也要。
+	proxySpec := h.Proxy
+	if proxySpec == "" && len(route) > 0 {
+		proxySpec = route[0].Proxy
+	}
+	proxy, err := sshconn.ParseProxy(proxySpec)
+	if err != nil {
+		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：代理设置有误，%w", h.Name, err)
+	}
+
+	// 所有跳共用一个主机密钥策略：每台机器都要核对指纹，信任记录也存在同一处。
+	policy := &sshconn.HostKeyPolicy{
+		ReadOnlyFiles: a.knownHosts,
+		Trusted:       vaultTrust{a.vault},
+		Confirm:       func(info sshconn.HostKeyInfo) bool { return a.confirmHostKey(ctx, info) },
+	}
+	chain := append(slices.Clone(route), h) // 链路上的全部机器，最后一台是目标
+	used := make(map[int]credential, len(chain))
+	configs := make([]sshconn.Config, len(chain))
+	for i, hh := range chain {
+		key, hasKey := a.keyByID(hh.KeyID)
+		if hh.Auth == hosts.AuthKey && !hasKey {
+			return sshconn.Config{}, nil, nil, nil, fmt.Errorf("%s 选用的私钥已经删除，请编辑这台主机，重新选择私钥", hh.Name)
+		}
+		c := creds[i]
+		fillSaved(hh, key, hasKey, &c)
+		used[i] = c
+		configs[i] = hopConfig(hh, key, hasKey, c, a.localUser, policy)
+	}
+	cfg := configs[len(route)]
+	cfg.Jumps = configs[:len(route)]
+	cfg.Proxy = proxy
+	return cfg, route, used, chain, nil
 }
 
 // hopConfig 生成连接链路上一台机器的配置。认证方式决定尝试哪些登录方法。
@@ -525,6 +567,7 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
+	a.saveSessionLayout()
 }
 
 func (a *app) terminalFont() terminal.Font {
@@ -554,10 +597,72 @@ func (a *app) terminalScrollback() int {
 	return 0
 }
 
-func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
+func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*sshconn.Shell, layout *savedPane) {
 	a.nextID++
-	p := &pane{id: a.nextID}
-	term, err := terminal.New(terminal.Options{
+	ctx, stop := context.WithCancel(context.Background())
+	t := &tab{id: a.nextID, host: h, client: client, stop: stop}
+	idx := 0
+	root, err := a.restorePaneNode(t, shells, &idx, layout)
+	if err != nil {
+		stop()
+		for _, s := range shells {
+			s.Close()
+		}
+		client.Close()
+		a.notice = fmt.Sprintf("启动终端失败: %v", err)
+		return
+	}
+	t.root = root
+	t.focus = firstLeaf(root)
+	root.each(func(p *pane) {
+		a.arrived[p.id] = true
+	})
+	a.tabs = append(a.tabs, t)
+	a.active = len(a.tabs) - 1
+	if _, ok := a.hostByID(h.ID); ok {
+		a.recordRecentHost(h.ID)
+	}
+	go a.watchLatency(ctx, t)
+	if a.filesOpen {
+		a.ensureFiles(t)
+	}
+	a.saveSessionLayout()
+}
+
+func (a *app) restorePaneNode(t *tab, shells []*sshconn.Shell, idx *int, layout *savedPane) (*pane, error) {
+	if layout == nil || (layout.First == nil && layout.Second == nil) {
+		if *idx >= len(shells) {
+			return nil, errors.New("shell 数量不足")
+		}
+		shell := shells[*idx]
+		*idx++
+		return a.newPane(t, shell)
+	}
+	first, err := a.restorePaneNode(t, shells, idx, layout.First)
+	if err != nil {
+		return nil, err
+	}
+	second, err := a.restorePaneNode(t, shells, idx, layout.Second)
+	if err != nil {
+		first.each(func(p *pane) { p.term.Close() })
+		return nil, err
+	}
+	pct := layout.Percent
+	if pct <= 0 || pct >= 100 {
+		pct = 50
+	}
+	a.nextID++
+	return &pane{
+		id:       a.nextID,
+		first:    first,
+		second:   second,
+		vertical: layout.Vertical,
+		percent:  pct,
+	}, nil
+}
+
+func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.Terminal, error) {
+	return terminal.New(terminal.Options{
 		Conn:       shell,
 		Font:       a.terminalFont(),
 		Theme:      a.terminalTheme(false),
@@ -572,6 +677,12 @@ func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 			a.post(func() { a.copied(by) })
 		},
 	})
+}
+
+func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
+	a.nextID++
+	p := &pane{id: a.nextID}
+	term, err := a.createTerminal(t, p, shell)
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +730,10 @@ func (a *app) refreshTerminals() {
 // 每次通知界面都会重建并重绘整个窗口，所以只在显示出来的内容真正变化时才通知：
 // 实测 2 个会话每 5 秒各通知一次，空闲 CPU 从 0.15% 涨到 1.15%，而延迟显示其实一直没变。
 func (a *app) watchLatency(ctx context.Context, t *tab) {
-	const interval = 5 * time.Second
+	interval := 5 * time.Second
+	if a.pingInterval > 0 {
+		interval = a.pingInterval
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	shown, wasStalled, first := "", false, true
@@ -642,7 +756,13 @@ func (a *app) watchLatency(ctx context.Context, t *tab) {
 				if !stalled {
 					t.latency = rtt
 				}
+				if stalled && !t.reconnecting {
+					a.startAutoReconnect(t)
+				}
 			})
+		}
+		if stalled {
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -702,6 +822,7 @@ func (a *app) split(t *tab, vertical bool) {
 			t.replace(target, &pane{id: a.nextID, first: target, second: leaf, vertical: vertical, percent: 50})
 			t.focus = leaf
 			a.arrived[leaf.id] = true
+			a.saveSessionLayout()
 		})
 	}()
 }
@@ -766,6 +887,7 @@ func (a *app) closeFocused(t *tab) {
 			t.focus = p
 		}
 	})
+	a.saveSessionLayout()
 	term := closing.term
 	go term.Close()
 }
@@ -779,21 +901,28 @@ func (a *app) closeTab(t *tab) {
 	if a.active >= len(a.tabs) {
 		a.active = max(0, len(a.tabs)-1)
 	}
+	a.saveSessionLayout()
 	// 断开网络连接可能阻塞，不放在主线程。
 	go t.close()
 }
 
 func (t *tab) close() {
+	if t.reconnectCancel != nil {
+		t.reconnectCancel()
+	}
 	t.stop()
 	t.root.each(func(p *pane) { p.term.Close() })
 	if t.files != nil {
 		t.files.Close()
 	}
-	t.client.Close()
+	if t.client != nil {
+		t.client.Close()
+	}
 }
 
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
 func (a *app) closeAll() {
+	a.saveSessionLayout()
 	for _, cancel := range a.connecting {
 		cancel()
 	}
@@ -808,6 +937,196 @@ func (a *app) reconnect(t *tab) {
 	h := t.host
 	a.closeTab(t)
 	a.connect(h, nil)
+}
+
+func (a *app) reconnectDelay(attempt int) time.Duration {
+	if a.reconnectBaseDelay > 0 {
+		return a.reconnectBaseDelay
+	}
+	sec := 1
+	if attempt > 1 {
+		sec = 1 << (attempt - 1)
+	}
+	if sec > 30 {
+		sec = 30
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (a *app) cancelReconnect(t *tab) {
+	if t.reconnectCancel != nil {
+		t.reconnectCancel()
+		t.reconnectCancel = nil
+	}
+	t.reconnecting = false
+	t.reconnectAttempt = 0
+	t.root.each(func(p *pane) {
+		p.ended = true
+	})
+}
+
+func (a *app) startAutoReconnect(t *tab) {
+	if t.reconnecting || !slices.Contains(a.tabs, t) {
+		return
+	}
+	t.reconnecting = true
+	t.reconnectAttempt = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	t.reconnectCancel = cancel
+	a.retryReconnect(ctx, t, 1)
+}
+
+func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
+	if ctx.Err() != nil || !t.reconnecting || !slices.Contains(a.tabs, t) {
+		return
+	}
+	t.reconnectAttempt = attempt
+	cfg, _, _, _, err := a.prepareDialConfig(ctx, t.host, nil)
+	if err != nil {
+		delay := a.reconnectDelay(attempt)
+		time.AfterFunc(delay, func() {
+			a.post(func() { a.retryReconnect(ctx, t, attempt+1) })
+		})
+		return
+	}
+	go func() {
+		client, err := sshconn.Dial(ctx, cfg)
+		a.post(func() {
+			if ctx.Err() != nil || !t.reconnecting || !slices.Contains(a.tabs, t) {
+				if client != nil {
+					client.Close()
+				}
+				return
+			}
+			if err != nil {
+				delay := a.reconnectDelay(attempt)
+				time.AfterFunc(delay, func() {
+					a.post(func() { a.retryReconnect(ctx, t, attempt+1) })
+				})
+				return
+			}
+			a.finishReconnect(t, client)
+		})
+	}()
+}
+
+func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
+	t.reconnecting = false
+	t.reconnectAttempt = 0
+	t.stalled = false
+	if t.reconnectCancel != nil {
+		t.reconnectCancel = nil
+	}
+	oldClient := t.client
+	t.client = client
+	if oldClient != nil {
+		go oldClient.Close()
+	}
+	if t.files != nil {
+		oldFiles := t.files
+		t.files = nil
+		go oldFiles.Close()
+	}
+	if a.filesOpen && a.current() == t {
+		a.ensureFiles(t)
+	}
+	t.stop()
+	ctx, stop := context.WithCancel(context.Background())
+	t.stop = stop
+	go a.watchLatency(ctx, t)
+
+	t.root.each(func(p *pane) {
+		cols, rows := 80, 24
+		if p.term != nil {
+			if c, r := p.term.Size(); c > 0 && r > 0 {
+				cols, rows = c, r
+			}
+		}
+		shell, err := client.OpenShell(cols, rows)
+		if err != nil {
+			p.ended = true
+			return
+		}
+		oldTerm := p.term
+		term, err := a.createTerminal(t, p, shell)
+		if err != nil {
+			shell.Close()
+			p.ended = true
+			return
+		}
+		if oldTerm != nil {
+			go oldTerm.Close()
+		}
+		p.term = term
+		p.ended = false
+	})
+	a.saveSessionLayout()
+}
+
+func savePane(p *pane) *savedPane {
+	if p == nil {
+		return nil
+	}
+	if p.term != nil {
+		return &savedPane{}
+	}
+	return &savedPane{
+		Vertical: p.vertical,
+		Percent:  p.percent,
+		First:    savePane(p.first),
+		Second:   savePane(p.second),
+	}
+}
+
+func (a *app) saveSessionLayout() {
+	if a.local.DisableRestoreSession {
+		return
+	}
+	if len(a.tabs) == 0 {
+		if a.local.SavedSession != nil {
+			next := a.local
+			next.SavedSession = nil
+			_ = a.saveLocal(next)
+		}
+		return
+	}
+	tabs := make([]savedTab, 0, len(a.tabs))
+	for _, t := range a.tabs {
+		tabs = append(tabs, savedTab{
+			HostID: t.host.ID,
+			Root:   savePane(t.root),
+		})
+	}
+	next := a.local
+	next.SavedSession = &savedSession{
+		Tabs:   tabs,
+		Active: a.active,
+	}
+	_ = a.saveLocal(next)
+}
+
+func (a *app) restoreSession() {
+	if a.local.DisableRestoreSession || a.local.SavedSession == nil || len(a.local.SavedSession.Tabs) == 0 {
+		return
+	}
+	session := a.local.SavedSession
+	for _, st := range session.Tabs {
+		h, ok := a.hostByID(st.HostID)
+		if !ok {
+			continue
+		}
+		a.connectWithLayout(h, nil, st.Root)
+	}
+	if session.Active >= 0 && session.Active < len(session.Tabs) {
+		a.active = session.Active
+	}
+}
+
+func firstLeaf(p *pane) *pane {
+	if p == nil || p.term != nil {
+		return p
+	}
+	return firstLeaf(p.first)
 }
 
 // confirmHostKey 在连接 goroutine 上阻塞，直到用户回答或连接被取消。
@@ -977,10 +1296,25 @@ func (a *app) paneEnded(t *tab, p *pane) {
 		return
 	}
 	p.ended = true
+	if t.reconnecting {
+		return
+	}
 	allEnded := true
 	t.root.each(func(q *pane) { allEnded = allEnded && q.ended })
 	if !allEnded {
 		a.toast(ui.Toast{Title: t.host.Name + " 的一个窗格已结束"})
+		return
+	}
+	// 连接已中断或保活失败时自动重连；主动 exit 退出时显示提示。
+	pingFailed := t.stalled
+	if !pingFailed && t.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, err := t.client.Ping(ctx)
+		cancel()
+		pingFailed = err != nil
+	}
+	if pingFailed {
+		a.startAutoReconnect(t)
 		return
 	}
 	a.toast(ui.Toast{
