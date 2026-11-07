@@ -1,0 +1,9 @@
+{
+  "name": "Serval",
+  "identifier": "com.example.serval",
+  "version": "0.1.0",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "13.0"
+  }
+}
