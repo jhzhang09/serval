@@ -228,6 +228,7 @@ func TestFirstKeyAsksForMasterPassword(t *testing.T) {
 	h.a.setup.password, h.a.setup.confirm = "some master", "some master"
 	h.tt.Frame()
 	h.click("设置并继续")
+	h.pump("设置主密码并添加私钥", func() bool { return !h.a.setup.open })
 	if len(h.a.keys) != 1 || h.a.keys[0].Name != "ed25519" {
 		t.Fatalf("设置主密码后应继续添加私钥: %+v", h.a.keys)
 	}

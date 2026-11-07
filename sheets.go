@@ -132,15 +132,24 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 			}
 			submit := confirm.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "取消").Key("setupCancel").OnClick(func() { a.setup = setupSheet{} })
-				if ui.PrimaryButton(c, "设置并继续").Key("setupSubmit").Clicked() || submit {
+				ui.Button(c, "取消").Key("setupCancel").Disabled(s.busy).OnClick(func() { a.setup = setupSheet{} })
+				label := "设置并继续"
+				if s.busy {
+					label = "正在设置…"
+				}
+				b := ui.PrimaryButton(c, label).Key("setupSubmit").Disabled(s.busy)
+				if (b.Clicked() || submit) && !s.busy {
 					a.submitSetup()
 				}
 			})
 		})
 	})
-	// 点击外部或按 Esc 取消：放弃这次要保存的秘密，原来的面板重新出现。
+	// 点击外部或按 Esc 取消：放弃这次要保存的秘密，原来的面板重新出现。派生进行中不允许中途关闭。
 	if !a.setup.open {
+		if a.setup.busy {
+			a.setup.open = true
+			return
+		}
 		a.setup = setupSheet{}
 	}
 }
@@ -167,8 +176,13 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 				c.Key("unlockRemember")
 				ui.Checkbox(c, &u.remember, "在这台设备上记住")
 			}
+			label := "解锁"
+			if u.busy {
+				label = "正在解锁…"
+			}
 			submit := input.Submitted()
-			if ui.PrimaryButton(c, "解锁").Key("unlockSubmit").Clicked() || submit {
+			b := ui.PrimaryButton(c, label).Key("unlockSubmit").Disabled(u.busy)
+			if (b.Clicked() || submit) && !u.busy {
 				a.submitUnlock()
 			}
 		})
