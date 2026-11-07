@@ -64,9 +64,7 @@ func main() {
 		a.restoreSession()
 	}
 	a.unlock.remember = true
-	a.pickFile = defaultPickFile(func(dir string) ([]string, error) {
-		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择私钥", DefaultPath: dir, ButtonLabel: "选择", ShowHiddenFiles: true})
-	})
+	installSystemDialogs(a)
 	if u, err := user.Current(); err == nil {
 		a.localUser = u.Username
 	}

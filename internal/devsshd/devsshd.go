@@ -290,7 +290,11 @@ func (s *Server) session(channel ssh.Channel, requests <-chan *ssh.Request) {
 					continue
 				}
 				req.Reply(true, nil)
-				server, err := sftp.NewServer(channel)
+				var sftpOpts []sftp.ServerOption
+				if s.opts.Dir != "" {
+					sftpOpts = append(sftpOpts, sftp.WithServerWorkingDirectory(s.opts.Dir))
+				}
+				server, err := sftp.NewServer(channel, sftpOpts...)
 				if err != nil {
 					return
 				}

@@ -63,6 +63,7 @@ func (a *app) view(c *ui.Context) {
 	a.settingsDialog(c, colors)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
+	a.uploadConfirmDialog(c)
 	a.lockConfirmDialog(c)
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
@@ -558,6 +559,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 				name = "文件"
 			}
 			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).NoWrap().Ellipsis("…").Tooltip(t.dir)
+			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "")
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
 		})
@@ -575,11 +577,63 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 				ui.Text(c, "这个目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
 			}
 		})
+		if len(t.transfers) > 0 {
+			ui.Divider(c)
+			a.transferQueueView(c, colors, t)
+		}
 	})
 }
 
-// fileRow 显示一项文件。目录可以点击进入；文件暂时没有操作，所以用普通行而不是按钮，
-// 以免看起来像“被禁用”。
+// transferQueueView 展示传输队列面板。
+func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
+	theme := c.Theme()
+	ui.Column(c).Key("transfers").Padding(6, 10, 8, 10).Gap(6).Children(func() {
+		ui.Row(c).Height(20).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "传输队列").FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted)
+		})
+		for _, tr := range t.transfers {
+			item := tr
+			ui.Column(c).Key(fmt.Sprintf("tr:%d", item.id)).Gap(2).Padding(4, 6).
+				Radius(design.RadiusRow - 2).Background(colors.Hover).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					icon := "arrow-down"
+					if item.kind == transferUpload {
+						icon = "arrow-up"
+					}
+					ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
+					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).NoWrap().Ellipsis("…")
+					if !item.done.Load() {
+						iconButton(c, colors, "x", "取消传输", func() { a.cancelTransfer(item) })
+					}
+				})
+				ui.Row(c).Children(func() {
+					var info string
+					if item.done.Load() {
+						if item.err != "" {
+							info = "失败: " + item.err
+						} else {
+							info = "已完成"
+						}
+					} else {
+						speed := item.speed.Load()
+						speedStr := ""
+						if speed > 0 {
+							speedStr = " · " + formatSize(speed) + "/s"
+						}
+						info = fmt.Sprintf("%s / %s%s", formatSize(item.transferred.Load()), formatSize(item.total.Load()), speedStr)
+					}
+					color := colors.TextFaint
+					if item.err != "" {
+						color = colors.Danger
+					}
+					ui.Text(c, info).FontSize(design.TextSmall - 1).TextColor(color).FontFeatures("tnum")
+				})
+			})
+		}
+	})
+}
+
+// fileRow 显示一项文件。
 func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, name, full string, isDir bool, size int64) {
 	theme := c.Theme()
 	content := func() {
@@ -594,11 +648,24 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, name, full st
 			ui.Text(c, formatSize(size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}
 	}
+	menu := func(m *ui.Menu) {
+		if !isDir {
+			if m.Item("下载").Chosen() {
+				a.startDownload(t, full, name)
+			}
+		}
+	}
 	if !isDir {
-		ui.Row(c).Key(full).Height(28).Padding(0, 8).Gap(8).AlignItems(ui.Center).Children(content)
+		row := ui.ButtonBase(c).Key(full).Label(name).Height(28).Padding(0, 8).Gap(8).
+			Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
+		if row.Hovered() {
+			row.Background(colors.Hover)
+		}
+		row.Children(content)
 		return
 	}
-	row := ui.ButtonBase(c).Key(full).Label(name).Height(28).Padding(0, 8).Gap(8).Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2)
+	row := ui.ButtonBase(c).Key(full).Label(name).Height(28).Padding(0, 8).Gap(8).
+		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
 	if row.Hovered() {
 		row.Background(colors.Hover)
 	}

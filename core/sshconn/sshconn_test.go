@@ -564,3 +564,114 @@ func TestShellExitedDistinguishesExitFromDisconnect(t *testing.T) {
 		t.Fatal("连接中断不应判定为远端自己退出")
 	}
 }
+
+func TestStreamingTransferMemory(t *testing.T) {
+	server := startServer(t, devsshd.Options{})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	files, err := client.OpenFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	dir := t.TempDir()
+	largeFile := filepath.Join(dir, "large.dat")
+	f, err := os.Create(largeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1024*1024)
+	for i := 0; i < 100; i++ {
+		if _, err := f.Write(chunk); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	remoteFile := filepath.Join(t.TempDir(), "remote.dat")
+	downloadedFile := filepath.Join(dir, "downloaded.dat")
+
+	var uploadProgress int64
+	err = files.Upload(context.Background(), largeFile, remoteFile, func(transferred, total int64) {
+		uploadProgress = transferred
+	})
+	if err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+	if uploadProgress != 100*1024*1024 {
+		t.Fatalf("Upload progress = %d, want 100 MB", uploadProgress)
+	}
+
+	var downloadProgress int64
+	err = files.Download(context.Background(), remoteFile, downloadedFile, func(transferred, total int64) {
+		downloadProgress = transferred
+	})
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+	if downloadProgress != 100*1024*1024 {
+		t.Fatalf("Download progress = %d, want 100 MB", downloadProgress)
+	}
+
+	info, err := os.Stat(downloadedFile)
+	if err != nil || info.Size() != 100*1024*1024 {
+		t.Fatalf("下载的文件尺寸不匹配: %v", err)
+	}
+}
+
+// 取消上传或下载后，本地和服务器上都不留下写了一半的文件；已有的同名文件保持原样。
+func TestCancelledTransferLeavesNoPartialFiles(t *testing.T) {
+	server := startServer(t, devsshd.Options{})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	files, err := client.OpenFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	local := t.TempDir()
+	remote := t.TempDir() // 开发服务器的 SFTP 直接操作本机文件系统
+	big := filepath.Join(local, "big.dat")
+	if err := os.WriteFile(big, make([]byte, 8<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(remote, "big.dat")
+	if err := os.WriteFile(existing, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cancelAfterFirstChunk := func() (context.Context, func(int64, int64)) {
+		ctx, cancel := context.WithCancel(context.Background())
+		return ctx, func(int64, int64) { cancel() }
+	}
+	ctx, progress := cancelAfterFirstChunk()
+	if err := files.Upload(ctx, big, existing, progress); !errors.Is(err, context.Canceled) {
+		t.Fatalf("上传应被取消: %v", err)
+	}
+	if data, _ := os.ReadFile(existing); string(data) != "old" {
+		t.Fatal("取消上传不应改动服务器上已有的同名文件")
+	}
+	target := filepath.Join(local, "copy.dat")
+	if err := os.WriteFile(filepath.Join(remote, "big2.dat"), make([]byte, 8<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, progress = cancelAfterFirstChunk()
+	if err := files.Download(ctx, filepath.Join(remote, "big2.dat"), target, progress); !errors.Is(err, context.Canceled) {
+		t.Fatalf("下载应被取消: %v", err)
+	}
+	for _, dir := range []string{local, remote} {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "part") || e.Name() == "copy.dat" {
+				t.Errorf("%s 里留下了残留文件 %s", dir, e.Name())
+			}
+		}
+	}
+	if ok, err := files.Exists(existing); !ok || err != nil {
+		t.Fatalf("Exists(已有文件) = %v %v", ok, err)
+	}
+	if ok, err := files.Exists(filepath.Join(remote, "none")); ok || err != nil {
+		t.Fatalf("Exists(不存在) = %v %v", ok, err)
+	}
+}

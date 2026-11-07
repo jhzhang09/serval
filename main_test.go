@@ -90,7 +90,8 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	// 不让测试用到开发者自己的 ssh-agent。
 	t.Setenv("SSH_AUTH_SOCK", "")
 	design.RegisterFonts()
-	server, err := devsshd.Start(devsshd.Options{Password: testPassword})
+	serverDir := t.TempDir()
+	server, err := devsshd.Start(devsshd.Options{Password: testPassword, Dir: serverDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,9 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	}
 	h.a.loadLocal()
 	h.a.unlock.remember = true
-	h.a.pickFile = func() (string, error) { return "", errors.New("测试没有设置 pickFile") }
+	h.a.chooseKeyFile = func() (string, error) { return "", errors.New("测试没有设置 chooseKeyFile") }
+	h.a.chooseSavePath = func(string) (string, error) { return "", errors.New("测试没有设置 chooseSavePath") }
+	h.a.chooseUploadFile = func() (string, error) { return "", errors.New("测试没有设置 chooseUploadFile") }
 	h.a.post = func(fn func()) {
 		h.mu.Lock()
 		h.queue = append(h.queue, fn)
@@ -1068,5 +1071,152 @@ func TestSearchFocusAndClear(t *testing.T) {
 	h.tt.Frame()
 	if tb.focus.searchOpen || h.tt.Focused("查找输入框") {
 		t.Fatal("关闭后查找框应收起")
+	}
+}
+
+func TestFileUploadDownloadAndCancel(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+
+	// 打开文件抽屉
+	h.click("文件（⌘J）")
+	h.pump("打开文件列表", func() bool { return tb.dir != "" })
+
+	// 准备本地待上传文件
+	tmpDir := t.TempDir()
+	localUploadPath := filepath.Join(tmpDir, "hello-upload.txt")
+	content := []byte("hello sftp streaming transfer")
+	if err := os.WriteFile(localUploadPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.a.chooseUploadFile = func() (string, error) {
+		return localUploadPath, nil
+	}
+
+	// 点击上传按钮
+	h.click("上传文件")
+	h.pump("上传完成", func() bool {
+		return len(tb.transfers) > 0 && tb.transfers[0].done.Load()
+	})
+
+	if tb.transfers[0].err != "" {
+		t.Fatalf("上传失败: %s", tb.transfers[0].err)
+	}
+
+	// 刷新文件列表确认文件已上传
+	h.pump("列表中出现上传文件", func() bool {
+		for _, e := range tb.entries {
+			if e.Name == "hello-upload.txt" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 下载该文件
+	localDownloadPath := filepath.Join(tmpDir, "downloaded-hello.txt")
+	h.a.chooseSavePath = func(string) (string, error) {
+		return localDownloadPath, nil
+	}
+
+	h.tt.Frame()
+	if err := h.tt.RightClick("hello-upload.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.tt.ChooseMenuItem("下载"); err != nil {
+		t.Fatalf("右键选择下载失败: %v, menu=%q", err, h.tt.Menu())
+	}
+
+	h.pump("下载完成", func() bool {
+		return len(tb.transfers) > 1 && tb.transfers[1].done.Load()
+	})
+
+	if tb.transfers[1].err != "" {
+		t.Fatalf("下载失败: %s", tb.transfers[1].err)
+	}
+
+	data, err := os.ReadFile(localDownloadPath)
+	if err != nil || string(data) != string(content) {
+		t.Fatalf("下载文件内容不匹配: %q, err=%v", string(data), err)
+	}
+
+	// 测试取消传输
+	slowLocalPath := filepath.Join(tmpDir, "slow-upload.txt")
+	slowContent := make([]byte, 64*1024*1024)
+	if err := os.WriteFile(slowLocalPath, slowContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.a.chooseUploadFile = func() (string, error) {
+		return slowLocalPath, nil
+	}
+
+	// 上传前要先在后台检查远端有没有同名文件，传输晚一个回合才出现：一出现就取消。
+	h.click("上传文件")
+	var cancelTr *fileTransfer
+	h.pump("取消测试的传输开始", func() bool {
+		if len(tb.transfers) >= 3 && cancelTr == nil {
+			cancelTr = tb.transfers[2]
+			h.a.cancelTransfer(cancelTr)
+		}
+		return cancelTr != nil
+	})
+	h.pump("传输取消", func() bool {
+		return cancelTr.done.Load()
+	})
+	if cancelTr.err != "已取消" {
+		t.Fatalf("传输取消状态不正确: %q", cancelTr.err)
+	}
+}
+
+// 系统对话框只在 installSystemDialogs 里设置；漏接一个，正式运行时就会调用 nil 函数崩溃。
+func TestSystemDialogsAreWired(t *testing.T) {
+	a := newApp()
+	installSystemDialogs(a)
+	if a.chooseKeyFile == nil || a.chooseUploadFile == nil || a.chooseSavePath == nil {
+		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v",
+			a.chooseKeyFile != nil, a.chooseUploadFile != nil, a.chooseSavePath != nil)
+	}
+}
+
+// 远端已有同名文件时，上传前先确认替换；取消就不传，确认才替换。
+func TestUploadAsksBeforeReplacing(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click("文件（⌘J）")
+	h.pump("打开文件列表", func() bool { return tb.dir != "" })
+
+	name := fmt.Sprintf("replace-%d.txt", time.Now().UnixNano())
+	remote := filepath.Join(tb.dir, name) // 开发服务器的 SFTP 直接操作本机文件系统
+	if err := os.WriteFile(remote, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(remote) })
+	local := filepath.Join(t.TempDir(), name)
+	os.WriteFile(local, []byte("new"), 0o600)
+	h.a.chooseUploadFile = func() (string, error) { return local, nil }
+
+	h.click("上传文件")
+	h.pump("替换确认", func() bool { return h.a.pendingUpload != nil })
+	h.tt.Frame()
+	if !h.tt.HasText("替换 " + name + "？") {
+		t.Fatalf("应询问是否替换: %q", h.tt.Texts())
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if len(tb.transfers) != 0 || h.a.pendingUpload != nil {
+		t.Fatal("取消后不应上传")
+	}
+	if data, _ := os.ReadFile(remote); string(data) != "old" {
+		t.Fatal("取消后远端文件不应改变")
+	}
+
+	h.click("上传文件")
+	h.pump("替换确认", func() bool { return h.a.pendingUpload != nil })
+	h.tt.Frame()
+	h.click("替换")
+	h.pump("上传完成", func() bool { return len(tb.transfers) == 1 && tb.transfers[0].done.Load() })
+	if data, _ := os.ReadFile(remote); string(data) != "new" || tb.transfers[0].err != "" {
+		t.Fatalf("确认后应替换远端文件: data=%q err=%q", data, tb.transfers[0].err)
 	}
 }
