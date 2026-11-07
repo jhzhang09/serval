@@ -96,6 +96,7 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	}
 	dir := t.TempDir()
 	h := &harness{t: t, a: newApp(), server: server, device: &memDevice{m: map[string][]byte{}}, dir: dir}
+	h.a.devicePath = filepath.Join(dir, "device.json")
 	h.a.device = h.device
 	h.a.localUser = "tester"
 	if h.a.vault, err = vault.Open(filepath.Join(dir, "vault.json"), "test"); err != nil {
@@ -112,6 +113,7 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	if err := h.a.apply(changes...); err != nil {
 		t.Fatal(err)
 	}
+	h.a.loadLocal()
 	h.a.unlock.remember = true
 	h.a.pickFile = func() (string, error) { return "", errors.New("测试没有设置 pickFile") }
 	h.a.post = func(fn func()) {
@@ -135,10 +137,11 @@ func (h *harness) reopen() {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.a.vault, h.a.hosts, h.a.keys = v, nil, nil
+	h.a.vault, h.a.hosts, h.a.keys, h.a.settings, h.a.local = v, nil, nil, settings{}, deviceSettings{}
 	if !h.a.unlockWithRemembered() {
 		h.a.reload()
 	}
+	h.a.loadLocal()
 	h.tt.Frame()
 }
 
@@ -448,8 +451,8 @@ func TestPaletteFindsHostAndRunsActions(t *testing.T) {
 	h.tt.Frame()
 	h.click("外观：深色")
 	h.tt.Frame()
-	if h.a.appearance != appearanceDark || h.a.pal.open {
-		t.Fatalf("appearance=%d open=%v", h.a.appearance, h.a.pal.open)
+	if h.a.settings.Appearance != appearanceDark || h.a.pal.open {
+		t.Fatalf("appearance=%q open=%v", h.a.settings.Appearance, h.a.pal.open)
 	}
 }
 

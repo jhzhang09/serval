@@ -21,29 +21,25 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// 外观设置。默认跟随系统。
-const (
-	appearanceSystem = iota
-	appearanceLight
-	appearanceDark
-)
-
 // app 是窗口显示的全部状态。所有字段只在主线程读写，后台 goroutine 必须通过 post 回到主线程。
 type app struct {
 	post func(func())
 
-	// vault 是全部用户数据（主机、私钥、密码）的唯一来源，hosts 和 keys 是它解密后的副本。
+	// vault 是全部用户数据（主机、私钥、密码、同步设置）的唯一来源，hosts、keys、settings 是它解密后的副本。
 	vault      *vault.Vault
 	hosts      []hosts.Host
 	keys       []keys.Key
+	settings   settings
 	hostsError string
+	// local 是只属于本机的设置（device.json），不进保险库、不参与同步。
+	local      deviceSettings
+	devicePath string
 	// device 是系统安全存储，只用来“在这台设备上记住”保险库密钥。
 	device     deviceStore
 	knownHosts []string
 	// localUser 是本机用户名。主机和跳板机没写用户名时用它，和 OpenSSH 一致。
 	localUser string
 
-	appearance  int
 	sidebarOpen bool
 	filesOpen   bool
 
@@ -68,11 +64,12 @@ type app struct {
 	auth authSheet
 	form hostForm
 	// deleting 是等待确认删除的主机。
-	deleting *hosts.Host
-	keyPanel keyPanel
-	setup    setupSheet
-	unlock   unlockState
-	pal      palette
+	deleting      *hosts.Host
+	keyPanel      keyPanel
+	settingsPanel settingsPanel
+	setup         setupSheet
+	unlock        unlockState
+	pal           palette
 	// pickFile 弹出文件选择框，返回选中的路径（取消时为空）。测试里替换掉。
 	pickFile func() (string, error)
 }
@@ -166,7 +163,7 @@ func (a *app) current() *tab {
 }
 
 func (a *app) isDark(systemDark bool) bool {
-	switch a.appearance {
+	switch a.settings.Appearance {
 	case appearanceLight:
 		return false
 	case appearanceDark:
@@ -180,6 +177,9 @@ func (a *app) open(h hosts.Host) {
 	for i, t := range a.tabs {
 		if t.host.ID == h.ID {
 			a.active = i
+			if _, ok := a.hostByID(h.ID); ok {
+				a.recordRecentHost(h.ID)
+			}
 			return
 		}
 	}
@@ -448,6 +448,9 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	a.arrived[leaf.id] = true
 	a.tabs = append(a.tabs, t)
 	a.active = len(a.tabs) - 1
+	if _, ok := a.hostByID(h.ID); ok {
+		a.recordRecentHost(h.ID)
+	}
 	go a.watchLatency(ctx, t)
 	if a.filesOpen {
 		a.ensureFiles(t)
@@ -480,7 +483,7 @@ func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 // terminalTheme 返回 windowDark 外观的窗口里终端应使用的配色。
 // 用户手动指定外观时，无论窗口实际是明是暗都用同一套。
 func (a *app) terminalTheme(windowDark bool) *terminal.Theme {
-	switch a.appearance {
+	switch a.settings.Appearance {
 	case appearanceLight:
 		return design.Terminal(false)
 	case appearanceDark:
@@ -489,9 +492,8 @@ func (a *app) terminalTheme(windowDark bool) *terminal.Theme {
 	return design.Terminal(windowDark)
 }
 
-// setAppearance 切换外观并让所有运行中的终端跟着变。
-func (a *app) setAppearance(mode int) {
-	a.appearance = mode
+// refreshTerminals 让所有运行中的终端应用最新的配色设置。
+func (a *app) refreshTerminals() {
 	for _, t := range a.tabs {
 		t.root.each(func(p *pane) {
 			p.term.SetTheme(a.terminalTheme(false), a.terminalTheme(true))
