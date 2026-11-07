@@ -94,7 +94,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	mode := max(slices.Index(appearanceModes, a.settings.Appearance), 0)
-	sheet(c, colors, &p.open, &p.fresh, 440, 22, func() {
+	sheet(c, colors, &p.open, &p.fresh, 560, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
 			ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600)
 			ui.Field(c, "外观", func() {
@@ -104,6 +104,8 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					a.setAppearance(appearanceModes[mode])
 				})
 			}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
+			ui.Divider(c)
+			a.knownHostsSection(c, colors)
 			if p.err != "" {
 				ui.Text(c, p.err).Key("settingsError").TextColor(t.Danger)
 			}
@@ -115,4 +117,47 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	if !p.open {
 		a.settingsPanel = settingsPanel{}
 	}
+}
+
+func (a *app) knownHostsSection(c *ui.Context, colors design.Colors) {
+	t := c.Theme()
+	known := a.knownHostsList()
+	ui.Field(c, "已知主机", func() {
+		if len(known) == 0 {
+			ui.Text(c, "还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。").
+				FontSize(design.TextSmall).TextColor(t.TextMuted)
+			return
+		}
+		ui.Scroll(c).MaxHeight(200).Children(func() {
+			ui.Column(c).Gap(6).Children(func() {
+				for _, k := range known {
+					a.knownHostRow(c, colors, k)
+				}
+			})
+		})
+	}).Description("已核对过指纹的服务器保存在加密保险库里。删除后，下次连接会重新核对指纹。")
+}
+
+func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
+	t := c.Theme()
+	host := k.Host
+	ui.Row(c).Key("known:"+host).Padding(8, 10).Gap(10).AlignItems(ui.Center).
+		Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, host).FontWeight(500).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+				if !k.Added.IsZero() {
+					ui.Text(c, k.Added.Local().Format("2006-01-02 15:04")).
+						FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+				}
+			})
+			for _, sum := range k.keySummaries() {
+				ui.Text(c, sum).Font(design.FontTerminal).FontSize(design.TextSmall).
+					TextColor(t.TextMuted).NoWrap().Ellipsis("…")
+			}
+		})
+		ui.Button(c, "删除").Key("knownDelete:" + host).OnClick(func() {
+			a.deleteKnownHost(host)
+		})
+	})
 }

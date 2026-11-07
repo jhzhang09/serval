@@ -206,3 +206,51 @@ func TestSettingsNarrowWindowAndCorruptDeviceFile(t *testing.T) {
 		t.Fatalf("损坏文件应提示: %q", h.a.hostsError)
 	}
 }
+
+// 已知主机列表与保险库一致，显示地址、密钥类型、指纹与添加时间；删除后下次连接重新核对指纹。
+func TestKnownHostsListAndDelete(t *testing.T) {
+	h := newHarness(t)
+	h.click("设置")
+	h.tt.Frame()
+	if !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
+		t.Fatalf("未连接时已知主机应为空: %q", h.tt.Texts())
+	}
+	h.click("完成")
+
+	h.connectDev()
+	h.a.closeAll()
+	h.tt.Frame()
+
+	known := h.a.knownHostsList()
+	if len(known) != 1 {
+		t.Fatalf("保险库应有 1 条已知主机记录，实际 %d", len(known))
+	}
+	addr := trustedAddress(h.devHost())
+	sums := known[0].keySummaries()
+	if known[0].Host != addr || len(sums) != 1 || !strings.HasPrefix(sums[0], "ssh-ed25519  SHA256:") || known[0].Added.IsZero() {
+		t.Fatalf("knownHost=%+v sums=%v", known[0], sums)
+	}
+
+	h.click("设置")
+	h.tt.Frame()
+	for _, want := range []string{addr, sums[0], known[0].Added.Local().Format("2006-01-02 15:04")} {
+		if !h.tt.HasText(want) {
+			t.Errorf("已知主机列表缺少 %q: %q", want, h.tt.Texts())
+		}
+	}
+
+	// 删除该条已知主机记录（即使主机本身还在或已删都能独立删除）。
+	h.click("删除")
+	h.tt.Frame()
+	if len(h.a.knownHostsList()) != 0 || h.tt.HasText(sums[0]) || !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
+		t.Fatalf("删除后已知主机列表应为空: %+v texts=%q", h.a.knownHostsList(), h.tt.Texts())
+	}
+	h.click("完成")
+	h.tt.Frame()
+
+	// 再次连接 dev 时应重新核对指纹。
+	h.click("dev")
+	h.pump("重新核对指纹", func() bool { return len(h.a.prompts) > 0 })
+	h.click("信任并连接")
+	h.pump("会话建立", func() bool { return len(h.a.tabs) == 1 })
+}

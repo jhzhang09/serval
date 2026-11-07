@@ -112,3 +112,33 @@ func (a *app) resetHostKey(h hosts.Host) {
 	a.notice = ""
 	a.toast(ui.Toast{Title: "已重置 " + h.Name + " 的主机密钥", Description: "下次连接时会重新请你核对指纹。"})
 }
+
+// knownHostsList 返回保险库里保存的全部主机信任记录。
+func (a *app) knownHostsList() []knownHost {
+	var list []knownHost
+	_ = decodeAll(a.vault, kindKnownHost, &list)
+	return list
+}
+
+// keySummaries 返回这台主机已信任公钥的类型和 SHA-256 指纹。
+func (k knownHost) keySummaries() []string {
+	var out []string
+	for _, line := range k.Keys {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			continue
+		}
+		out = append(out, pub.Type()+"  "+ssh.FingerprintSHA256(pub))
+	}
+	return out
+}
+
+// deleteKnownHost 从保险库里删除单条已知主机记录。
+func (a *app) deleteKnownHost(host string) {
+	if err := a.vault.Delete(knownHostID(host)); err != nil {
+		a.settingsPanel.err = err.Error()
+		return
+	}
+	a.notice = ""
+	a.toast(ui.Toast{Title: "已删除 " + host + " 的主机密钥", Description: "下次连接时会重新请你核对指纹。"})
+}
