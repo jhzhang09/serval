@@ -48,6 +48,15 @@ go run ./cmd/genicon  # 重新生成应用图标
 - **逐跳认证：** 每台机器的指纹分别确认；哪一台需要密码，就只为那一台询问，面板会注明“这是连接某某途中的跳板机”。前面几跳输入过的密码在这次连接里不用重输，连接结束即丢弃。
 - **代理：** 支持 `socks5://`、`socks5h://` 和 `http://`（CONNECT），只用于第一跳。目标主机没设代理时，沿用第一台跳板机的代理。暂时不支持需要密码的代理。
 
+## 参与开发
+
+先读 [AGENTS.md](AGENTS.md)：常用命令、硬性约束、测试与交付要求。其余文档在 `docs/`：
+
+- [architecture.md](docs/architecture.md)：分层、线程模型、数据流、扩展点
+- [roadmap.md](docs/roadmap.md)：开发计划，每个任务的范围和验收标准
+- [storage.md](docs/storage.md)：保险库格式、加密与同步
+- [review-checklist.md](docs/review-checklist.md)：交付和验收清单
+
 ## 快捷键
 
 macOS 用 ⌘；其他平台用 Ctrl+Shift，避免和终端里常用的 Ctrl+D、Ctrl+W、Ctrl+K 冲突。
