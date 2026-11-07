@@ -175,6 +175,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 		}
 	}
 	if t := a.current(); t != nil {
+		action("search", "在终端中查找", func() { a.openSearch(t) })
 		action("columns-2", "向右拆分", func() { a.split(t, false) })
 		action("rows-2", "向下拆分", func() { a.split(t, true) })
 		action("x", "关闭当前窗格", func() { a.closeFocused(t) })

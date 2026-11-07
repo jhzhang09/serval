@@ -90,6 +90,7 @@ func (a *app) shortcuts(c *ui.Context) {
 	c.OnShortcut(mods, ui.KeyBackslash, func() { a.sidebarOpen = !a.sidebarOpen })
 	c.OnShortcut(mods, ui.KeyJ, a.toggleFiles)
 	if t := a.current(); t != nil {
+		c.OnShortcut(mods, ui.KeyF, func() { a.openSearch(t) })
 		c.OnShortcut(mods, ui.KeyD, func() { a.split(t, false) })
 		c.OnShortcut(mods|ui.Alt, ui.KeyD, func() { a.split(t, true) })
 		c.OnShortcut(mods, ui.KeyW, func() { a.closeFocused(t) })
@@ -316,6 +317,7 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 				ui.Button(c, "保存为主机").Key("saveAsHost").Height(28).Padding(0, 8).
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
+			iconButton(c, colors, "search", fmt.Sprintf("查找（%s）", shortcutText("F")), func() { a.openSearch(t) })
 			iconButton(c, colors, "columns-2", fmt.Sprintf("向右拆分（%s）", shortcutText("D")), func() { a.split(t, false) })
 			iconButton(c, colors, "rows-2", "向下拆分", func() { a.split(t, true) })
 			if !t.local {
@@ -436,7 +438,19 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	}
 	card.Children(func() {
 		a.paneHeader(c, colors, t, p)
+		if p.searchOpen {
+			a.searchBar(c, colors, t, p)
+		}
+		// 固定的 Key：查找栏插在终端前面时，终端控件按位置识别会被当成新元素重新挂载，
+		// AutoFocus 随之再次生效，把刚交给查找框的焦点抢回去。
+		c.Key(fmt.Sprintf("terminal:%d", p.id))
 		view := terminal.View(c, p.term).Grow(1).MinHeight(0)
+		if p.focusTerm {
+			view.Focus()
+			if view.FocusWithin() {
+				p.focusTerm = false
+			}
+		}
 		if focused {
 			view.AutoFocus()
 		}
@@ -589,4 +603,55 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, name, full st
 		row.Background(colors.Hover)
 	}
 	row.Children(content).OnClick(func() { a.openDir(t, full) })
+}
+
+// searchBar 是终端窗格顶部的查找工具条。
+func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
+	theme := c.Theme()
+	ui.Row(c).Height(34).Shrink(0).Padding(0, 10).Gap(6).AlignItems(ui.Center).
+		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Background(colors.Hover).Children(func() {
+		ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(theme.TextMuted)
+		c.Key(fmt.Sprintf("searchInput:%d", p.id))
+		input := ui.TextInput(c, &p.searchQuery).Placeholder("在终端中查找…").Label("查找输入框").
+			Grow(1).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
+		// 查找框刚出现的那一帧焦点请求可能还落不了地，确认拿到焦点后才停止请求。
+		if p.focusSearch {
+			input.Focus()
+			if input.FocusWithin() {
+				p.focusSearch = false
+			}
+		}
+		input.OnShortcut(0, ui.KeyEscape, func() { a.closeSearch(p) })
+		input.OnShortcut(0, ui.KeyEnter, func() { p.term.SearchNext() })
+		input.OnShortcut(ui.Shift, ui.KeyEnter, func() { p.term.SearchPrevious() })
+		if input.Submitted() {
+			p.term.SearchNext()
+		}
+
+		if p.searchQuery != "" {
+			var countText string
+			if p.searchStatus.Searching {
+				countText = "查找中…"
+			} else if p.searchStatus.Total == 0 {
+				countText = "0/0"
+			} else {
+				countText = fmt.Sprintf("%d/%d", p.searchStatus.Selected, p.searchStatus.Total)
+			}
+			ui.Text(c, countText).Key(fmt.Sprintf("searchStatus:%d", p.id)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+		}
+
+		iconButton(c, colors, "arrow-up", "上一个", func() { p.term.SearchPrevious() }).
+			Disabled(p.searchStatus.Total == 0)
+		iconButton(c, colors, "arrow-down", "下一个", func() { p.term.SearchNext() }).
+			Disabled(p.searchStatus.Total == 0)
+		iconButton(c, colors, "x", "关闭查找", func() { a.closeSearch(p) })
+	})
+	// 查询变化时重新搜索；清空查询时结束搜索，旧的高亮随之消失。
+	switch {
+	case p.searchQuery == "" && p.searchStatus.Text != "":
+		p.term.EndSearch()
+		p.searchStatus = terminal.SearchStatus{}
+	case p.searchQuery != "" && p.searchStatus.Text != p.searchQuery:
+		p.term.Search(p.searchQuery)
+	}
 }

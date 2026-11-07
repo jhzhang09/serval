@@ -994,3 +994,79 @@ func TestLocalTerminal(t *testing.T) {
 		t.Fatalf("应该从命令面板打开第二个本地终端，tabs=%d", len(h.a.tabs))
 	}
 }
+
+func TestTerminalSearch(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+
+	// 写入测试内容
+	tb.focus.term.Feed([]byte("first line of text\r\nsecond hello world\r\nthird line with hello\r\n"))
+	h.tt.Frame()
+
+	// 触发搜索
+	h.click("查找（⌘F）")
+	h.tt.Frame()
+	if !tb.focus.searchOpen {
+		t.Fatal("查找工具条应该处于打开状态")
+	}
+
+	// 输入搜索词
+	tb.focus.searchQuery = "hello"
+	h.tt.Frame()
+	h.pump("终端搜索匹配", func() bool {
+		return tb.focus.term.SearchStatus().Total >= 2
+	})
+
+	status := tb.focus.term.SearchStatus()
+	if status.Total != 2 {
+		t.Fatalf("应该找到 2 处 hello，实际: %+v", status)
+	}
+
+	// 导航到下一个
+	beforeSel := status.Selected
+	h.click("下一个")
+	h.tt.Frame()
+	afterSel := tb.focus.term.SearchStatus().Selected
+	if afterSel == 0 {
+		t.Fatalf("查找下一个后选中项不应为 0: %+v", tb.focus.term.SearchStatus())
+	}
+	_ = beforeSel
+
+	// 关闭查找
+	h.click("关闭查找")
+	h.tt.Frame()
+	if tb.focus.searchOpen {
+		t.Fatal("关闭后查找工具条应该关闭")
+	}
+}
+
+// 按 ⌘F 后查找框立刻获得焦点：否则接着输入的搜索词会落进终端、发给远端 shell。
+// 关闭查找后焦点回到终端；清空查找框后高亮消失。
+func TestSearchFocusAndClear(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	tb.focus.term.Send([]byte("for i in 1 2 3; do echo needle; done\n"))
+	h.pump("输出", func() bool { return strings.Count(tb.focus.term.Text(), "needle") >= 3 })
+
+	h.tt.Key(chromeShortcut(), ui.KeyF)
+	h.tt.Frame()
+	h.tt.Frame()
+	if !tb.focus.searchOpen || !h.tt.Focused("查找输入框") {
+		t.Fatalf("⌘F 后查找框应打开并获得焦点: open=%v focused=%v", tb.focus.searchOpen, h.tt.Focused("查找输入框"))
+	}
+	h.tt.Type("needle")
+	h.pump("搜索结果", func() bool { return tb.focus.searchStatus.Total >= 3 })
+	if tb.focus.searchQuery != "needle" {
+		t.Fatalf("输入应进入查找框，实际查询 %q", tb.focus.searchQuery)
+	}
+
+	tb.focus.searchQuery = ""
+	h.pump("清空后结束搜索", func() bool { return tb.focus.searchStatus.Total == 0 && tb.focus.searchStatus.Text == "" })
+
+	h.click("关闭查找")
+	h.tt.Frame()
+	h.tt.Frame()
+	if tb.focus.searchOpen || h.tt.Focused("查找输入框") {
+		t.Fatal("关闭后查找框应收起")
+	}
+}
