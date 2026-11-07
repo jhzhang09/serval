@@ -207,9 +207,24 @@ func RegisterFonts() {
 	})
 }
 
+// TerminalFontWith 根据指定的字体族、字号和行高生成终端字体配置。
+// 未指定（零值）的参数使用规范默认值。
+func TerminalFontWith(family string, size, lineHeight float32) terminal.Font {
+	if family == "" {
+		family = FontTerminal
+	}
+	if size <= 0 {
+		size = 13
+	}
+	if lineHeight <= 0 {
+		lineHeight = 1.15
+	}
+	return terminal.Font{Family: family, Size: size, LineHeight: lineHeight}
+}
+
 // TerminalFont 返回终端字体设置。
 func TerminalFont() terminal.Font {
-	return terminal.Font{Family: FontTerminal, Size: 13, LineHeight: 1.15}
+	return TerminalFontWith("", 13, 1.15)
 }
 
 //go:embed icons/*.svg

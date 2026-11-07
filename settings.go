@@ -8,6 +8,7 @@ import (
 	"serval/core/vault"
 	"serval/design"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -22,12 +23,53 @@ var appearanceModes = []string{appearanceSystem, appearanceLight, appearanceDark
 
 var autoLockChoices = []int{0, 5, 15, 30, 60}
 
+var fontSizes = []float32{11, 12, 13, 14, 15, 16}
+var fontSizeLabels = []string{"11", "12", "13", "14", "15", "16"}
+
+var lineHeights = []float32{1.0, 1.15, 1.3, 1.5}
+var lineHeightLabels = []string{"1.0", "1.15", "1.3", "1.5"}
+
+var cursorStyles = []string{"block", "bar", "underline"}
+var cursorStyleLabels = []string{"方块", "竖线", "下划线"}
+
+// 回滚缓冲区按容量设置：终端插件的 Scrollback 单位是字节，一行占多少字节取决于内容，
+// 按“行数”标注会误导。0 表示插件默认的 10 MB。
+var scrollbackMB = []int{5, 10, 50, 100}
+var scrollbackLabels = []string{"5 MB", "10 MB", "50 MB", "100 MB"}
+
+// 预设配色必须是 terminal.GhosttyThemes() 里存在的名字（TestTerminalThemePresetsExist 保证），
+// 找不到时终端会退回默认配色。空字符串表示 Serval 自己的默认配色。
+var popularDarkThemes = []string{"", "Dracula", "Nord", "TokyoNight", "Catppuccin Mocha"}
+var popularDarkThemeLabels = []string{"默认深色", "Dracula", "Nord", "Tokyo Night", "Catppuccin Mocha"}
+
+var popularLightThemes = []string{"", "Catppuccin Latte", "GitHub Light Default", "Atom One Light"}
+var popularLightThemeLabels = []string{"默认浅色", "Catppuccin Latte", "GitHub", "One Light"}
+
+// indexOr 返回 v 在 list 里的下标，找不到时返回 def。
+// 不能写成 max(slices.Index(...), def)：那样会把排在默认项前面的选项也抬成默认项。
+func indexOr[T comparable](list []T, v T, def int) int {
+	if i := slices.Index(list, v); i >= 0 {
+		return i
+	}
+	return def
+}
+
 // settings 是随保险库同步的偏好设置（记录类型 settings，固定 ID settings）。
 //
-// 外观以及后续的终端字体与主题、代码片段默认值等跨设备一致的偏好都放在这里；
+// 外观以及终端字体与主题、代码片段默认值等跨设备一致的偏好都放在这里；
 // 写入时通过 JSONChange 保留其他版本客户端增加的字段。
 type settings struct {
 	Appearance string `json:"appearance,omitempty"`
+
+	// 终端设置（随同步）
+	TerminalFontFamily string  `json:"terminalFontFamily,omitempty"`
+	TerminalFontSize   float32 `json:"terminalFontSize,omitempty"`
+	TerminalLineHeight float32 `json:"terminalLineHeight,omitempty"`
+	TerminalCursor     string  `json:"terminalCursor,omitempty"`
+	// TerminalScrollbackMB 是回滚缓冲区容量（MB），0 表示终端插件默认的 10 MB。
+	TerminalScrollbackMB int    `json:"terminalScrollbackMB,omitempty"`
+	TerminalThemeLight   string `json:"terminalThemeLight,omitempty"`
+	TerminalThemeDark    string `json:"terminalThemeDark,omitempty"`
 }
 
 // deviceSettings 是只属于当前这台设备的设置，保存在配置目录下的 device.json，
@@ -41,9 +83,17 @@ type deviceSettings struct {
 
 const maxRecentHosts = 20
 
+type settingsTab int
+
+const (
+	settingsTabGeneral settingsTab = iota
+	settingsTabTerminal
+)
+
 // settingsPanel 是“设置”浮层面板的状态。
 type settingsPanel struct {
 	open, fresh bool
+	tab         settingsTab
 	err         string
 
 	rememberDevice bool
@@ -79,6 +129,72 @@ func (a *app) setAppearance(mode string) {
 	if err := a.saveSettings(next); err != nil {
 		a.settingsPanel.err = err.Error()
 		a.toast(ui.Toast{Title: "没能保存设置", Description: err.Error(), Type: "error"})
+	}
+}
+
+func (a *app) setTerminalFontSize(size float32) {
+	if a.settings.TerminalFontSize == size {
+		return
+	}
+	next := a.settings
+	next.TerminalFontSize = size
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalLineHeight(lh float32) {
+	if a.settings.TerminalLineHeight == lh {
+		return
+	}
+	next := a.settings
+	next.TerminalLineHeight = lh
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalCursor(cursor string) {
+	if a.settings.TerminalCursor == cursor {
+		return
+	}
+	next := a.settings
+	next.TerminalCursor = cursor
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalScrollbackMB(mb int) {
+	if a.settings.TerminalScrollbackMB == mb {
+		return
+	}
+	next := a.settings
+	next.TerminalScrollbackMB = mb
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalThemeDark(theme string) {
+	if a.settings.TerminalThemeDark == theme {
+		return
+	}
+	next := a.settings
+	next.TerminalThemeDark = theme
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalThemeLight(theme string) {
+	if a.settings.TerminalThemeLight == theme {
+		return
+	}
+	next := a.settings
+	next.TerminalThemeLight = theme
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
 	}
 }
 
@@ -149,105 +265,177 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	mode := max(slices.Index(appearanceModes, a.settings.Appearance), 0)
-	// 设置项越来越多，窗口矮时放不下：标题和“完成”固定，中间的设置项放进滚动区域。
+	// 标题和“完成”固定，中间的设置项放进滚动区域：设置项越来越多，窗口矮时放不下。
 	// 220 是标题、按钮、面板内边距和面板与窗口边缘的距离之和。
 	_, windowHeight := c.Size()
+
+	curSize := a.settings.TerminalFontSize
+	if curSize <= 0 {
+		curSize = 13
+	}
+	sizeIdx := indexOr(fontSizes, curSize, 2)
+	curLH := a.settings.TerminalLineHeight
+	if curLH <= 0 {
+		curLH = 1.15
+	}
+	lhIdx := indexOr(lineHeights, curLH, 1)
+	cursorIdx := indexOr(cursorStyles, a.settings.TerminalCursor, 0)
+	curScroll := a.settings.TerminalScrollbackMB
+	if curScroll <= 0 {
+		curScroll = 10
+	}
+	scrollIdx := indexOr(scrollbackMB, curScroll, 1)
+	darkThemeIdx := indexOr(popularDarkThemes, a.settings.TerminalThemeDark, 0)
+	lightThemeIdx := indexOr(popularLightThemes, a.settings.TerminalThemeLight, 0)
+
 	sheet(c, colors, &p.open, &p.fresh, 560, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
-			ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600)
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600).Grow(1)
+				tabIdx := int(p.tab)
+				c.Key("settingsTab")
+				ui.Segmented(c, &tabIdx, "通用", "终端").OnChange(func() {
+					p.tab = settingsTab(tabIdx)
+				})
+			})
 			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-220, 120)).Children(func() {
 				ui.Column(c).Gap(14).Padding(0, 4, 0, 0).Children(func() {
-					ui.Field(c, "外观", func() {
-						c.Key("settingsAppearance")
-						ui.Segmented(c, &mode, "跟随系统", "浅色", "深色").OnChange(func() {
-							p.err = ""
-							a.setAppearance(appearanceModes[mode])
-						})
-					}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
+					if p.tab == settingsTabGeneral {
+						ui.Field(c, "外观", func() {
+							c.Key("settingsAppearance")
+							ui.Segmented(c, &mode, "跟随系统", "浅色", "深色").OnChange(func() {
+								p.err = ""
+								a.setAppearance(appearanceModes[mode])
+							})
+						}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
 
-					autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
-					if autoLockIdx < 0 {
-						autoLockIdx = 0
-					}
-					ui.Field(c, "自动锁定", func() {
-						c.Key("settingsAutoLock")
-						ui.Segmented(c, &autoLockIdx, "从不", "5分钟", "15分钟", "30分钟", "1小时").OnChange(func() {
-							next := a.local
-							next.AutoLockMinutes = autoLockChoices[autoLockIdx]
-							if err := a.saveLocal(next); err != nil {
-								p.err = err.Error()
-							}
-						})
-					}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
-
-					if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
-						ui.Field(c, "记住主密码", func() {
-							c.Key("settingsRemember")
-							ui.Checkbox(c, &p.rememberDevice, "在这台设备上记住主密码").OnChange(func() {
-								a.rememberOnDevice(p.rememberDevice)
-								if p.rememberDevice {
-									a.toast(ui.Toast{Title: "已在这台设备上记住主密码"})
-								} else {
-									a.toast(ui.Toast{Title: "已清除在这台设备上记住的主密码"})
+						autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
+						if autoLockIdx < 0 {
+							autoLockIdx = 0
+						}
+						ui.Field(c, "自动锁定", func() {
+							c.Key("settingsAutoLock")
+							ui.Segmented(c, &autoLockIdx, "从不", "5分钟", "15分钟", "30分钟", "1小时").OnChange(func() {
+								next := a.local
+								next.AutoLockMinutes = autoLockChoices[autoLockIdx]
+								if err := a.saveLocal(next); err != nil {
+									p.err = err.Error()
 								}
 							})
-						}).Description("关闭后，每次启动 Serval 都需要重新输入主密码。")
-					}
+						}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
 
-					if a.vault != nil && a.vault.State() != vault.Unprotected {
-						if !p.changePwOpen {
-							ui.Row(c).Children(func() {
-								ui.Button(c, "修改主密码…").Key("settingsOpenChangePw").OnClick(func() {
-									p.changePwOpen = true
-									p.revealChangePw = true
-									p.currentPassword = ""
-									p.newPassword = ""
-									p.confirmPassword = ""
-									p.changePwErr = ""
+						if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
+							ui.Field(c, "记住主密码", func() {
+								c.Key("settingsRemember")
+								ui.Checkbox(c, &p.rememberDevice, "在这台设备上记住主密码").OnChange(func() {
+									a.rememberOnDevice(p.rememberDevice)
+									if p.rememberDevice {
+										a.toast(ui.Toast{Title: "已在这台设备上记住主密码"})
+									} else {
+										a.toast(ui.Toast{Title: "已清除在这台设备上记住的主密码"})
+									}
 								})
-							})
-						} else {
-							form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
-							if p.revealChangePw {
-								p.revealChangePw = false
-								form.ScrollIntoView()
-							}
-							form.Children(func() {
-								ui.Text(c, "修改主密码").FontWeight(600)
-								ui.Field(c, "当前主密码", func() {
-									c.Key("settingsCurrentPw")
-									ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
-								})
-								ui.Field(c, "新主密码", func() {
-									c.Key("settingsNewPw")
-									ui.TextInput(c, &p.newPassword).Password()
-								}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
-								ui.Field(c, "确认新主密码", func() {
-									c.Key("settingsConfirmPw")
-									ui.TextInput(c, &p.confirmPassword).Password()
-								})
-								if p.changePwErr != "" {
-									ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
-								}
-								ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-									ui.Button(c, "取消").Key("settingsCancelPw").OnClick(func() {
-										p.changePwOpen = false
+							}).Description("关闭后，每次启动 Serval 都需要重新输入主密码。")
+						}
+
+						if a.vault != nil && a.vault.State() != vault.Unprotected {
+							if !p.changePwOpen {
+								ui.Row(c).Children(func() {
+									ui.Button(c, "修改主密码…").Key("settingsOpenChangePw").OnClick(func() {
+										p.changePwOpen = true
+										p.revealChangePw = true
+										p.currentPassword = ""
+										p.newPassword = ""
+										p.confirmPassword = ""
 										p.changePwErr = ""
 									})
-									label := "保存新密码"
-									if p.changePwBusy {
-										label = "正在保存…"
+								})
+							} else {
+								form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
+								if p.revealChangePw {
+									p.revealChangePw = false
+									form.ScrollIntoView()
+								}
+								form.Children(func() {
+									ui.Text(c, "修改主密码").FontWeight(600)
+									ui.Field(c, "当前主密码", func() {
+										c.Key("settingsCurrentPw")
+										ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
+									})
+									ui.Field(c, "新主密码", func() {
+										c.Key("settingsNewPw")
+										ui.TextInput(c, &p.newPassword).Password()
+									}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
+									ui.Field(c, "确认新主密码", func() {
+										c.Key("settingsConfirmPw")
+										ui.TextInput(c, &p.confirmPassword).Password()
+									})
+									if p.changePwErr != "" {
+										ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
 									}
-									ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
-										a.submitChangePassword()
+									ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+										ui.Button(c, "取消").Key("settingsCancelPw").OnClick(func() {
+											p.changePwOpen = false
+											p.changePwErr = ""
+										})
+										label := "保存新密码"
+										if p.changePwBusy {
+											label = "正在保存…"
+										}
+										ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
+											a.submitChangePassword()
+										})
 									})
 								})
-							})
+							}
 						}
-					}
 
-					ui.Divider(c)
-					a.knownHostsSection(c, colors)
+						ui.Divider(c)
+						a.knownHostsSection(c, colors)
+						return
+					}
+					ui.Field(c, "终端字号", func() {
+						c.Key("settingsFontSize")
+						ui.Segmented(c, &sizeIdx, fontSizeLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalFontSize(fontSizes[sizeIdx])
+						})
+					})
+					ui.Field(c, "终端行高", func() {
+						c.Key("settingsLineHeight")
+						ui.Segmented(c, &lhIdx, lineHeightLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalLineHeight(lineHeights[lhIdx])
+						})
+					})
+					ui.Field(c, "光标样式", func() {
+						c.Key("settingsCursor")
+						ui.Segmented(c, &cursorIdx, cursorStyleLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalCursor(cursorStyles[cursorIdx])
+						})
+					})
+					ui.Field(c, "回滚缓冲区", func() {
+						c.Key("settingsScrollback")
+						ui.Segmented(c, &scrollIdx, scrollbackLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalScrollbackMB(scrollbackMB[scrollIdx])
+						})
+					}).Description("终端在屏幕上方保留的历史输出。对新打开的终端生效。")
+					ui.Field(c, "深色终端配色", func() {
+						c.Key("settingsDarkTheme")
+						ui.Segmented(c, &darkThemeIdx, popularDarkThemeLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalThemeDark(popularDarkThemes[darkThemeIdx])
+						})
+					}).Description(themeNote(a.settings.TerminalThemeDark))
+					ui.Field(c, "浅色终端配色", func() {
+						c.Key("settingsLightTheme")
+						ui.Segmented(c, &lightThemeIdx, popularLightThemeLabels...).OnChange(func() {
+							p.err = ""
+							a.setTerminalThemeLight(popularLightThemes[lightThemeIdx])
+						})
+					}).Description(themeNote(a.settings.TerminalThemeLight))
 				})
 			})
 			if p.err != "" {
@@ -304,4 +492,16 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 			a.deleteKnownHost(host)
 		})
 	})
+}
+
+// themeNote 是终端配色字段的说明。保存的配色在本机找不到时（例如另一台设备上的新版本选了
+// 这个版本没有的主题）要说清楚正在用默认配色，而不是静默地没有效果。
+func themeNote(name string) string {
+	if name == "" {
+		return ""
+	}
+	if _, err := terminal.GhosttyTheme(name); err != nil {
+		return fmt.Sprintf("找不到配色 %s，正在使用默认配色。", name)
+	}
+	return ""
 }
