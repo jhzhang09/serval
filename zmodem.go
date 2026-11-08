@@ -48,6 +48,9 @@ type zmodemConn struct {
 	pw    *io.PipeWriter
 	// onRequest 在读取 goroutine 上调用，应该尽快返回（投递到主线程）。
 	onRequest func(*zmodemSession)
+	// onOutput 在写给终端显示的数据写进管道之后调用，参数只在回调返回前有效。
+	// 在读取 goroutine 上、并且正拿着 wmu：只能做短的写文件，不能再拿 zmodem 的锁。
+	onOutput func([]byte)
 
 	// wmu 保证写终端的顺序（读取 goroutine 平时写、会话结束时交还数据），持有期间可能阻塞在终端读取上。
 	// mu 只保护会话状态，持有期间绝不做阻塞的写：终端在读输出时会把应答（比如光标位置）写回 Conn，
@@ -208,7 +211,18 @@ func (z *zmodemConn) setCancel(s *zmodemSession, cancel context.CancelFunc) {
 func (z *zmodemConn) writeTerminal(b []byte) {
 	z.wmu.Lock()
 	defer z.wmu.Unlock()
+	z.emit(b)
+}
+
+// emit 把字节交给终端显示，并通知会话日志。调用方必须正拿着 wmu。
+func (z *zmodemConn) emit(b []byte) {
+	if len(b) == 0 {
+		return
+	}
 	z.pw.Write(b)
+	if z.onOutput != nil {
+		z.onOutput(b)
+	}
 }
 
 // finish 结束会话，把会话多读到的数据和还没交给会话的数据按顺序还给终端。
@@ -229,10 +243,10 @@ func (z *zmodemConn) finish(s *zmodemSession, leftover []byte) {
 	z.mu.Unlock()
 	defer z.wmu.Unlock()
 	if len(leftover) > 0 {
-		z.pw.Write(leftover)
+		z.emit(leftover)
 	}
 	for _, chunk := range rest {
-		z.pw.Write(chunk)
+		z.emit(chunk)
 	}
 }
 
