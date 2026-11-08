@@ -210,6 +210,7 @@ type setupSheet struct {
 	open, fresh       bool
 	password, confirm string
 	remember          bool
+	busy              bool
 	err               string
 	// then 是设置成功后继续执行的操作（保存表单、添加私钥、带着“记住密码”重新连接）。
 	then func()
@@ -225,23 +226,39 @@ func (a *app) requireProtection(then func()) {
 	a.setup = setupSheet{open: true, fresh: true, remember: a.device != nil, then: then}
 }
 
+// submitSetup 在后台派生主密码并加密保险库，避免 Argon2id 阻塞主线程。
 func (a *app) submitSetup() {
 	s := &a.setup
+	if s.busy {
+		return
+	}
 	if s.password != s.confirm {
 		s.err = "两次输入的主密码不一致。"
 		return
 	}
-	if err := a.vault.Protect(s.password); err != nil {
-		s.err = err.Error()
-		return
-	}
-	a.rememberOnDevice(s.remember)
-	then := s.then
-	a.setup = setupSheet{}
-	a.toast(ui.Toast{Title: "已设置主密码"})
-	if then != nil {
-		then()
-	}
+	password := s.password
+	s.busy, s.err = true, ""
+	go func() {
+		err := a.vault.Protect(password)
+		a.post(func() {
+			s := &a.setup
+			s.busy = false
+			if !s.open {
+				return
+			}
+			if err != nil {
+				s.err = err.Error()
+				return
+			}
+			a.rememberOnDevice(s.remember)
+			then := s.then
+			a.setup = setupSheet{}
+			a.toast(ui.Toast{Title: "已设置主密码"})
+			if then != nil {
+				then()
+			}
+		})
+	}()
 }
 
 // rememberOnDevice 按用户的选择在系统安全存储里保存或删除保险库密钥。
@@ -282,22 +299,35 @@ func (a *app) unlockWithRemembered() bool {
 type unlockState struct {
 	password string
 	remember bool
+	busy     bool
 	err      string
 }
 
+// submitUnlock 在后台派生主密码并解锁保险库，避免 Argon2id 阻塞主线程。
 func (a *app) submitUnlock() {
 	u := &a.unlock
-	err := a.vault.Unlock(u.password)
+	if u.busy {
+		return
+	}
+	password := u.password
 	u.password = ""
-	if errors.Is(err, vault.ErrWrongPassword) {
-		u.err = "主密码不正确。"
-		return
-	}
-	if err != nil {
-		u.err = err.Error()
-		return
-	}
-	a.rememberOnDevice(u.remember)
-	a.unlock = unlockState{}
-	a.reload()
+	u.busy, u.err = true, ""
+	go func() {
+		err := a.vault.Unlock(password)
+		a.post(func() {
+			u := &a.unlock
+			u.busy = false
+			if errors.Is(err, vault.ErrWrongPassword) {
+				u.err = "主密码不正确。"
+				return
+			}
+			if err != nil {
+				u.err = err.Error()
+				return
+			}
+			a.rememberOnDevice(u.remember)
+			a.unlock = unlockState{}
+			a.reload()
+		})
+	}()
 }

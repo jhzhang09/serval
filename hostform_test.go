@@ -108,6 +108,12 @@ func TestFirstSecretAsksForMasterPassword(t *testing.T) {
 	h.tt.Frame()
 	h.click("设置并继续")
 	h.tt.Frame()
+	if !h.a.setup.busy || !h.tt.HasText("正在设置…") {
+		t.Fatalf("派生期间按钮应显示正在设置并处于处理中: busy=%v texts=%q", h.a.setup.busy, h.tt.Texts())
+	}
+	// 重复调用不会触发第二次。
+	h.a.submitSetup()
+	h.pump("设置主密码完成", func() bool { return !h.a.setup.open })
 	if h.a.setup.open || h.a.form.open || h.host("db").Password != "db-secret" {
 		t.Fatalf("设置主密码后应继续保存主机: setup=%v form=%v", h.a.setup.open, h.a.form.open)
 	}
@@ -130,13 +136,20 @@ func TestFirstSecretAsksForMasterPassword(t *testing.T) {
 	h.a.unlock.password, h.a.unlock.remember = "wrong master", false
 	h.tt.Frame()
 	h.click("解锁")
+	h.tt.Frame()
+	if !h.a.unlock.busy || !h.tt.HasText("正在解锁…") || h.a.unlock.password != "" {
+		t.Fatalf("解锁派生期间应显示正在解锁并清空密码输入: busy=%v texts=%q", h.a.unlock.busy, h.tt.Texts())
+	}
+	// 重复点击或调用不触发第二次。
+	h.a.submitUnlock()
+	h.pump("解锁错误结果", func() bool { return !h.a.unlock.busy })
 	if !strings.Contains(h.a.unlock.err, "不正确") || h.a.unlock.password != "" {
 		t.Fatalf("err=%q", h.a.unlock.err)
 	}
 	h.a.unlock.password = "first master pw"
 	h.tt.Frame()
 	h.click("解锁")
-	h.tt.Frame()
+	h.pump("解锁成功", func() bool { return h.a.vault.State() == vault.Unlocked })
 	if h.a.vault.State() != vault.Unlocked || !h.tt.HasText("ops@10.0.0.5") {
 		t.Fatalf("解锁后应显示主机: %q", h.tt.Texts())
 	}
