@@ -64,6 +64,8 @@ func (a *app) view(c *ui.Context) {
 	a.proxiesDialog(c, colors)
 	a.keysDialog(c, colors)
 	a.settingsDialog(c, colors)
+	a.restoreDialog(c, colors)
+	a.syncMergeDialog(c)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
 	a.uploadConfirmDialog(c)
@@ -290,6 +292,9 @@ func (a *app) sidebarEmpty(c *ui.Context) {
 		ui.Text(c, "还没有主机").FontWeight(600)
 		ui.Text(c, "添加一台主机开始使用。私钥可以在下面的“密钥”里添加。").
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
+		if a.vault != nil && a.vault.Empty() {
+			ui.Button(c, "从同步恢复").Key("restoreOpen").OnClick(a.openRestore)
+		}
 	})
 }
 

@@ -59,7 +59,7 @@ flowchart TB
 
 ### core/syncer
 
-下载远端 `vault.json`，调用保险库的 `Merge`，再用 ETag（`If-Match` / `If-None-Match`）上传。WebDAV 只用 GET、PUT 和 PROPFIND。地址规范、冲突重试和断网错误都在这一层，应用层负责何时触发、把密码放进系统安全存储。
+下载远端 `vault.json`，调用保险库的 `Merge`，再用 ETag（`If-Match` / `If-None-Match`）上传。空设备的新文件不能合并进另一份保险库，这时用 `Vault.Adopt` 整份换上。WebDAV 只用 GET、PUT 和 PROPFIND。地址规范、冲突重试和断网错误都在这一层，应用层负责何时触发、把密码放进系统安全存储。
 
 ### 应用层（package main）
 

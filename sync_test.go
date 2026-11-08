@@ -110,6 +110,18 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 
 	h.click("保存同步设置")
 	h.tt.Frame()
+	if !h.tt.HasText("与已有数据合并？") {
+		t.Fatalf("已有数据时应先说明合并，而不是覆盖: %q", h.tt.Texts())
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if h.a.local.SyncOn {
+		t.Fatal("取消后不应开启同步")
+	}
+	h.click("保存同步设置")
+	h.tt.Frame()
+	h.click("合并并同步")
+	h.tt.Frame()
 	if h.a.settingsPanel.syncPassword != "" {
 		t.Fatal("保存后应清掉表单里的密码")
 	}
@@ -163,6 +175,144 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	if h.tt.HasText("同步正常") || h.tt.HasText("同步失败") {
 		t.Fatalf("停用后侧栏不应再显示同步状态: %q", h.tt.Texts())
 	}
+}
+
+func TestSyncRestoreEmptyDeviceThenUnlock(t *testing.T) {
+	h := newBareHarness(t)
+	empty, err := vault.Open(filepath.Join(h.dir, "empty.json"), "empty-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.a.vault = empty
+	h.a.reload()
+
+	const pass = "dav-password-not-in-file"
+	remote, err := vault.Open(filepath.Join(t.TempDir(), "remote.json"), "remote-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Protect(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Put("host", "remote-box", []byte(`{"name":"remote-box","address":"10.9.9.9","port":22,"user":"u","group":"我的主机"}`)); err != nil {
+		t.Fatal(err)
+	}
+	body, err := remote.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	davDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(davDir, "vault.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dav := &webdav.Handler{FileSystem: webdav.Dir(davDir), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		if !ok || u != "alice" || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="serval"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		dav.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		h.a.stopSyncLoop()
+		srv.Close()
+	})
+
+	h.tt.Frame()
+	h.click("从同步恢复")
+	h.tt.Frame()
+	if !h.tt.HasText("恢复保险库") {
+		t.Fatalf("恢复面板没有打开: %q", h.tt.Texts())
+	}
+	h.a.restore.url = srv.URL
+	h.a.restore.user = "alice"
+	h.a.restore.password = pass
+	h.tt.Frame()
+	h.click("开始恢复")
+	h.pump("下载并锁定", func() bool {
+		return h.a.vault.State() == vault.Locked && h.tt.HasText("Serval 已锁定")
+	})
+	if h.a.vault.ID() != remote.ID() {
+		t.Fatalf("应换上远端保险库 id=%s want %s", h.a.vault.ID(), remote.ID())
+	}
+	raw, err := os.ReadFile(h.a.devicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), pass) {
+		t.Fatal("同步密码不应出现在 device.json")
+	}
+	got, err := h.device.Get(syncSecretName)
+	if err != nil || string(got) != pass {
+		t.Fatalf("安全存储里的密码不正确, err=%v", err)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(h.dir, "empty.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(onDisk), pass) {
+		t.Fatal("同步密码不应写进保险库")
+	}
+
+	h.a.unlock.password = masterPassword
+	h.tt.Frame()
+	h.click("解锁")
+	h.pump("解锁后看到远端主机", func() bool {
+		return h.a.vault.State() == vault.Unlocked && h.tt.HasText("remote-box")
+	})
+}
+
+func TestSyncJoinMergesBothSides(t *testing.T) {
+	h := newHarness(t)
+	raw, err := h.a.vault.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	remotePath := filepath.Join(dir, "vault.json")
+	if err := os.WriteFile(remotePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other, err := vault.Open(remotePath, "other-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Unlock(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Put("host", "remote-box", []byte(`{"name":"remote-box","address":"10.2.2.2","port":22,"user":"u","group":"我的主机"}`)); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(&webdav.Handler{FileSystem: webdav.Dir(dir), LockSystem: webdav.NewMemLS()})
+	t.Cleanup(func() {
+		h.a.stopSyncLoop()
+		srv.Close()
+	})
+
+	if err := h.a.apply(hostChange(hosts.Host{
+		ID: "local-box", Name: "local-box", Address: "10.3.3.3", Port: 22, User: "u", Group: defaultGroup,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	h.tt.Frame()
+	h.click("设置")
+	h.tt.Frame()
+	h.click("同步")
+	h.tt.Frame()
+	h.a.settingsPanel.syncURL = srv.URL
+	h.a.settingsPanel.syncUser = "alice"
+	h.a.settingsPanel.syncPassword = "merge-secret"
+	h.tt.Frame()
+	h.click("启用同步")
+	h.tt.Frame()
+	h.click("保存同步设置")
+	h.tt.Frame()
+	h.click("合并并同步")
+	h.pump("两边合并", func() bool {
+		return h.tt.HasText("local-box") && h.tt.HasText("remote-box") && remoteHasHost(t, dir, h.a.vault.Key(), "local-box") && remoteHasHost(t, dir, h.a.vault.Key(), "remote-box")
+	})
 }
 
 func remoteHasHost(t *testing.T, dir string, key []byte, id string) bool {

@@ -164,6 +164,19 @@ type settingsPanel struct {
 	probeBusy                       bool
 	probeOK                         bool
 	probeMsg                        string
+	// askSyncMerge 在已有数据的设备第一次开启同步时弹出合并说明。allowMerge 是用户确认之后。
+	askSyncMerge bool
+	allowMerge   bool
+}
+
+// restorePanel 是空设备“从同步恢复”的面板。
+type restorePanel struct {
+	open, fresh bool
+	url         string
+	user        string
+	password    string
+	busy        bool
+	err         string
 }
 
 // openSettings 打开设置面板。
@@ -325,7 +338,7 @@ func (a *app) submitChangePassword() {
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	if !p.open || a.setup.open {
+	if !p.open || a.setup.open || a.restore.open {
 		return
 	}
 	t := c.Theme()
@@ -553,8 +566,11 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	}).Description("密码只放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
 	c.Key("syncEnabled")
 	ui.Checkbox(c, &p.syncOn, "启用同步")
-	ui.Text(c, "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。").
-		FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	hint := "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。"
+	if a.vault != nil && a.vault.Empty() {
+		hint = "这台设备还没有数据。要下载另一台设备上的保险库，用侧栏的“从同步恢复”。"
+	}
+	ui.Text(c, hint).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 	ui.Row(c).Gap(8).Children(func() {
 		label := "测试连接"
 		if p.probeBusy {

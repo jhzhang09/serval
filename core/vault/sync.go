@@ -151,6 +151,58 @@ func (v *Vault) prune(now time.Time) {
 // ErrDifferentVault 表示要合并的文件属于另一个保险库。
 var ErrDifferentVault = errors.New("这是另一个保险库的文件，不能合并")
 
+// ErrNotEmpty 表示本地已有记录或已经设了主密码，不能整份换成另一份保险库。
+var ErrNotEmpty = errors.New("这台设备已有数据，不能整份替换")
+
+// Empty 报告这是不是一份还没有任何记录的未加密保险库。
+// 新建设备的空文件有自己的 VaultID，不能和已有保险库 Merge，只能 Adopt。
+func (v *Vault) Empty() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return !v.f.Protected && len(v.records) == 0 && len(v.f.Records) == 0
+}
+
+// Adopt 用远端的保险库文件换掉本地的空保险库，并原样写回磁盘。
+// 本地已有数据、远端损坏或格式更新时不改本地。换上有主密码的文件后处于锁定状态。
+func (v *Vault) Adopt(remote []byte) error {
+	var rf file
+	if err := json.Unmarshal(remote, &rf); err != nil || rf.VaultID == "" {
+		return errors.New("远端的保险库文件已损坏")
+	}
+	if rf.Format > formatVersion {
+		return fmt.Errorf("另一台设备的 Serval 版本较新（格式 %d），请先升级", rf.Format)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.f.Protected || len(v.records) > 0 || len(v.f.Records) > 0 {
+		return ErrNotEmpty
+	}
+	previous := v.f
+	prevClock := v.clock
+	v.f = rf
+	v.key = nil
+	v.records = map[string]*Record{}
+	v.order = nil
+	v.clock = hlc{}
+	v.clock.observe(rf.KeyRev)
+	for _, r := range rf.Records {
+		v.clock.observe(r.Rev)
+	}
+	if !rf.Protected {
+		for _, r := range rf.Records {
+			v.add(&Record{ID: r.ID, Kind: r.Kind, Rev: r.Rev, Deleted: r.Deleted, Data: []byte(r.Data)})
+		}
+	}
+	if err := writeAtomic(v.path, remote); err != nil {
+		v.f, v.clock = previous, prevClock
+		v.key = nil
+		v.records = map[string]*Record{}
+		v.order = nil
+		return err
+	}
+	return nil
+}
+
 // Merge 把另一台设备的保险库文件合并进来并保存，这是同步的核心。
 //
 // 规则：按记录 ID 对齐，各取版本号较大的一方；删除以墓碑表示，同样参与比较；

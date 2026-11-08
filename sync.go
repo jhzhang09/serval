@@ -8,6 +8,7 @@ import (
 
 	"serval/core/syncer"
 	"serval/core/vault"
+	"serval/design"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -66,9 +67,15 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 }
 
 // saveSyncSettings 把设置页里的草稿写入本机。密码留空时不覆盖系统安全存储里已有的密码。
+// 已有数据的设备第一次开启同步时，先说明会按记录合并，不会整份覆盖。
 func (a *app) saveSyncSettings() {
 	p := &a.settingsPanel
 	p.probeMsg = ""
+	if p.syncOn && !a.local.SyncOn && a.vault != nil && !a.vault.Empty() && !p.allowMerge {
+		p.askSyncMerge = true
+		return
+	}
+	p.allowMerge = false
 	if err := a.configureSync(p.syncURL, p.syncUser, p.syncPassword, p.syncOn); err != nil {
 		p.err = err.Error()
 		return
@@ -131,6 +138,131 @@ func (a *app) testSyncFromPanel() {
 
 func formatSyncTime(t time.Time) string {
 	return t.Local().Format("2006-01-02 15:04")
+}
+
+func (a *app) openRestore() {
+	a.settingsPanel = settingsPanel{}
+	a.restore = restorePanel{open: true, fresh: true}
+}
+
+// restoreDialog 让空设备下载已有的保险库，再用原来的主密码解锁。
+func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
+	p := &a.restore
+	if !p.open || a.setup.open {
+		return
+	}
+	sheet(c, colors, &p.open, &p.fresh, 460, 22, func() {
+		ui.Column(c).Gap(14).Children(func() {
+			ui.Text(c, "恢复保险库").FontSize(design.TextHeading).FontWeight(600)
+			ui.Text(c, "从同步服务下载已有的保险库。下载完成后输入原来的主密码解锁。").
+				FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+			ui.Field(c, "服务地址", func() {
+				c.Key("restoreURL")
+				ui.TextInput(c, &p.url).Placeholder("https://example.com/remote/").AutoFocus()
+			}).Description("填目录或 vault.json 的地址。")
+			ui.Field(c, "账号", func() {
+				c.Key("restoreUser")
+				ui.TextInput(c, &p.user).Placeholder("可选")
+			})
+			ui.Field(c, "同步密码", func() {
+				c.Key("restorePassword")
+				ui.TextInput(c, &p.password).Password()
+			}).Description("只保存在这台设备的系统安全存储里。")
+			if p.err != "" {
+				ui.Text(c, p.err).Key("restoreError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+			}
+			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+				ui.Button(c, "取消").Key("restoreCancel").Disabled(p.busy).OnClick(func() {
+					a.restore = restorePanel{}
+				})
+				label := "开始恢复"
+				if p.busy {
+					label = "正在恢复…"
+				}
+				ui.PrimaryButton(c, label).Key("restoreSubmit").Disabled(p.busy).OnClick(a.submitRestore)
+			})
+		})
+	})
+	if !p.open {
+		a.restore = restorePanel{}
+	}
+}
+
+// syncMergeDialog 在已有数据的设备开启同步前说明合并规则。默认按钮是取消。
+func (a *app) syncMergeDialog(c *ui.Context) {
+	p := &a.settingsPanel
+	if !p.askSyncMerge {
+		return
+	}
+	choice := ui.AlertDialog(c, &p.askSyncMerge, "与已有数据合并？",
+		"这台设备上已经有数据。同步会按记录合并，不会用一边覆盖另一边。",
+		"合并并同步", "取消")
+	if choice == 0 {
+		p.allowMerge = true
+		a.saveSyncSettings()
+	}
+}
+
+// submitRestore 下载远端保险库。本地是空的才整份换上；已有数据时拒绝覆盖。
+func (a *app) submitRestore() {
+	p := &a.restore
+	if p.busy {
+		return
+	}
+	fileURL, err := syncer.FileURL(p.url)
+	if err != nil {
+		p.err = err.Error()
+		return
+	}
+	if a.vault == nil || !a.vault.Empty() {
+		p.err = "这台设备已有数据，不能整份替换。请在设置的“同步”里开启同步，两边会按记录合并。"
+		return
+	}
+	if a.post == nil {
+		p.err = "窗口还没准备好，稍后再试。"
+		return
+	}
+	user, password := strings.TrimSpace(p.user), p.password
+	p.busy = true
+	p.err = ""
+	v := a.vault
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		body, _, err := (&syncer.Client{URL: fileURL, User: user, Password: password}).Download(ctx)
+		a.post(func() {
+			p := &a.restore
+			p.busy = false
+			if a.vault != v || !p.open {
+				return
+			}
+			if err != nil {
+				if errors.Is(err, syncer.ErrNotFound) {
+					p.err = "远端还没有保险库。如果这是第一台设备，请在设置里开启同步，把本机数据传上去。"
+					return
+				}
+				p.err = syncUserMessage(err)
+				return
+			}
+			if err := v.Adopt(body); err != nil {
+				p.err = err.Error()
+				return
+			}
+			if err := a.configureSync(fileURL, user, password, true); err != nil {
+				p.err = err.Error()
+				return
+			}
+			a.restore = restorePanel{}
+			a.hosts, a.keys, a.proxies = nil, nil, nil
+			a.settings = settings{}
+			if a.vault.State() == vault.Locked {
+				a.toast(ui.Toast{Title: "已下载保险库", Description: "输入原来的主密码即可解锁。"})
+				return
+			}
+			a.reload()
+			a.toast(ui.Toast{Title: "已从同步恢复"})
+		})
+	}()
 }
 
 func (a *app) syncPassword() string {
@@ -251,6 +383,9 @@ func (a *app) syncNow(manual bool) {
 			}
 			if err != nil {
 				a.syncErr = syncUserMessage(err)
+				if errors.Is(err, vault.ErrDifferentVault) && a.vault.Empty() {
+					a.syncErr = "远端是另一个保险库。这台设备还是空的，请用侧栏的“从同步恢复”。"
+				}
 				if manual {
 					a.toast(ui.Toast{Title: "没能同步", Description: a.syncErr, Type: "error"})
 				}

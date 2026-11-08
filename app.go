@@ -92,6 +92,7 @@ type app struct {
 	keyPanel      keyPanel
 	proxyPanel    proxyPanel
 	settingsPanel settingsPanel
+	restore       restorePanel
 	setup         setupSheet
 	unlock        unlockState
 	pal           palette
@@ -296,6 +297,7 @@ func (a *app) lockVault() {
 	a.keyPanel = keyPanel{}
 	a.setup = setupSheet{}
 	a.settingsPanel = settingsPanel{}
+	a.restore = restorePanel{}
 	a.pal = palette{}
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
