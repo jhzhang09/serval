@@ -8,6 +8,7 @@ import (
 
 	"serval/core/hosts"
 	"serval/core/keys"
+	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
 
@@ -53,6 +54,11 @@ type hostForm struct {
 	// passwordSaved 表示已经保存了密码；clearPassword 表示用户要求清除。
 	passwordSaved, clearPassword bool
 
+	// totp 是新粘贴的验证码密钥或 otpauth 链接，留空表示保持已保存的密钥。
+	totp string
+	// totpSaved 表示已经保存了密钥；clearTOTP 表示用户要求清除。
+	totpSaved, clearTOTP bool
+
 	err string
 }
 
@@ -71,7 +77,8 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
 		production:    h.Production,
 		passwordSaved: h.Password != "", keyName: noKey,
-		jumps: hosts.SplitJumps(h.ProxyJump),
+		totpSaved: h.TOTPSecret != "",
+		jumps:     hosts.SplitJumps(h.ProxyJump),
 	}
 	f.showJumps = len(f.jumps) > 0
 	if p, ok := a.proxyByID(h.ProxyID); ok {
@@ -212,6 +219,19 @@ func (a *app) saveForm() {
 	default:
 		h.Password = previous.Password
 	}
+	switch {
+	case f.clearTOTP:
+		h.TOTPSecret, h.TOTPDigits, h.TOTPPeriod, h.TOTPAlgorithm = "", 0, 0, ""
+	case strings.TrimSpace(f.totp) != "":
+		parsed, err := totp.Parse(f.totp)
+		if err != nil {
+			f.err = err.Error()
+			return
+		}
+		h.TOTPSecret, h.TOTPDigits, h.TOTPPeriod, h.TOTPAlgorithm = parsed.Secret, parsed.Digits, parsed.Period, parsed.Algorithm
+	default:
+		h.TOTPSecret, h.TOTPDigits, h.TOTPPeriod, h.TOTPAlgorithm = previous.TOTPSecret, previous.TOTPDigits, previous.TOTPPeriod, previous.TOTPAlgorithm
+	}
 	if f.editing != "" {
 		h.ID = f.editing
 	} else {
@@ -233,7 +253,7 @@ func (a *app) saveForm() {
 		f.err = "跳板机：" + err.Error()
 		return
 	}
-	if h.Password != "" && a.vault.State() == vault.Unprotected {
+	if (h.Password != "" || h.TOTPSecret != "") && a.vault.State() == vault.Unprotected {
 		a.requireProtection(a.saveForm)
 		return
 	}
@@ -414,6 +434,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			}
 
 			a.routeFields(c, colors, f)
+			a.totpField(c, f)
 			c.Key("addProduction")
 			ui.Checkbox(c, &f.production, "这是生产环境")
 			if f.err != "" {
@@ -451,6 +472,37 @@ func (a *app) keyField(c *ui.Context, f *hostForm) {
 	ui.Field(c, "私钥", func() {
 		c.Key("addKey")
 		ui.Select(c, &f.keyName, options)
+	})
+}
+
+// totpField 是验证码密钥。输入用密码框遮住，保存后不再回显，和登录密码一样。
+func (a *app) totpField(c *ui.Context, f *hostForm) {
+	placeholder := "粘贴 otpauth:// 链接或密钥"
+	switch {
+	case f.totpSaved && f.clearTOTP:
+		placeholder = "保存后清除已保存的验证码密钥"
+	case f.totpSaved:
+		placeholder = "已保存，留空保持不变"
+	}
+	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+			ui.Field(c, "验证码", func() {
+				c.Key("addTOTP")
+				ui.TextInput(c, &f.totp).Password().Placeholder(placeholder)
+			}).Description("多步验证问到验证码时自动填写。")
+		})
+		if f.totpSaved {
+			text := "清除验证码"
+			if f.clearTOTP {
+				text = "撤销清除验证码"
+			}
+			ui.Button(c, text).Key("addTOTPClear").OnClick(func() {
+				f.clearTOTP = !f.clearTOTP
+				if f.clearTOTP {
+					f.totp = ""
+				}
+			})
+		}
 	})
 }
 

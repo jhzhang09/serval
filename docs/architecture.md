@@ -16,16 +16,17 @@ flowchart TB
         vault["vault<br/>加密保险库 · 时钟 · 合并"]
         keys["keys<br/>私钥解析与生成"]
         hosts["hosts<br/>主机结构 · 链路解析"]
+        totp["totp<br/>RFC 6238 验证码"]
     end
     mygo["MyGo：窗口、原生 UI、终端插件、玻璃插件、系统安全存储"]
     view --> state
     view --> design
-    state --> sshconn & vault & keys & hosts
+    state --> sshconn & vault & keys & hosts & totp
     view --> mygo
     state --> mygo
 ```
 
-依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。目前四个 core 包互不引用，需要互相引用时只能单向，不能成环。
+依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。目前这些 core 包互不引用，需要互相引用时只能单向，不能成环。
 
 ## 分层职责
 
@@ -50,6 +51,10 @@ flowchart TB
 - `Apply` 原子写入一组修改，写盘失败时内存回滚；`JSONChange` 写入时保留不认识的字段。
 - 版本号是混合逻辑时钟；删除留墓碑，90 天后清理并推进水位；`Merge` 按记录合并另一台设备的文件。
 - 所有方法并发安全（内部一把锁）。
+
+### core/totp
+
+`totp.Parse` 接受 `otpauth://totp/` 链接或 Base32 密钥，`totp.Code` 按 RFC 6238 计算当前验证码。不支持 HOTP。应用层在多步验证的问题像验证码时调用它，算不出来才询问用户。
 
 ### core/keys、core/hosts
 
