@@ -139,6 +139,8 @@ type tab struct {
 	// latency 是最近一次保活的往返时间；stalled 表示服务器长时间没有响应。
 	latency time.Duration
 	stalled bool
+	// local 为真表示运行在本机伪终端的本地 shell。
+	local bool
 
 	// restoreSlot 是恢复会话时这个标签在上次会话里的位置（从 1 开始），普通标签为 0。
 	restoreSlot int
@@ -699,9 +701,33 @@ func (a *app) restorePaneNode(t *tab, shells []*sshconn.Shell, idx *int, layout 
 	}, nil
 }
 
+// openLocalTerminal 打开本机终端标签。
+func (a *app) openLocalTerminal() {
+	a.nextID++
+	t := &tab{
+		id:    a.nextID,
+		local: true,
+		// 标签名不用“本地终端”：侧栏的按钮已经叫这个名字，同一界面里可点击的文字不能重复。
+		host: hosts.Host{
+			ID:   "local",
+			Name: "本机",
+		},
+	}
+	pane, err := a.newPane(t, nil)
+	if err != nil {
+		a.notice = fmt.Sprintf("启动本地终端失败: %v", err)
+		return
+	}
+	t.root = pane
+	t.focus = pane
+	a.tabs = append(a.tabs, t)
+	a.active = len(a.tabs) - 1
+	a.arrived[pane.id] = true
+}
+
+// createTerminal 创建终端控件。shell 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
 func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.Terminal, error) {
-	return terminal.New(terminal.Options{
-		Conn:       shell,
+	opts := terminal.Options{
 		Font:       a.terminalFont(),
 		Theme:      a.terminalTheme(false),
 		DarkTheme:  a.terminalTheme(true),
@@ -714,7 +740,13 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		OnCopy: func(_ string, by terminal.CopySource) {
 			a.post(func() { a.copied(by) })
 		},
-	})
+	}
+	// 只在有远程 shell 时设置 Conn：值为 nil 的 *Shell 放进接口后接口并不是 nil，
+	// 终端插件会以为有连接，本地终端就打不开了。
+	if shell != nil {
+		opts.Conn = shell
+	}
+	return terminal.New(opts)
 }
 
 func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
@@ -838,7 +870,11 @@ func (a *app) split(t *tab, vertical bool) {
 	}
 	t.splitting = true
 	go func() {
-		shell, err := t.client.OpenShell(80, 24)
+		var shell *sshconn.Shell
+		var err error
+		if !t.local {
+			shell, err = t.client.OpenShell(80, 24)
+		}
 		a.post(func() {
 			t.splitting = false
 			if err != nil {
@@ -846,12 +882,16 @@ func (a *app) split(t *tab, vertical bool) {
 				return
 			}
 			if !slices.Contains(a.tabs, t) {
-				shell.Close()
+				if shell != nil {
+					shell.Close()
+				}
 				return
 			}
 			leaf, err := a.newPane(t, shell)
 			if err != nil {
-				shell.Close()
+				if shell != nil {
+					shell.Close()
+				}
 				a.notice = fmt.Sprintf("启动终端失败: %v", err)
 				return
 			}
@@ -949,7 +989,9 @@ func (t *tab) close() {
 	if t.reconnectCancel != nil {
 		t.reconnectCancel()
 	}
-	t.stop()
+	if t.stop != nil {
+		t.stop()
+	}
 	t.root.each(func(p *pane) { p.term.Close() })
 	if t.files != nil {
 		t.files.Close()
@@ -973,6 +1015,11 @@ func (a *app) closeAll() {
 
 // reconnect 用同样的主机信息重新连接，替换已断开的标签。
 func (a *app) reconnect(t *tab) {
+	if t.local {
+		a.closeTab(t)
+		a.openLocalTerminal()
+		return
+	}
 	h := t.host
 	a.closeTab(t)
 	a.connect(h, nil)
@@ -1225,7 +1272,7 @@ func (a *app) toggleFiles() {
 }
 
 func (a *app) ensureFiles(t *tab) {
-	if t.files != nil || t.filesBusy {
+	if t.local || t.client == nil || t.files != nil || t.filesBusy {
 		return
 	}
 	t.filesBusy = true

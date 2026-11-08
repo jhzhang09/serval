@@ -190,6 +190,15 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				ui.Icon(c, design.Icon("plus")).FontSize(14).TextColor(t.TextMuted)
 				ui.Text(c, "添加主机").TextColor(t.TextMuted)
 			}).OnClick(func() { a.openAdd() })
+			localBtn := ui.ButtonBase(c).Key("openLocal").Label("本地终端").Height(30).Padding(0, 10).Gap(8).
+				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+			if localBtn.Hovered() {
+				localBtn.Background(colors.Hover)
+			}
+			localBtn.Children(func() {
+				ui.Icon(c, design.Icon("terminal")).FontSize(14).TextColor(t.TextMuted)
+				ui.Text(c, "本地终端").TextColor(t.TextMuted)
+			}).OnClick(a.openLocalTerminal)
 			keysButton := ui.ButtonBase(c).Key("openKeys").Label("密钥").Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if keysButton.Hovered() {
@@ -303,13 +312,15 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 			}
 		})
 		if t := a.current(); t != nil {
-			if !a.isSavedHost(t.host.ID) {
+			if !t.local && !a.isSavedHost(t.host.ID) { // 本地终端不是主机，不能保存
 				ui.Button(c, "保存为主机").Key("saveAsHost").Height(28).Padding(0, 8).
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
 			iconButton(c, colors, "columns-2", fmt.Sprintf("向右拆分（%s）", shortcutText("D")), func() { a.split(t, false) })
 			iconButton(c, colors, "rows-2", "向下拆分", func() { a.split(t, true) })
-			iconButton(c, colors, "folder", fmt.Sprintf("文件（%s）", shortcutText("J")), a.toggleFiles)
+			if !t.local {
+				iconButton(c, colors, "folder", fmt.Sprintf("文件（%s）", shortcutText("J")), a.toggleFiles)
+			}
 		}
 	})
 }
@@ -472,10 +483,19 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				ui.Text(c, "取消").TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.cancelReconnect(t) })
 		case p.ended:
-			ui.Text(c, "连接已结束").Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
+			ui.Text(c, "会话已结束").Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
 			ui.ButtonBase(c).Key("reconnect").Label("重新连接").Shrink(0).Children(func() {
 				ui.Text(c, "重新连接").TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.reconnect(t) })
+		case t.local:
+			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label("本地").Children(func() {
+				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
+				s := dot.Keyframes("pulse", design.Pulse)
+				dot.Scale(s, s)
+				if !tiny {
+					ui.Text(c, "本地").TextColor(colors.TextFaint).NoWrap()
+				}
+			})
 		case t.stalled:
 			chip(c, "服务器没有响应", theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
 		default:
