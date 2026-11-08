@@ -223,7 +223,7 @@ func TestRzCancelledInChooserReturnsToShell(t *testing.T) {
 func assertShellUsable(t *testing.T, h *harness, tb *tab, dir string) {
 	t.Helper()
 	marker := filepath.Join(dir, "shell-ok")
-	h.pump("传输结束", func() bool { return tb.focus.zconn.active == nil })
+	h.pump("传输结束", func() bool { return !tb.focus.zconn.transferring() })
 	tb.focus.term.Send([]byte("touch " + shellQuote(marker) + "\r"))
 	h.pump("shell 可以继续使用", func() bool {
 		_, err := os.Stat(marker)
