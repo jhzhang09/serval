@@ -63,10 +63,10 @@ flowchart TB
 | `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
 | `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
 | `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
-| `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；重置主机密钥 |
+| `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
-| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换等）、本机最近使用主机记录 |
+| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
