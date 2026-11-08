@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"serval/core/vault"
 
@@ -253,4 +254,229 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	h.pump("重新核对指纹", func() bool { return len(h.a.prompts) > 0 })
 	h.click("信任并连接")
 	h.pump("会话建立", func() bool { return len(h.a.tabs) == 1 })
+}
+
+// 修改主密码流程：旧密码错误提示、新密码两次不一致提示、修改成功后旧密码不能解锁、新密码可以解锁。
+func TestChangeMasterPasswordFlow(t *testing.T) {
+	h := newHarness(t)
+	h.tt.Frame()
+
+	h.click("设置")
+	h.tt.Frame()
+	h.click("修改主密码…")
+	h.tt.Frame()
+	if !h.a.settingsPanel.changePwOpen {
+		t.Fatal("修改主密码表单没有打开")
+	}
+
+	// 1. 旧主密码错误
+	h.a.settingsPanel.currentPassword = "wrong-password"
+	h.a.settingsPanel.newPassword = "brand-new-password"
+	h.a.settingsPanel.confirmPassword = "brand-new-password"
+	h.tt.Frame()
+	h.click("保存新密码")
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
+	if !strings.Contains(h.a.settingsPanel.changePwErr, "当前主密码不正确") {
+		t.Fatalf("应提示当前主密码不正确: %q", h.a.settingsPanel.changePwErr)
+	}
+
+	// 2. 两次新密码不一致
+	h.a.settingsPanel.currentPassword = masterPassword
+	h.a.settingsPanel.confirmPassword = "mismatched-password"
+	h.tt.Frame()
+	h.click("保存新密码")
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
+	if !strings.Contains(h.a.settingsPanel.changePwErr, "不一致") {
+		t.Fatalf("应提示两次输入不一致: %q", h.a.settingsPanel.changePwErr)
+	}
+
+	// 3. 修改成功
+	h.a.settingsPanel.confirmPassword = "brand-new-password"
+	h.tt.Frame()
+	h.click("保存新密码")
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
+	if h.a.settingsPanel.changePwOpen {
+		t.Fatal("修改成功后应收起修改密码表单")
+	}
+
+	// 4. 手动锁定后验证解锁
+	h.a.lockVault()
+	h.tt.Frame()
+	if h.a.vault.State() != vault.Locked {
+		t.Fatal("锁定后状态应为 Locked")
+	}
+	if len(h.a.hosts) != 0 || len(h.a.keys) != 0 {
+		t.Fatalf("锁定后内存中的数据应清空: hosts=%d keys=%d", len(h.a.hosts), len(h.a.keys))
+	}
+
+	// 尝试用旧密码解锁
+	h.a.unlock.password = masterPassword
+	h.tt.Frame()
+	h.click("解锁")
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
+	if h.a.vault.State() != vault.Locked || !strings.Contains(h.a.unlock.err, "不正确") {
+		t.Fatalf("旧密码解锁应失败: state=%v err=%q", h.a.vault.State(), h.a.unlock.err)
+	}
+
+	// 用新密码解锁
+	h.a.unlock.password = "brand-new-password"
+	h.tt.Frame()
+	h.click("解锁")
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
+	if h.a.vault.State() != vault.Unlocked {
+		t.Fatalf("新密码解锁失败: state=%v err=%q", h.a.vault.State(), h.a.unlock.err)
+	}
+	if len(h.a.hosts) == 0 {
+		t.Fatal("解锁后应恢复主机列表")
+	}
+}
+
+// 命令面板手动锁定：有活跃会话时二次确认并关闭会话，锁定后清除内存数据。
+func TestManualLockWithOpenSessions(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	if len(h.a.tabs) != 1 {
+		t.Fatalf("tabs=%d", len(h.a.tabs))
+	}
+
+	// 从命令面板触发锁定
+	h.click("搜索主机和操作")
+	h.a.pal.query = "锁定"
+	h.tt.Frame()
+	h.click("锁定保险库")
+	h.tt.Frame()
+
+	// 弹窗提示有 1 个会话将关闭
+	if !h.a.askingLock || !h.tt.HasText("锁定将关闭当前打开的 1 个会话") {
+		t.Fatalf("未提示会话将被关闭: askingLock=%v texts=%q", h.a.askingLock, h.tt.Texts())
+	}
+
+	// 取消锁定
+	h.click("取消")
+	h.tt.Frame()
+	if h.a.askingLock || h.a.vault.State() != vault.Unlocked || len(h.a.tabs) != 1 {
+		t.Fatalf("取消后应保持解锁和会话: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
+	}
+
+	// 再次触发并确认锁定
+	h.click("搜索主机和操作")
+	h.a.pal.query = "锁定"
+	h.tt.Frame()
+	h.click("锁定保险库")
+	h.tt.Frame()
+	h.click("锁定")
+	h.tt.Frame()
+
+	if h.a.vault.State() != vault.Locked {
+		t.Fatalf("确认后应锁定: state=%v", h.a.vault.State())
+	}
+	if len(h.a.tabs) != 0 {
+		t.Fatalf("锁定后所有会话应关闭: tabs=%d", len(h.a.tabs))
+	}
+	if len(h.a.hosts) != 0 || len(h.a.keys) != 0 {
+		t.Fatalf("锁定后数据应清空: hosts=%d keys=%d", len(h.a.hosts), len(h.a.keys))
+	}
+	if !h.tt.HasText("Serval 已锁定") {
+		t.Fatalf("锁定后应显示锁定界面: %q", h.tt.Texts())
+	}
+}
+
+// 自动锁定：在设定的闲置时间后自动关闭全部会话并锁定保险库。
+func TestAutoLockFollowsSystemIdleTime(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	idle := time.Duration(0)
+	h.a.idleTime = func() time.Duration { return idle }
+
+	// 设置 15 分钟自动锁定
+	h.click("设置")
+	h.tt.Frame()
+	h.click("15分钟")
+	h.tt.Frame()
+	h.click("完成")
+	h.tt.Frame()
+	if h.a.local.AutoLockMinutes != 15 {
+		t.Fatalf("AutoLockMinutes=%d", h.a.local.AutoLockMinutes)
+	}
+
+	// 真实运行时，定时检查之间界面会不断重绘（终端输出、动画、定时器本身的 post）。
+	// 重绘不能算作用户活动：这里每次检查前都渲染一帧。
+	check := func(d time.Duration) {
+		idle = d
+		h.tt.Frame()
+		h.a.checkAutoLock()
+		h.tt.Frame()
+	}
+	check(10 * time.Minute)
+	if h.a.vault.State() != vault.Unlocked || len(h.a.tabs) != 1 {
+		t.Fatalf("闲置 10 分钟不应锁定: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
+	}
+	check(30 * time.Second) // 用户动了一下键盘或鼠标，系统闲置时间归零后重新累计
+	if h.a.vault.State() != vault.Unlocked {
+		t.Fatal("用户活动后不应锁定")
+	}
+
+	// 锁定前留一个填了一半的密码询问，锁定后内存里不应留下。
+	h.a.auth = authSheet{open: true, secret: "half-typed"}
+	check(16 * time.Minute)
+	if h.a.vault.State() != vault.Locked || len(h.a.tabs) != 0 {
+		t.Fatalf("闲置超过 15 分钟应锁定并关闭会话: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
+	}
+	if h.a.auth.secret != "" || h.a.auth.open || len(h.a.hosts) != 0 {
+		t.Fatal("锁定后不应在内存里留下密码询问或主机信息")
+	}
+	if !h.tt.HasText("Serval 已锁定") {
+		t.Fatalf("应显示锁定页面: %q", h.tt.Texts())
+	}
+}
+
+// 设置中关闭“在这台设备上记住”后，安全存储中的密钥被删除，重启需输入主密码。
+func TestRememberOnDeviceToggleInSettings(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+	if !h.a.isRememberedOnDevice() {
+		t.Fatal("初始应已记住主密码")
+	}
+
+	// 打开设置，取消勾选“在这台设备上记住主密码”
+	h.click("设置")
+	h.tt.Frame()
+	h.click("在这台设备上记住主密码")
+	h.tt.Frame()
+	if h.a.isRememberedOnDevice() {
+		t.Fatal("点击后应清除记住的密码")
+	}
+	h.click("完成")
+	h.tt.Frame()
+
+	// 重启后不能自动解锁，展示锁定界面
+	h.reopen()
+	if h.a.vault.State() != vault.Locked {
+		t.Fatalf("清除后重启应为锁定状态: state=%v", h.a.vault.State())
+	}
+	if !h.tt.HasText("Serval 已锁定") {
+		t.Fatalf("应显示锁定界面: %q", h.tt.Texts())
+	}
+
+	// 解锁（不勾选在这台设备上记住）
+	h.a.unlock.password = masterPassword
+	h.a.unlock.remember = false
+	h.tt.Frame()
+	h.click("解锁")
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
+	if h.a.vault.State() != vault.Unlocked {
+		t.Fatalf("解锁失败: state=%v", h.a.vault.State())
+	}
+	if h.a.isRememberedOnDevice() {
+		t.Fatal("未勾选记住时解锁，不应记在安全存储中")
+	}
+
+	// 再次在设置里打开“记住”
+	h.click("设置")
+	h.tt.Frame()
+	h.click("在这台设备上记住主密码")
+	h.tt.Frame()
+	if !h.a.isRememberedOnDevice() {
+		t.Fatal("重新勾选后应记在安全存储中")
+	}
 }

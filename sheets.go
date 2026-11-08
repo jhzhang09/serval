@@ -188,3 +188,20 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 		})
 	})
 }
+
+// lockConfirmDialog 在有打开的会话时提示用户锁定将关闭所有会话。
+func (a *app) lockConfirmDialog(c *ui.Context) {
+	if !a.askingLock {
+		return
+	}
+	message := fmt.Sprintf("锁定将关闭当前打开的 %d 个会话。确定要锁定吗？", len(a.tabs))
+	open := true
+	choice := ui.AlertDialog(c, &open, "锁定保险库？", message, "锁定", "取消")
+	if choice == -1 && open {
+		return
+	}
+	a.askingLock = false
+	if choice == 0 {
+		a.lockVault()
+	}
+}

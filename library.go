@@ -276,6 +276,15 @@ func (a *app) rememberOnDevice(remember bool) {
 	}
 }
 
+// isRememberedOnDevice 检查这台设备的安全存储里是否记住了保险库密钥。
+func (a *app) isRememberedOnDevice() bool {
+	if a.device == nil || a.vault == nil {
+		return false
+	}
+	key, err := a.device.Get(rememberedKeyName(a.vault.ID()))
+	return err == nil && len(key) > 0
+}
+
 // unlockWithRemembered 启动时用本机记住的密钥自动解锁。没有记住或者密钥失效时返回 false，
 // 由界面请用户输入主密码。
 func (a *app) unlockWithRemembered() bool {
