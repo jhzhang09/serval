@@ -54,7 +54,7 @@ func (h *harness) addHostWithKey(name string, server *devsshd.Server, keyName st
 func TestImportKeyFileAndConnect(t *testing.T) {
 	keyPath, server, generated := keyServer(t, "kp")
 	h := newHarness(t)
-	h.a.pickFile = func() (string, error) { return keyPath, nil }
+	h.a.chooseKeyFile = func() (string, error) { return keyPath, nil }
 
 	h.click("密钥")
 	h.tt.Frame()

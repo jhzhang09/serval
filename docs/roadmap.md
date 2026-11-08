@@ -240,7 +240,7 @@
 
 ## P 文件（SFTP）
 
-### P1 上传与下载（M，返工：`feat/P1-upload-download`）
+### P1 上传与下载（M，已完成：`feat/P1-upload-download`）
 
 - **范围**：文件抽屉里右键下载到本地（选择保存位置）、上传本地文件（文件选择框）；传输队列显示进度、速度、取消；大文件不一次读进内存。
 - **涉及**：`core/sshconn/sftp.go`（流式读写）、新文件 `files.go`、`view.go` 的 `filesDrawer`。

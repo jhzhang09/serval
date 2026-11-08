@@ -68,7 +68,7 @@ func (a *app) showKey(id string) {
 // pickKeyFile 弹出系统的文件选择框（默认在 ~/.ssh），把选中的私钥读进输入框。
 // 选择框会阻塞，放在后台，结果回到主线程。
 func (a *app) pickKeyFile() {
-	pick := a.pickFile
+	pick := a.chooseKeyFile
 	go func() {
 		path, err := pick()
 		a.post(func() {

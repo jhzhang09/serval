@@ -80,8 +80,13 @@ type app struct {
 	// idleTime 返回用户多久没有使用键盘和鼠标（系统级，正式运行时是 mygo.Power.IdleTime）。
 	// 自动锁定按它判断：不能用“界面最后一次重绘”的时间，终端输出、动画、定时器都会触发重绘。
 	idleTime func() time.Duration
-	// pickFile 弹出文件选择框，返回选中的路径（取消时为空）。测试里替换掉。
-	pickFile func() (string, error)
+	// 系统文件选择框，返回选中的路径（取消时为空）。正式运行时由 installSystemDialogs 设置，测试里替换掉。
+	// chooseKeyFile 选私钥（默认打开 ~/.ssh）；chooseUploadFile 选要上传的文件；chooseSavePath 选下载保存的位置。
+	chooseKeyFile    func() (string, error)
+	chooseUploadFile func() (string, error)
+	chooseSavePath   func(defaultName string) (string, error)
+	// pendingUpload 是等待确认替换远端同名文件的上传。
+	pendingUpload *pendingUpload
 }
 
 // hostKeyPrompt 是等待用户回答的未知主机询问。
@@ -157,6 +162,8 @@ type tab struct {
 	followed   string
 	// listGen 用来丢弃过期的目录结果：用户连续切换目录时，只有最后一次请求生效。
 	listGen int
+
+	transfers []*fileTransfer
 }
 
 // pane 是窗格树的节点：叶子节点持有一个终端，内部节点持有两个子窗格。
@@ -1012,6 +1019,11 @@ func (a *app) closeTab(t *tab) {
 }
 
 func (t *tab) close() {
+	for _, tr := range t.transfers {
+		if tr.cancel != nil {
+			tr.cancel()
+		}
+	}
 	if t.reconnectCancel != nil {
 		t.reconnectCancel()
 	}
