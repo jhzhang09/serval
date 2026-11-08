@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"serval/locales"
+
 	"github.com/egoist/mygo/ui"
 )
 
@@ -57,7 +59,7 @@ func (a *app) startDownload(t *tab, remotePath, fileName string) {
 	}
 	localPath, err := a.chooseSavePath(fileName)
 	if err != nil {
-		a.toast(ui.Toast{Title: "无法打开保存对话框", Description: err.Error(), Type: "error"})
+		a.toast(ui.Toast{Title: locales.FileOpenSaveDialogFailed(), Description: err.Error(), Type: "error"})
 		return
 	}
 	if localPath == "" {
@@ -74,7 +76,7 @@ func (a *app) startUpload(t *tab) {
 	}
 	localPath, err := a.chooseUploadFile()
 	if err != nil {
-		a.toast(ui.Toast{Title: "无法打开文件选择框", Description: err.Error(), Type: "error"})
+		a.toast(ui.Toast{Title: locales.FileOpenPickerFailed(), Description: err.Error(), Type: "error"})
 		return
 	}
 	if localPath == "" {
@@ -95,7 +97,7 @@ func (a *app) uploadTo(t *tab, localPath, remotePath string) {
 				return
 			}
 			if err != nil {
-				a.toast(ui.Toast{Title: "上传 " + fileName + " 失败", Description: transferReason(err), Type: "error"})
+				a.toast(ui.Toast{Title: locales.FileUploadFailedNamed(fileName), Description: transferReason(err), Type: "error"})
 				return
 			}
 			if exists {
@@ -114,8 +116,8 @@ func (a *app) uploadConfirmDialog(c *ui.Context) {
 	}
 	u := a.pendingUploads[0]
 	open := true
-	choice := ui.AlertDialog(c, &open, "替换 "+u.fileName+"？",
-		fmt.Sprintf("服务器上的 %s 里已经有同名文件，上传会替换它。", path.Dir(u.remotePath)), "替换", "取消")
+	choice := ui.AlertDialog(c, &open, locales.FileReplaceNamed(u.fileName),
+		locales.FileReplaceExists(path.Dir(u.remotePath)), locales.FileReplace(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
@@ -154,20 +156,29 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 		a.post(func() {
 			defer cancel()
 			tr.done.Store(true)
-			verb := "下载"
-			if kind == transferUpload {
-				verb = "上传"
-			}
+			upload := kind == transferUpload
 			switch {
 			case ctx.Err() != nil:
-				tr.err = "已取消"
-				a.toast(ui.Toast{Title: "已取消" + verb + " " + fileName})
+				tr.err = locales.FileCancelled()
+				title := locales.FileDownloadCancelledNamed(fileName)
+				if upload {
+					title = locales.FileUploadCancelledNamed(fileName)
+				}
+				a.toast(ui.Toast{Title: title})
 			case err != nil:
 				tr.err = transferReason(err)
-				a.toast(ui.Toast{Title: verb + " " + fileName + " 失败", Description: tr.err, Type: "error"})
+				title := locales.FileDownloadFailedNamed(fileName)
+				if upload {
+					title = locales.FileUploadFailedNamed(fileName)
+				}
+				a.toast(ui.Toast{Title: title, Description: tr.err, Type: "error"})
 			default:
-				a.toast(ui.Toast{Title: "已" + verb + " " + fileName})
-				if kind == transferUpload && slices.Contains(a.tabs, t) {
+				title := locales.FileDownloadedNamed(fileName)
+				if upload {
+					title = locales.FileUploadedNamed(fileName)
+				}
+				a.toast(ui.Toast{Title: title})
+				if upload && slices.Contains(a.tabs, t) {
 					a.openDir(t, t.dir)
 				}
 			}
@@ -179,11 +190,11 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 func transferReason(err error) string {
 	switch {
 	case errors.Is(err, os.ErrPermission):
-		return "没有权限。检查文件和目录的权限，或者换一个位置。"
+		return locales.FileNoPermission()
 	case errors.Is(err, os.ErrNotExist):
-		return "文件或目录不存在，可能已经被删除或改名。"
+		return locales.FileNotExist()
 	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
-		return "连接中断了，请重新连接后再试。"
+		return locales.FileConnectionLost()
 	}
 	return err.Error()
 }
@@ -233,7 +244,7 @@ func (a *app) openNewFolder(t *tab) {
 		kind:  fileOpNewFolder,
 		tab:   t,
 		path:  t.dir,
-		input: "新建文件夹",
+		input: locales.NewFolder(),
 	}
 }
 
@@ -272,11 +283,11 @@ func (a *app) openPermissions(t *tab, fullPath, name string, mode fs.FileMode) {
 func validateFileName(name string) error {
 	switch {
 	case name == "":
-		return errors.New("名称不能为空。")
+		return errors.New(locales.FileNameEmpty())
 	case name == "." || name == "..":
-		return errors.New("名称不能是 . 或 ..。")
+		return errors.New(locales.FileNameDot())
 	case strings.ContainsAny(name, "/\x00"):
-		return errors.New("名称里不能有 /。")
+		return errors.New(locales.FileNameSlash())
 	}
 	return nil
 }
@@ -300,19 +311,19 @@ func (a *app) submitFileOp() {
 		}
 		if op.kind == fileOpNewFolder {
 			dir := path.Join(op.path, input)
-			run, done = func() error { return files.Mkdir(dir) }, "已创建文件夹 "+input
+			run, done = func() error { return files.Mkdir(dir) }, locales.FileFolderCreatedNamed(input)
 		} else {
 			from, to := op.path, path.Join(path.Dir(op.path), input)
-			run, done = func() error { return files.Rename(from, to) }, "已重命名为 "+input
+			run, done = func() error { return files.Rename(from, to) }, locales.FileRenamedNamed(input)
 		}
 	case fileOpPermissions:
 		perm, err := strconv.ParseUint(input, 8, 32)
 		if err != nil || perm > 0o7777 {
-			op.err = "请输入八进制权限，例如 755 或 0644。"
+			op.err = locales.FileModeInvalid()
 			return
 		}
 		target := op.path
-		run, done = func() error { return files.Chmod(target, fs.FileMode(perm)) }, "已把权限改为 "+fmt.Sprintf("%04o", perm)
+		run, done = func() error { return files.Chmod(target, fs.FileMode(perm)) }, locales.FileModeChanged(fmt.Sprintf("%04o", perm))
 	default:
 		return
 	}
@@ -358,12 +369,12 @@ func (a *app) confirmDeleteFile() {
 			if err != nil {
 				reason := transferReason(err)
 				if del.isDir && !errors.Is(err, os.ErrPermission) && !errors.Is(err, os.ErrNotExist) {
-					reason = "只能删除空文件夹，请先删除里面的文件。"
+					reason = locales.FileDeleteNotEmpty()
 				}
-				a.toast(ui.Toast{Title: "没有删除 " + del.name, Description: reason, Type: "error"})
+				a.toast(ui.Toast{Title: locales.FileNotDeletedNamed(del.name), Description: reason, Type: "error"})
 				return
 			}
-			a.toast(ui.Toast{Title: "已删除 " + del.name})
+			a.toast(ui.Toast{Title: locales.FileDeletedNamed(del.name)})
 			if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
 			}
@@ -382,7 +393,7 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 	for _, local := range paths {
 		info, err := os.Stat(local)
 		if err != nil {
-			a.toast(ui.Toast{Title: "无法上传 " + filepath.Base(local), Description: err.Error(), Type: "error"})
+			a.toast(ui.Toast{Title: locales.FileCannotUploadNamed(filepath.Base(local)), Description: err.Error(), Type: "error"})
 			continue
 		}
 		if info.IsDir() {
@@ -417,10 +428,10 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 			home, err := files.Home()
 			a.post(func() {
 				if err != nil {
-					a.toast(ui.Toast{Title: "无法上传", Description: transferReason(err), Type: "error"})
+					a.toast(ui.Toast{Title: locales.FileCannotUpload(), Description: transferReason(err), Type: "error"})
 					return
 				}
-				a.toast(ui.Toast{Title: "上传到了主目录", Description: "没有拿到终端的当前目录（服务器的 shell 没有上报），文件放在 " + home + "。"})
+				a.toast(ui.Toast{Title: locales.FileUploadedToHome(), Description: locales.FileNoCwd(home)})
 				upload(home)
 			})
 		}()

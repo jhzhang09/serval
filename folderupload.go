@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"serval/core/sshconn"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -53,11 +54,11 @@ func (a *app) planFolderUpload(t *tab, localRoot, remoteParent string) {
 				return
 			}
 			if err != nil {
-				a.toast(ui.Toast{Title: "无法上传文件夹 " + name, Description: transferReason(err), Type: "error"})
+				a.toast(ui.Toast{Title: locales.FolderCannotUploadNamed(name), Description: transferReason(err), Type: "error"})
 				return
 			}
 			if len(plan.files) == 0 && len(plan.dirs) == 0 {
-				a.toast(ui.Toast{Title: "文件夹 " + name + " 里没有可以上传的文件"})
+				a.toast(ui.Toast{Title: locales.FolderNothingToUpload(name)})
 				return
 			}
 			if len(plan.conflicts) > 0 {
@@ -111,7 +112,7 @@ func (plan *folderPlan) checkRemote(files *sshconn.Files) error {
 	for _, e := range entries {
 		if e.Name == plan.name {
 			if !e.IsDir {
-				return fmt.Errorf("服务器上的 %s 已经有一个叫 %s 的文件，不是文件夹，没法合并", path.Dir(plan.remoteRoot), plan.name)
+				return fmt.Errorf("%s", locales.FolderRemoteNotFolder(path.Dir(plan.remoteRoot), plan.name))
 			}
 			existing[""] = true
 		}
@@ -142,8 +143,7 @@ func (plan *folderPlan) checkRemote(files *sshconn.Files) error {
 			case localIsDir && e.IsDir:
 				existing[rel] = true
 			case localIsDir || localIsFile && e.IsDir:
-				return fmt.Errorf("服务器上的 %s 和要上传的类型不同（一个是文件、一个是文件夹），没法合并",
-					path.Join(plan.remoteRoot, rel))
+				return fmt.Errorf("%s", locales.FolderTypeMismatch(path.Join(plan.remoteRoot, rel)))
 			case localIsFile:
 				plan.conflicts[rel] = true
 			}
@@ -167,14 +167,14 @@ func (a *app) folderConflictDialog(c *ui.Context) {
 			}
 		}
 	}
-	list := strings.Join(names, "、")
+	list := strings.Join(names, locales.FileListSeparator())
 	if len(plan.conflicts) > len(names) {
-		list += " 等"
+		list += locales.FolderConflictEtc()
 	}
 	open := true
-	choice := ui.AlertDialog(c, &open, fmt.Sprintf("文件夹 %s 里有 %d 个同名文件", plan.name, len(plan.conflicts)),
-		fmt.Sprintf("服务器上的 %s 已经存在，上传会合并进去。其中 %s 在服务器上已有同名文件。", plan.remoteRoot, list),
-		"全部替换", "全部跳过", "取消")
+	choice := ui.AlertDialog(c, &open, locales.FolderConflictsTitle(plan.name, len(plan.conflicts)),
+		locales.FolderConflictsBody(plan.remoteRoot, list),
+		locales.FolderReplaceAll(), locales.FolderSkipAll(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
@@ -221,20 +221,25 @@ func (a *app) runFolderUpload(plan *folderPlan, skipExisting bool) {
 			done := tr.filesDone.Load()
 			switch {
 			case ctx.Err() != nil:
-				tr.err = "已取消"
-				a.toast(ui.Toast{Title: "已取消上传文件夹 " + plan.name, Description: fmt.Sprintf("已传完的 %d 个文件保留在服务器上。", done)})
+				tr.err = locales.FileCancelled()
+				a.toast(ui.Toast{Title: locales.FolderUploadCancelledNamed(plan.name), Description: locales.FolderUploadKept(int(done))})
 			case err != nil:
 				tr.err = transferReason(err)
-				a.toast(ui.Toast{Title: "上传文件夹 " + plan.name + " 失败", Description: tr.err, Type: "error"})
+				a.toast(ui.Toast{Title: locales.FolderUploadFailedNamed(plan.name), Description: tr.err, Type: "error"})
 			default:
-				desc := fmt.Sprintf("%d 个文件", done)
-				if skipExisting && len(plan.conflicts) > 0 {
-					desc += fmt.Sprintf("，跳过了 %d 个服务器上已有的文件", len(plan.conflicts))
+				existing, skipped := len(plan.conflicts), len(plan.skipped)
+				var desc string
+				switch {
+				case skipExisting && existing > 0 && skipped > 0:
+					desc = locales.FolderUploadedSkippedBoth(int(done), existing, skipped)
+				case skipExisting && existing > 0:
+					desc = locales.FolderUploadedSkippedExisting(int(done), existing)
+				case skipped > 0:
+					desc = locales.FolderUploadedSkippedSpecial(int(done), skipped)
+				default:
+					desc = locales.FolderUploadedFiles(int(done))
 				}
-				if len(plan.skipped) > 0 {
-					desc += fmt.Sprintf("，跳过了 %d 个符号链接或特殊文件", len(plan.skipped))
-				}
-				a.toast(ui.Toast{Title: "已上传文件夹 " + plan.name, Description: desc + "。"})
+				a.toast(ui.Toast{Title: locales.FolderUploadedNamed(plan.name), Description: desc})
 			}
 			if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
@@ -275,7 +280,7 @@ func uploadFolderFiles(ctx context.Context, files *sshconn.Files, plan *folderPl
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("%s：%s", f.rel, transferReason(err))
+			return fmt.Errorf("%s", locales.FolderUploadFileFailed(f.rel, transferReason(err)))
 		}
 		finished += f.size
 		tr.transferred.Store(finished)

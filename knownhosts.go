@@ -12,6 +12,7 @@ import (
 
 	"serval/core/hosts"
 	"serval/core/vault"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 	"golang.org/x/crypto/ssh"
@@ -110,7 +111,7 @@ func (a *app) resetHostKey(h hosts.Host) {
 		return
 	}
 	a.notice = ""
-	a.toast(ui.Toast{Title: "已重置 " + h.Name + " 的主机密钥", Description: "下次连接时会重新请你核对指纹。"})
+	a.toast(ui.Toast{Title: locales.KnownHostKeyReset(h.Name), Description: locales.KnownRecheckNextTime()})
 }
 
 // knownHostsList 返回保险库里保存的全部主机信任记录。读取失败时返回错误，
@@ -142,5 +143,5 @@ func (a *app) deleteKnownHost(host string) {
 		return
 	}
 	a.notice = ""
-	a.toast(ui.Toast{Title: "已删除 " + host + " 的主机密钥", Description: "下次连接时会重新请你核对指纹。"})
+	a.toast(ui.Toast{Title: locales.KnownHostKeyDeleted(host), Description: locales.KnownRecheckNextTime()})
 }

@@ -42,5 +42,6 @@ if ! kill -0 "$server" 2>/dev/null; then
 fi
 
 # Unix socket 路径有长度上限（macOS 约 104 字节），所以在工作目录里用相对路径。
+# 冒烟脚本按中文按钮点击。MYGO_LOCALE 只影响这一次启动，不写入系统语言。
 rm -f serval.sock
-MYGO_AUTOMATION=serval.sock SERVAL_CONFIG_DIR="$work/config" ./serval-e2e
+MYGO_LOCALE=zh-Hans MYGO_AUTOMATION=serval.sock SERVAL_CONFIG_DIR="$work/config" ./serval-e2e

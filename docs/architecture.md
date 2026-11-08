@@ -74,6 +74,7 @@ flowchart TB
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
 | `paths.go` | `~/` 展开 |
 | `e2e.go` | 只在 `-tags e2e` 构建里引入自动化插件 |
+| `locales/` | 界面文案（简体中文、英文）。源语言是 `zh-Hans`，`catalog_gen.go` 由 `go tool mygo generate` 生成 |
 
 ### design/
 

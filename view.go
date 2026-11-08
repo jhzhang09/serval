@@ -11,6 +11,7 @@ import (
 	"serval/core/sshconn"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -151,14 +152,14 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
 
 		ui.Column(c).Padding(2, 12, 12, 12).Children(func() {
-			search := ui.ButtonBase(c).Key("search").Label("搜索主机和操作").Height(32).Padding(0, 10).Gap(8).
+			search := ui.ButtonBase(c).Key("search").Label(locales.ViewSearchHostsAndActions()).Height(32).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Transition(design.Hover)
 			if search.Hovered() {
 				search.Background(colors.Hover)
 			}
 			search.Children(func() {
 				ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "搜索").TextColor(t.TextMuted).Grow(1)
+				ui.Text(c, locales.Search()).TextColor(t.TextMuted).Grow(1)
 				ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 			}).OnClick(a.openPalette)
 		})
@@ -189,56 +190,56 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				}
 			}
 			// ButtonBase 默认居中，这里要和上面的主机列表左对齐。
-			add := ui.ButtonBase(c).Key("addHost").Label("添加主机").Height(30).Padding(0, 10).Gap(8).
+			add := ui.ButtonBase(c).Key("addHost").Label(locales.AddHost()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if add.Hovered() {
 				add.Background(colors.Hover)
 			}
 			add.Children(func() {
 				ui.Icon(c, design.Icon("plus")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "添加主机").TextColor(t.TextMuted)
+				ui.Text(c, locales.AddHost()).TextColor(t.TextMuted)
 			}).OnClick(func() { a.openAdd() })
-			localBtn := ui.ButtonBase(c).Key("openLocal").Label("本地终端").Height(30).Padding(0, 10).Gap(8).
+			localBtn := ui.ButtonBase(c).Key("openLocal").Label(locales.LocalTerminal()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if localBtn.Hovered() {
 				localBtn.Background(colors.Hover)
 			}
 			localBtn.Children(func() {
 				ui.Icon(c, design.Icon("terminal")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "本地终端").TextColor(t.TextMuted)
+				ui.Text(c, locales.LocalTerminal()).TextColor(t.TextMuted)
 			}).OnClick(a.openLocalTerminal)
-			keysButton := ui.ButtonBase(c).Key("openKeys").Label("密钥").Height(30).Padding(0, 10).Gap(8).
+			keysButton := ui.ButtonBase(c).Key("openKeys").Label(locales.ViewKeys()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if keysButton.Hovered() {
 				keysButton.Background(colors.Hover)
 			}
 			keysButton.Children(func() {
 				ui.Icon(c, design.Icon("key-round")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "密钥").TextColor(t.TextMuted).Grow(1)
+				ui.Text(c, locales.ViewKeys()).TextColor(t.TextMuted).Grow(1)
 				if n := len(a.keys); n > 0 {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openKeys)
-			proxiesButton := ui.ButtonBase(c).Key("openProxies").Label("代理").Height(30).Padding(0, 10).Gap(8).
+			proxiesButton := ui.ButtonBase(c).Key("openProxies").Label(locales.Proxy()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if proxiesButton.Hovered() {
 				proxiesButton.Background(colors.Hover)
 			}
 			proxiesButton.Children(func() {
 				ui.Icon(c, design.Icon("globe")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "代理").TextColor(t.TextMuted).Grow(1)
+				ui.Text(c, locales.Proxy()).TextColor(t.TextMuted).Grow(1)
 				if n := len(a.proxies); n > 0 {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openProxies)
-			settingsButton := ui.ButtonBase(c).Key("openSettings").Label("设置").Height(30).Padding(0, 10).Gap(8).
+			settingsButton := ui.ButtonBase(c).Key("openSettings").Label(locales.Settings()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if settingsButton.Hovered() {
 				settingsButton.Background(colors.Hover)
 			}
 			settingsButton.Children(func() {
 				ui.Icon(c, design.Icon("settings")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "设置").TextColor(t.TextMuted)
+				ui.Text(c, locales.Settings()).TextColor(t.TextMuted)
 			}).OnClick(a.openSettings)
 		})
 	})
@@ -247,8 +248,8 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 func (a *app) sidebarEmpty(c *ui.Context) {
 	t := c.Theme()
 	ui.Column(c).Padding(10, 10).Gap(6).Children(func() {
-		ui.Text(c, "还没有主机").FontWeight(600)
-		ui.Text(c, "添加一台主机开始使用。私钥可以在下面的“密钥”里添加。").
+		ui.Text(c, locales.ViewNoHosts()).FontWeight(600)
+		ui.Text(c, locales.ViewNoHostsHint()).
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
 	})
 }
@@ -276,7 +277,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		if busy {
-			row.Description("正在连接")
+			row.Description(locales.ViewConnecting())
 		}
 		row.Children(func() {
 			coat := design.CoatView(c, h.ID, h.Production, 26)
@@ -289,12 +290,12 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 				sub := h.Target()
 				if jumps := hosts.SplitJumps(h.ProxyJump); len(jumps) > 0 {
 					// 经跳板机的主机显示途经路线：连不上时，用户第一眼就知道该先查哪一台。
-					sub = "经 " + strings.Join(jumps, " → ")
+					sub = locales.ViewVia(strings.Join(jumps, " → "))
 				}
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 			if connected {
-				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label("已连接")
+				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label(locales.ViewConnected())
 			}
 		}).OnClick(func() { a.open(h) })
 		row.PopoverMenu(menu)
@@ -302,7 +303,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		// “更多”按钮只在悬停或选中时出现，打开和右键相同的菜单：
 		// 不知道可以右键的人也能找到编辑和删除。键盘用户在行上按菜单键或 Shift+F10。
 		if hovered || selected {
-			more := ui.ButtonBase(c).Key("more:"+h.ID).Label("更多操作").Size(24, 24).Radius(6).Shrink(0).Transition(design.Hover)
+			more := ui.ButtonBase(c).Key("more:"+h.ID).Label(locales.MoreActions()).Size(24, 24).Radius(6).Shrink(0).Transition(design.Hover)
 			if more.Hovered() {
 				more.Background(colors.Hover)
 			}
@@ -323,7 +324,7 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 	height := max(bar.Height, 40)
 	ui.Row(c).Height(height).Shrink(0).Padding(0, design.Gap+2, 0, left).Gap(4).AlignItems(ui.Center).DragWindow().Children(func() {
 		if !a.sidebarOpen {
-			iconButton(c, colors, "panel-left", "显示侧栏", func() { a.sidebarOpen = true })
+			iconButton(c, colors, "panel-left", locales.ViewShowSidebar(), func() { a.sidebarOpen = true })
 		}
 		// 标签放不下时一起收窄到只剩斑纹，每个都还能点到、认得出。
 		ui.Row(c).Grow(1).MinWidth(0).Gap(4).AlignItems(ui.Center).Children(func() {
@@ -333,25 +334,36 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 		})
 		if t := a.current(); t != nil {
 			if !t.local && !a.isSavedHost(t.host.ID) { // 本地终端不是主机，不能保存
-				ui.Button(c, "保存为主机").Key("saveAsHost").Height(28).Padding(0, 8).
+				ui.Button(c, locales.ViewSaveAsHost()).Key("saveAsHost").Height(28).Padding(0, 8).
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
-			iconButton(c, colors, "search", fmt.Sprintf("查找（%s）", shortcutText("F")), func() { a.openSearch(t) })
-			iconButton(c, colors, "columns-2", fmt.Sprintf("向右拆分（%s）", shortcutText("D")), func() { a.split(t, false) })
-			iconButton(c, colors, "rows-2", "向下拆分", func() { a.split(t, true) })
+			iconButton(c, colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
+			iconButton(c, colors, "columns-2", locales.ViewSplitRightShortcut(shortcutText("D")), func() { a.split(t, false) })
+			iconButton(c, colors, "rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
 			if !t.local {
-				iconButton(c, colors, "folder", fmt.Sprintf("文件（%s）", shortcutText("J")), a.toggleFiles)
+				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
 			}
 		}
 	})
 }
 
+// tabLabel 是标签和窗格标题上显示的名称。
+// 本地终端不显示存进去的 host.Name：侧栏按钮是「本地终端」，标题必须仍是「本机」，
+// 英文里也要和 Local terminal 区分开。
+func tabLabel(t *tab) string {
+	if t.local || t.host.ID == "local" {
+		return locales.ThisMachine()
+	}
+	return t.host.Name
+}
+
 func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 	theme := c.Theme()
 	selected := i == a.active
+	title := tabLabel(t)
 	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
-	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(t.title()).AccessSelected(selected).
+	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
 		Height(28).MinWidth(36).MaxWidth(200).Shrink(1).Padding(0, 10).Gap(8).AlignItems(ui.Center).
 		Radius(design.RadiusRow).Transition(design.Hover)
 	hovered := item.Hovered()
@@ -367,9 +379,9 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 		if selected {
 			color = theme.Text
 		}
-		ui.Text(c, t.title()).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+		ui.Text(c, title).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		if hovered || selected {
-			ui.ButtonBase(c).Key("close").Label("关闭 "+t.title()).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
+			ui.ButtonBase(c).Key("close").Label(locales.ViewCloseTab(title)).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
 				ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
 			}).OnClick(func() { a.closeTab(t) })
 		}
@@ -406,15 +418,15 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Fill().Center().Gap(20).Padding(32).Children(func() {
 		design.BrandView(c, 76).Shadow(0, 14, 32, -10, colors.CardShadow)
 		ui.Column(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "连接一台主机").FontSize(design.TextDisplay).FontWeight(600).LetterSpacing(-0.4)
-			hint := fmt.Sprintf("按 %s 搜索，或者从左侧选择", shortcutText("K"))
+			ui.Text(c, locales.ViewConnectHost()).FontSize(design.TextDisplay).FontWeight(600).LetterSpacing(-0.4)
+			hint := locales.ViewEmptyHint(shortcutText("K"))
 			if len(a.hosts) == 0 {
-				hint = "添加第一台主机，再在“密钥”里添加你的私钥"
+				hint = locales.ViewAddFirstHint()
 			}
 			ui.Text(c, hint).TextColor(t.TextMuted)
 		})
 		if len(a.hosts) == 0 {
-			ui.PrimaryButton(c, "添加主机").Key("addFirst").OnClick(func() { a.openAdd() })
+			ui.PrimaryButton(c, locales.AddHost()).Key("addFirst").OnClick(func() { a.openAdd() })
 		}
 	})
 }
@@ -506,7 +518,7 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		compact, tiny := cols < 70, cols < 50
 
 		design.CoatView(c, t.host.ID, t.host.Production, 14)
-		ui.Text(c, t.host.Name).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
+		ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {
 			if dir := p.term.Dir(); dir != "" {
@@ -515,35 +527,35 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		})
 		switch {
 		case t.reconnecting:
-			chip(c, fmt.Sprintf("正在重连（第 %d 次）", t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
-			ui.ButtonBase(c).Key("cancelReconnect").Label("取消").Shrink(0).Children(func() {
-				ui.Text(c, "取消").TextColor(theme.Accent).FontWeight(600).NoWrap()
+			chip(c, locales.ViewReconnecting(t.reconnectAttempt), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
+			ui.ButtonBase(c).Key("cancelReconnect").Label(locales.Cancel()).Shrink(0).Children(func() {
+				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.cancelReconnect(t) })
 		case p.ended:
-			ui.Text(c, "会话已结束").Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
-			ui.ButtonBase(c).Key("reconnect").Label("重新连接").Shrink(0).Children(func() {
-				ui.Text(c, "重新连接").TextColor(theme.Accent).FontWeight(600).NoWrap()
+			ui.Text(c, locales.ViewSessionEnded()).Key("status").TextColor(theme.TextMuted).NoWrap().Shrink(0)
+			ui.ButtonBase(c).Key("reconnect").Label(locales.Reconnect()).Shrink(0).Children(func() {
+				ui.Text(c, locales.Reconnect()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(func() { a.reconnect(t) })
 		case t.local:
-			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label("本地").Children(func() {
+			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewLocal()).Children(func() {
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
 				dot.Scale(s, s)
 				if !tiny {
-					ui.Text(c, "本地").TextColor(colors.TextFaint).NoWrap()
+					ui.Text(c, locales.ViewLocal()).TextColor(colors.TextFaint).NoWrap()
 				}
 			})
 		case t.stalled:
-			chip(c, "服务器没有响应", theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
+			chip(c, locales.ViewServerUnresponsive(), theme.Warning, theme.Warning.Alpha(0.14)).Key("status")
 		default:
 			if t.host.Production {
-				label := "生产环境"
+				label := locales.ViewProduction()
 				if compact {
-					label = "生产"
+					label = locales.ViewProductionShort()
 				}
 				chip(c, label, colors.Danger, colors.DangerSoft)
 			}
-			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label("已连接").Children(func() {
+			ui.Row(c).Key("status").Gap(6).AlignItems(ui.Center).Shrink(0).Label(locales.ViewConnected()).Children(func() {
 				// 圆点第一次出现时（连上、或从“无响应”恢复）放大回弹一次，提示状态变好了。
 				dot := ui.Box(c).Size(6, 6).Radius(3).Background(colors.Live)
 				s := dot.Keyframes("pulse", design.Pulse)
@@ -578,23 +590,23 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 			name := path.Base(t.dir)
 			if t.dir == "" {
-				name = "文件"
+				name = locales.ViewFiles()
 			}
 			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
-			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "")
-			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "")
-			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
-			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
+			iconButton(c, colors, "plus", locales.ViewUploadFile(), func() { a.startUpload(t) }).Disabled(t.dir == "")
+			iconButton(c, colors, "folder-plus", locales.NewFolder(), func() { a.openNewFolder(t) }).Disabled(t.dir == "")
+			iconButton(c, colors, "arrow-up", locales.ViewParentDirectory(), func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
+			iconButton(c, colors, "refresh-cw", locales.ViewRefresh(), func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
 		})
 		if t.filesError != "" {
 			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
 		}
 		if t.filesBusy {
-			ui.Text(c, "正在打开文件…").TextColor(theme.TextMuted).Padding(10, 14)
+			ui.Text(c, locales.ViewOpeningFiles()).TextColor(theme.TextMuted).Padding(10, 14)
 		}
 		if t.local {
 			// 本地会话不走 SFTP，抽屉里没有内容；说清楚原因，不留一块空白。
-			ui.Text(c, "文件抽屉用于浏览远程主机的文件。本机的文件请在访达或资源管理器里查看。").
+			ui.Text(c, locales.ViewLocalFilesHint()).
 				TextColor(theme.TextMuted).FontSize(design.TextSmall).Padding(10, 14)
 		}
 		entries := t.entries
@@ -602,7 +614,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			a.fileRow(c, colors, t, entries[i])
 		}).Grow(1).MinHeight(0).Padding(6, 6, 8, 6).Children(func() {
 			if len(entries) == 0 && t.files != nil && t.filesError == "" {
-				ui.Text(c, "这个目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
+				ui.Text(c, locales.ViewEmptyDirectory()).TextColor(theme.TextMuted).Padding(8, 8)
 			}
 		})
 		if len(t.transfers) > 0 {
@@ -617,7 +629,7 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
 	ui.Column(c).Key("transfers").Padding(6, 10, 8, 10).Gap(6).Children(func() {
 		ui.Row(c).Height(20).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "传输队列").FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted)
+			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted)
 		})
 		for _, tr := range t.transfers {
 			item := tr
@@ -634,16 +646,16 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 					ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
 					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).SingleLine()
 					if !item.done.Load() {
-						iconButton(c, colors, "x", "取消传输", func() { a.cancelTransfer(item) })
+						iconButton(c, colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
 					}
 				})
 				ui.Row(c).Children(func() {
 					var info string
 					if item.done.Load() {
 						if item.err != "" {
-							info = "失败: " + item.err
+							info = locales.ViewTransferFailed(item.err)
 						} else {
-							info = "已完成"
+							info = locales.ViewTransferDone()
 						}
 					} else {
 						speed := item.speed.Load()
@@ -653,7 +665,7 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 						}
 						info = fmt.Sprintf("%s / %s%s", formatSize(item.transferred.Load()), formatSize(item.total.Load()), speedStr)
 						if item.folder {
-							info = fmt.Sprintf("%d / %d 个文件 · %s", item.filesDone.Load(), item.filesTotal.Load(), info)
+							info = locales.ViewFolderProgress(int(item.filesDone.Load()), int(item.filesTotal.Load()), info)
 						}
 					}
 					color := colors.TextFaint
@@ -684,25 +696,25 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 	}
 	menu := func(m *ui.Menu) {
 		if entry.IsDir {
-			if m.Item("打开").Chosen() {
+			if m.Item(locales.ViewOpen()).Chosen() {
 				a.openDir(t, entry.Path)
 			}
 		} else {
-			if m.Item("下载").Chosen() {
+			if m.Item(locales.Download()).Chosen() {
 				a.startDownload(t, entry.Path, entry.Name)
 			}
 		}
-		if m.Item("重命名").Chosen() {
+		if m.Item(locales.Rename()).Chosen() {
 			a.openRenameFile(t, entry.Path, entry.Name)
 		}
-		if m.Item("修改权限").Chosen() {
+		if m.Item(locales.ChangeMode()).Chosen() {
 			a.openPermissions(t, entry.Path, entry.Name, entry.Mode)
 		}
-		if m.Item("复制路径").Chosen() {
+		if m.Item(locales.ViewCopyPath()).Chosen() {
 			c.WriteClipboard(entry.Path)
-			a.toast(ui.Toast{Title: "已复制路径"})
+			a.toast(ui.Toast{Title: locales.ViewPathCopied()})
 		}
-		if m.Item("删除").Chosen() {
+		if m.Item(locales.Delete()).Chosen() {
 			a.askDeleteFile(t, entry.Path, entry.Name, entry.IsDir)
 		}
 	}
@@ -725,7 +737,7 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Background(colors.Hover).Children(func() {
 		ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(theme.TextMuted)
 		c.Key(fmt.Sprintf("searchInput:%d", p.id))
-		input := ui.TextInput(c, &p.searchQuery).Placeholder("在终端中查找…").Label("查找输入框").
+		input := ui.TextInput(c, &p.searchQuery).Placeholder(locales.ViewFindPlaceholder()).Label(locales.ViewFindField()).
 			Grow(1).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
 		// 查找框刚出现的那一帧焦点请求可能还落不了地，确认拿到焦点后才停止请求。
 		if p.focusSearch {
@@ -744,7 +756,7 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if p.searchQuery != "" {
 			var countText string
 			if p.searchStatus.Searching {
-				countText = "查找中…"
+				countText = locales.ViewSearching()
 			} else if p.searchStatus.Total == 0 {
 				countText = "0/0"
 			} else {
@@ -753,11 +765,11 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			ui.Text(c, countText).Key(fmt.Sprintf("searchStatus:%d", p.id)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}
 
-		iconButton(c, colors, "arrow-up", "上一个", func() { p.term.SearchPrevious() }).
+		iconButton(c, colors, "arrow-up", locales.ViewPrevious(), func() { p.term.SearchPrevious() }).
 			Disabled(p.searchStatus.Total == 0)
-		iconButton(c, colors, "arrow-down", "下一个", func() { p.term.SearchNext() }).
+		iconButton(c, colors, "arrow-down", locales.ViewNext(), func() { p.term.SearchNext() }).
 			Disabled(p.searchStatus.Total == 0)
-		iconButton(c, colors, "x", "关闭查找", func() { a.closeSearch(p) })
+		iconButton(c, colors, "x", locales.ViewCloseFind(), func() { a.closeSearch(p) })
 	})
 	// 查询变化时重新搜索；清空查询时结束搜索，旧的高亮随之消失。
 	switch {
@@ -784,19 +796,19 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 		theme := c.Theme()
 		layer := ui.Box(c).Key(fmt.Sprintf("dropLayer:%d", p.id)).Absolute().Top(0).Right(0).Bottom(0).Left(0).
 			Radius(design.RadiusCard).Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
-			Justify(ui.Center).AlignItems(ui.Center).Label("拖放上传")
+			Justify(ui.Center).AlignItems(ui.Center).Label(locales.ViewDropUpload())
 		if files := layer.DroppedFiles(); len(files) > 0 {
 			a.uploadDropped(t, p, files)
 		}
 		over = over || layer.FileDragOver()
-		target := "终端的当前目录"
+		target := locales.ViewTerminalDirectory()
 		if dir := p.term.Dir(); dir != "" {
 			target = shortPath(dir)
 		}
 		layer.Children(func() {
 			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
-				ui.Text(c, "松开即上传").FontWeight(600)
-				ui.Text(c, "上传到 "+target).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
+				ui.Text(c, locales.ViewReleaseToUpload()).FontWeight(600)
+				ui.Text(c, locales.ViewUploadTo(target)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
 			})
 		})
 	}

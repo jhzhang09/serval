@@ -12,6 +12,7 @@ import (
 	"serval/core/hosts"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -146,8 +147,8 @@ func (a *app) paletteItems(query string) []paletteItem {
 		matched = append(matched, scored{
 			paletteItem: paletteItem{
 				key:      "quick:" + target,
-				title:    fmt.Sprintf("连接 %s", target),
-				subtitle: "快速连接（不保存）",
+				title:    locales.PaletteConnectTo(target),
+				subtitle: locales.PaletteQuickConnect(),
 				icon:     "terminal",
 				host:     &tempHost,
 				run:      func() { a.open(tempHost) },
@@ -189,25 +190,25 @@ func (a *app) paletteItems(query string) []paletteItem {
 		}
 	}
 	if t := a.current(); t != nil {
-		action("search", "在终端中查找", func() { a.openSearch(t) })
-		action("columns-2", "向右拆分", func() { a.split(t, false) })
-		action("rows-2", "向下拆分", func() { a.split(t, true) })
-		action("x", "关闭当前窗格", func() { a.closeFocused(t) })
+		action("search", locales.PaletteFindInTerminal(), func() { a.openSearch(t) })
+		action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
+		action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
+		action("x", locales.PaletteClosePane(), func() { a.closeFocused(t) })
 	}
-	action("folder", "显示或收起文件", a.toggleFiles)
-	action("terminal", "新建本地终端", a.openLocalTerminal)
-	action("panel-left", "显示或收起侧栏", func() { a.sidebarOpen = !a.sidebarOpen })
-	action("plus", "添加主机", func() { a.openAdd() })
-	action("key-round", "密钥", a.openKeys)
-	action("globe", "代理", a.openProxies)
-	action("settings", "打开设置", a.openSettings)
-	action("server", "已知主机", a.openSettings)
+	action("folder", locales.PaletteToggleFiles(), a.toggleFiles)
+	action("terminal", locales.PaletteNewLocalTerminal(), a.openLocalTerminal)
+	action("panel-left", locales.PaletteToggleSidebar(), func() { a.sidebarOpen = !a.sidebarOpen })
+	action("plus", locales.AddHost(), func() { a.openAdd() })
+	action("key-round", locales.ViewKeys(), a.openKeys)
+	action("globe", locales.Proxy(), a.openProxies)
+	action("settings", locales.PaletteOpenSettings(), a.openSettings)
+	action("server", locales.KnownHosts(), a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {
-		action("lock", "锁定保险库", a.askLockVault)
+		action("lock", locales.PaletteLockVault(), a.askLockVault)
 	}
-	action("sun-moon", "外观：跟随系统", func() { a.setAppearance(appearanceSystem) })
-	action("sun-moon", "外观：浅色", func() { a.setAppearance(appearanceLight) })
-	action("sun-moon", "外观：深色", func() { a.setAppearance(appearanceDark) })
+	action("sun-moon", locales.PaletteAppearanceSystem(), func() { a.setAppearance(appearanceSystem) })
+	action("sun-moon", locales.PaletteAppearanceLight(), func() { a.setAppearance(appearanceLight) })
+	action("sun-moon", locales.PaletteAppearanceDark(), func() { a.setAppearance(appearanceDark) })
 	slices.SortStableFunc(actions, func(x, y scored) int { return cmp.Compare(y.score, x.score) })
 
 	items := make([]paletteItem, 0, len(matched)+len(actions))
@@ -240,7 +241,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 			ui.Row(c).Gap(9).AlignItems(ui.Center).Padding(0, 2).Children(func() {
 				ui.Icon(c, design.Icon("search")).FontSize(16).TextColor(t.TextMuted)
 				c.Key("paletteInput")
-				input := ui.TextInput(c, &a.pal.query).Placeholder("连接主机，或者输入操作").Label("搜索").
+				input := ui.TextInput(c, &a.pal.query).Placeholder(locales.PalettePlaceholder()).Label(locales.Search()).
 					AutoFocus().Grow(1).FontSize(design.TextHeading).Border(0, ui.Transparent).Background(ui.Transparent)
 				move := func(delta int) func() {
 					return func() {
@@ -259,7 +260,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 			ui.Scroll(c).MaxHeight(340).Children(func() {
 				ui.Column(c).Gap(1).Children(func() {
 					if len(items) == 0 {
-						ui.Text(c, fmt.Sprintf("没有找到“%s”", before)).TextColor(t.TextMuted).Padding(10, 8)
+						ui.Text(c, locales.PaletteNotFound(before)).TextColor(t.TextMuted).Padding(10, 8)
 					}
 					for i, item := range items {
 						a.paletteRow(c, colors, i, item, func() { run(item) })

@@ -17,8 +17,10 @@ import (
 	"serval/core/vault"
 	"serval/design"
 	"serval/internal/devsshd"
+	"serval/locales"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -31,6 +33,10 @@ const (
 func init() {
 	// 测试里用很低的派生成本，正式参数见 vault.DefaultKDF。
 	vault.DefaultKDF = vault.KDF{Alg: "argon2id", Time: 1, MemoryKiB: 1024, Threads: 1}
+	// 界面测试按简体中文文案点击。正式运行跟随系统语言；这里钉住目录语言，
+	// 避免英文系统上 App.Locale 选到 en 后把现有点击测试全部点空。
+	// 只影响测试二进制（main_test.go 不会编进应用）。
+	i18n.SetLocaleFunc(func() string { return "zh-Hans" })
 }
 
 // harness 让视图在没有窗口的情况下跑完真实的 SSH 连接流程。
@@ -237,6 +243,28 @@ func (h *harness) enterPassword(password string) {
 	h.a.auth.secret = password
 	h.tt.Frame()
 	h.click("连接")
+}
+
+// TestEnglishCatalogRenders 确认英文目录真的画到界面上，并且简体中文原文没被改掉。
+// 其他测试把语言钉在 zh-Hans，这里临时改成 en，结束时恢复。
+func TestEnglishCatalogRenders(t *testing.T) {
+	i18n.SetLocaleFunc(func() string { return "en" })
+	t.Cleanup(func() { i18n.SetLocaleFunc(func() string { return "zh-Hans" }) })
+	if got := locales.In("zh-Hans").ViewConnectHost(); got != "连接一台主机" {
+		t.Fatalf("简体中文被改成了 %q", got)
+	}
+	if got := locales.In("en").AddHost(); got != "Add host" {
+		t.Fatalf("英文添加主机是 %q", got)
+	}
+	h := newBareHarness(t)
+	for _, want := range []string{"Connect to a host", "Add host", "Local terminal", "Settings"} {
+		if _, ok := h.tt.Find(want); !ok {
+			t.Fatalf("英文界面没有 %q，实际：%v", want, h.tt.Texts())
+		}
+	}
+	if _, ok := h.tt.Find("连接一台主机"); ok {
+		t.Fatal("英文界面仍显示中文空状态")
+	}
 }
 
 func TestSidebarListsVaultHosts(t *testing.T) {

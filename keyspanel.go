@@ -13,6 +13,7 @@ import (
 	"serval/core/keys"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -82,7 +83,7 @@ func (a *app) pickKeyFile() {
 			}
 			info, err := os.Stat(path)
 			if err == nil && info.Size() > maxKeyFile {
-				err = fmt.Errorf("%s 太大了，不像是私钥文件", filepath.Base(path))
+				err = errors.New(locales.KeyFileTooLarge(filepath.Base(path)))
 			}
 			var data []byte
 			if err == nil {
@@ -119,7 +120,7 @@ func (a *app) keyNameTaken(name, exceptID string) bool {
 // defaultKeyName 是没填名称时的名称。
 func (a *app) defaultKeyName(base string) string {
 	if base == "" {
-		base = "私钥"
+		base = locales.PrivateKey()
 	}
 	name := base
 	for i := 2; a.keyNameTaken(name, ""); i++ {
@@ -133,14 +134,14 @@ func (a *app) submitAddKey() {
 	p := &a.keyPanel
 	name := strings.TrimSpace(p.name)
 	if name != "" && a.keyNameTaken(name, "") {
-		p.err = fmt.Sprintf("已经有一把叫 %s 的私钥了，请换一个名称。", name)
+		p.err = locales.KeyNameTaken(name)
 		return
 	}
 	if !p.generate {
 		k, err := keys.Parse(name, []byte(p.pem), p.passphrase)
 		switch {
 		case errors.Is(err, keys.ErrPassphraseNeeded):
-			p.err = "这把私钥加了口令，请在下面输入口令。"
+			p.err = locales.KeyPassphraseNeeded()
 			return
 		case err != nil:
 			p.err = err.Error()
@@ -199,7 +200,7 @@ func (a *app) storeNewKey(k keys.Key, generated bool) {
 		a.keyPanel.err = err.Error()
 		return
 	}
-	a.toast(ui.Toast{Title: "已添加私钥 " + k.Name})
+	a.toast(ui.Toast{Title: locales.KeyAdded(k.Name)})
 	if generated {
 		a.showKey(k.ID) // 新生成的钥匙要先把公钥放到服务器上，直接打开详情方便复制
 		return
@@ -227,11 +228,11 @@ func (a *app) saveKeyDetail() {
 	}
 	name := strings.TrimSpace(p.rename)
 	if name == "" {
-		p.err = "请填写名称。"
+		p.err = locales.KeyNameRequired()
 		return
 	}
 	if a.keyNameTaken(name, k.ID) {
-		p.err = fmt.Sprintf("已经有一把叫 %s 的私钥了。", name)
+		p.err = locales.KeyNameTakenShort(name)
 		return
 	}
 	if name != k.Name {
@@ -268,12 +269,12 @@ func (a *app) deleteKey(k keys.Key) {
 		return
 	}
 	a.keyPanel.page = keyList
-	a.toast(ui.Toast{Title: "已删除私钥 " + k.Name})
+	a.toast(ui.Toast{Title: locales.KeyDeleted(k.Name)})
 }
 
 func (a *app) copyPublicKey(c *ui.Context, k keys.Key) {
 	c.WriteClipboard(k.PublicKey)
-	a.toast(ui.Toast{ID: "copy", Title: "已复制 " + k.Name + " 的公钥"})
+	a.toast(ui.Toast{ID: "copy", Title: locales.KeyCopied(k.Name)})
 }
 
 // keysDialog 是密钥面板。设置主密码的面板打开时让位，内容保留。
@@ -302,14 +303,13 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "密钥").FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, "添加私钥").Key("keysAdd").OnClick(a.startAddKey)
+			ui.Text(c, locales.KeyTitle()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
+			ui.PrimaryButton(c, locales.AddPrivateKey()).Key("keysAdd").OnClick(a.startAddKey)
 		})
 		if len(a.keys) == 0 {
 			ui.Column(c).Gap(6).Padding(20, 0).Children(func() {
-				ui.Text(c, "还没有私钥").FontWeight(600)
-				ui.Text(c, "添加已有的私钥文件，或者生成一把新的。私钥加密保存在 Serval 的保险库里，"+
-					"之后在主机里选它就能登录。").FontSize(design.TextSmall).TextColor(t.TextMuted)
+				ui.Text(c, locales.KeyEmptyTitle()).FontWeight(600)
+				ui.Text(c, locales.KeyEmptyBody()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		}
 		ui.Column(c).Gap(2).Children(func() {
@@ -321,7 +321,7 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, "完成").Key("keysClose").OnClick(func() { a.keyPanel = keyPanel{} })
+			ui.Button(c, locales.Done()).Key("keysClose").OnClick(func() { a.keyPanel = keyPanel{} })
 		})
 	})
 }
@@ -329,14 +329,14 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 	t := c.Theme()
 	menu := func(m *ui.Menu) {
-		if m.Item("详情").Chosen() {
+		if m.Item(locales.KeyDetails()).Chosen() {
 			a.showKey(k.ID)
 		}
-		if m.Item("复制公钥").Chosen() {
+		if m.Item(locales.CopyPublicKey()).Chosen() {
 			a.copyPublicKey(c, k)
 		}
 		m.Separator()
-		if m.Item("删除").Danger().Chosen() {
+		if m.Item(locales.Delete()).Danger().Chosen() {
 			a.keyPanel.deleting = &k
 		}
 	}
@@ -353,14 +353,14 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 				ui.Text(c, k.Name).FontWeight(500).SingleLine()
 				sub := k.Label() + "  " + k.Fingerprint
 				if n := len(a.usedBy(k.ID)); n > 0 {
-					sub = fmt.Sprintf("%s  %d 台主机在用", k.Label(), n)
+					sub = locales.KeyHostsUsing(k.Label(), n)
 				}
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 		}).OnClick(func() { a.showKey(k.ID) })
 		row.PopoverMenu(menu)
-		ui.Button(c, "复制公钥").Key("keyCopy:" + k.ID).OnClick(func() { a.copyPublicKey(c, k) })
-		more := ui.ButtonBase(c).Key("keyMore:"+k.ID).Label("更多操作").Size(26, 26).Radius(6).Shrink(0)
+		ui.Button(c, locales.CopyPublicKey()).Key("keyCopy:" + k.ID).OnClick(func() { a.copyPublicKey(c, k) })
+		more := ui.ButtonBase(c).Key("keyMore:"+k.ID).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
 		}
@@ -374,59 +374,59 @@ func (a *app) keyAddPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.keyPanel
 	ui.Column(c).Gap(12).Children(func() {
-		ui.Text(c, "添加私钥").FontSize(design.TextHeading).FontWeight(600)
+		ui.Text(c, locales.AddPrivateKey()).FontSize(design.TextHeading).FontWeight(600)
 		c.Key("keyMode")
-		ui.Segmented(c, &p.addingMode, "导入已有私钥", "生成新密钥")
+		ui.Segmented(c, &p.addingMode, locales.KeyImport(), locales.KeyGenerateOption())
 		p.generate = p.addingMode == 1
-		ui.Field(c, "名称", func() {
+		ui.Field(c, locales.Name(), func() {
 			c.Key("keyName")
-			placeholder := "例如 工作笔记本"
+			placeholder := locales.KeyNameExample()
 			if !p.generate {
-				placeholder = "留空时使用文件名"
+				placeholder = locales.KeyNameFromFile()
 			}
 			ui.TextInput(c, &p.name).Placeholder(placeholder).AutoFocus()
 		})
 		if p.generate {
-			ui.Field(c, "类型", func() {
+			ui.Field(c, locales.KeyType(), func() {
 				c.Key("keyType")
 				ui.Segmented(c, &p.genIndex, "Ed25519", "RSA 4096")
-			}).Description("Ed25519 更短更快，绝大多数服务器都支持；只有很老的系统才需要 RSA。")
-			ui.Field(c, "口令（可选）", func() {
+			}).Description(locales.KeyTypeHint())
+			ui.Field(c, locales.KeyPassphraseOptional(), func() {
 				c.Key("keyPassphrase")
 				ui.TextInput(c, &p.passphrase).Password()
-			}).Description("给私钥本身再加一道锁，导出到别处时仍受保护。口令也保存在保险库里，连接时不用输入。")
+			}).Description(locales.KeyPassphraseHint())
 		} else {
-			ui.Field(c, "私钥", func() {
+			ui.Field(c, locales.PrivateKey(), func() {
 				ui.Column(c).Gap(8).Children(func() {
 					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Button(c, "选择文件…").Key("keyPick").OnClick(a.pickKeyFile)
-						ui.Text(c, "或者把私钥内容粘贴到下面").FontSize(design.TextSmall).TextColor(t.TextMuted)
+						ui.Button(c, locales.KeyChooseFile()).Key("keyPick").OnClick(a.pickKeyFile)
+						ui.Text(c, locales.KeyPasteHint()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 					})
 					c.Key("keyPem")
 					ui.TextArea(c, &p.pem).Height(120).Font(design.FontTerminal).FontSize(design.TextSmall).
 						Placeholder("-----BEGIN OPENSSH PRIVATE KEY-----")
 				})
-			}).Description("私钥内容加密保存在 Serval 的保险库里，原文件删掉或移动都不影响使用。")
+			}).Description(locales.KeyPemHint())
 			if keys.Encrypted([]byte(strings.TrimSpace(p.pem) + "\n")) {
-				ui.Field(c, "口令", func() {
+				ui.Field(c, locales.Passphrase(), func() {
 					c.Key("keyPassphrase")
 					ui.TextInput(c, &p.passphrase).Password()
 				})
 				c.Key("keySavePassphrase")
-				ui.Checkbox(c, &p.savePassphrase, "保存口令（不保存时，每次连接都询问）")
+				ui.Checkbox(c, &p.savePassphrase, locales.KeySavePassphrase())
 			}
 		}
 		if p.err != "" {
 			ui.Text(c, p.err).Key("keyError").TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, "返回").Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
-			label := "添加"
+			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
+			label := locales.Add()
 			switch {
 			case p.busy:
-				label = "正在生成…"
+				label = locales.KeyGenerating()
 			case p.generate:
-				label = "生成"
+				label = locales.KeyGenerate()
 			}
 			b := ui.PrimaryButton(c, label).Key("keySubmit").Disabled(p.busy)
 			if b.Clicked() && !p.busy {
@@ -450,30 +450,30 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
 			ui.Text(c, k.Label()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 		})
-		ui.Field(c, "名称", func() {
+		ui.Field(c, locales.Name(), func() {
 			c.Key("keyRename")
 			ui.TextInput(c, &p.rename)
 		})
-		ui.Field(c, "公钥", func() {
+		ui.Field(c, locales.KeyPublicKey(), func() {
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Text(c, k.PublicKey).Key("keyPublic").Font(design.FontTerminal).FontSize(design.TextSmall).
 					Padding(8, 10).Radius(design.RadiusRow).Background(colors.Chip).Selectable()
 				ui.Row(c).Children(func() {
-					ui.Button(c, "复制公钥").Key("keyCopyDetail").OnClick(func() { a.copyPublicKey(c, k) })
+					ui.Button(c, locales.CopyPublicKey()).Key("keyCopyDetail").OnClick(func() { a.copyPublicKey(c, k) })
 				})
 			})
-		}).Description("把公钥加到服务器的 ~/.ssh/authorized_keys 里，就能用这把私钥登录。")
-		ui.Field(c, "指纹", func() {
+		}).Description(locales.KeyPublicKeyHint())
+		ui.Field(c, locales.KeyFingerprint(), func() {
 			ui.Text(c, k.Fingerprint).Font(design.FontTerminal).FontSize(design.TextSmall).Selectable()
 		})
 		if keys.Encrypted([]byte(k.PrivateKey)) {
-			ui.Field(c, "口令", func() {
+			ui.Field(c, locales.Passphrase(), func() {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					if k.Passphrase != "" {
-						ui.Text(c, "已保存，连接时不用输入").Grow(1)
-						ui.Button(c, "清除").Key("keyClearPassphrase").OnClick(func() { a.clearPassphrase(k.ID) })
+						ui.Text(c, locales.KeyPassphraseSaved()).Grow(1)
+						ui.Button(c, locales.Clear()).Key("keyClearPassphrase").OnClick(func() { a.clearPassphrase(k.ID) })
 					} else {
-						ui.Text(c, "未保存，连接时询问（可以在询问时勾选记住）").TextColor(t.TextMuted)
+						ui.Text(c, locales.KeyPassphraseUnsaved()).TextColor(t.TextMuted)
 					}
 				})
 			})
@@ -483,18 +483,18 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 			for i, h := range used {
 				names[i] = h.Name
 			}
-			ui.Field(c, "使用它的主机", func() {
-				ui.Text(c, strings.Join(names, "、"))
+			ui.Field(c, locales.KeyUsedBy(), func() {
+				ui.Text(c, strings.Join(names, locales.NameSeparator()))
 			})
 		}
 		if p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Children(func() {
-			ui.Button(c, "删除私钥").Key("keyDelete").OnClick(func() { p.deleting = &k })
+			ui.Button(c, locales.KeyDelete()).Key("keyDelete").OnClick(func() { p.deleting = &k })
 			ui.Box(c).Grow(1)
-			ui.Button(c, "返回").Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
-			ui.PrimaryButton(c, "保存").Key("keySave").OnClick(a.saveKeyDetail)
+			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
+			ui.PrimaryButton(c, locales.Save()).Key("keySave").OnClick(a.saveKeyDetail)
 		})
 	})
 }
@@ -505,16 +505,16 @@ func (a *app) keyDeleteDialog(c *ui.Context) {
 		return
 	}
 	k := *p.deleting
-	message := "删除后无法恢复。如果服务器上只登记了这把钥匙，删除后就登录不了，请先确认有别的登录方式。"
+	message := locales.KeyDeleteBody()
 	if used := a.usedBy(k.ID); len(used) > 0 {
 		names := make([]string, len(used))
 		for i, h := range used {
 			names[i] = h.Name
 		}
-		message += fmt.Sprintf("\n\n%s 正在使用它，删除后这些主机改为“自动”认证。", strings.Join(names, "、"))
+		message += locales.KeyDeleteInUse(strings.Join(names, locales.NameSeparator()))
 	}
 	open := true
-	choice := ui.AlertDialog(c, &open, "删除私钥 "+k.Name+"？", message, "删除", "取消")
+	choice := ui.AlertDialog(c, &open, locales.KeyDeleteTitle(k.Name), message, locales.Delete(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}

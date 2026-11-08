@@ -10,6 +10,7 @@ import (
 	"serval/core/keys"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -18,7 +19,8 @@ import (
 const defaultGroup = "我的主机"
 
 // noKey 是私钥下拉框里“不用私钥”的选项。
-const noKey = "不使用"
+// 选项文字同时是表单里的哨兵值，渲染和比较都走这里，不能在 init 时钉死语言。
+func noKey() string { return locales.HostNoKey() }
 
 // 表单里认证方式的顺序，和 Segmented 的选项一一对应。
 var authModes = []string{hosts.AuthAuto, hosts.AuthPassword, hosts.AuthKey}
@@ -58,7 +60,7 @@ type hostForm struct {
 
 // openAdd 打开空白的添加主机表单。
 func (a *app) openAdd() {
-	a.form = hostForm{open: true, fresh: true, keyName: noKey}
+	a.form = hostForm{open: true, fresh: true, keyName: noKey()}
 	if len(a.keys) == 1 {
 		a.form.keyName = a.keys[0].Name // 只有一把私钥时直接选上，添加完私钥就能用
 	}
@@ -70,7 +72,7 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 		open: true, fresh: true,
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
 		production:    h.Production,
-		passwordSaved: h.Password != "", keyName: noKey,
+		passwordSaved: h.Password != "", keyName: noKey(),
 		jumps: hosts.SplitJumps(h.ProxyJump),
 	}
 	f.showJumps = len(f.jumps) > 0
@@ -102,7 +104,7 @@ func (a *app) openEdit(h hosts.Host) {
 func (a *app) openDuplicate(h hosts.Host) {
 	a.form = a.formFrom(h)
 	a.form.copyOf = h.ID
-	a.form.name = a.uniqueName(h.Name + " 副本")
+	a.form.name = a.uniqueName(locales.HostCopyName(h.Name))
 }
 
 // openSaveHost 从临时快速连接的主机打开添加主机表单。
@@ -132,35 +134,35 @@ func (a *app) saveForm() {
 	f := &a.form
 	address := strings.TrimSpace(f.address)
 	if address == "" {
-		f.err = "请填写地址。"
+		f.err = locales.HostAddressRequired()
 		return
 	}
 	port := 22
 	if text := strings.TrimSpace(f.port); text != "" {
 		parsed, err := strconv.Atoi(text)
 		if err != nil || parsed < 1 || parsed > 65535 {
-			f.err = "端口必须是 1 到 65535 之间的数字。"
+			f.err = locales.HostPortInvalid()
 			return
 		}
 		port = parsed
 	}
 	user := strings.TrimSpace(f.user)
 	if user == "" {
-		f.err = "请填写用户名。"
+		f.err = locales.HostUserRequired()
 		return
 	}
 	auth := authModes[f.auth]
 	keyID := ""
-	if auth != hosts.AuthPassword && f.keyName != noKey {
+	if auth != hosts.AuthPassword && f.keyName != noKey() {
 		i := slices.IndexFunc(a.keys, func(k keys.Key) bool { return k.Name == f.keyName })
 		if i < 0 {
-			f.err = "选中的私钥已经不存在，请重新选择。"
+			f.err = locales.HostKeyGone()
 			return
 		}
 		keyID = a.keys[i].ID
 	}
 	if auth == hosts.AuthKey && keyID == "" {
-		f.err = "选择私钥登录时，请选一把私钥。还没有私钥的话，先在侧栏的“密钥”里添加。"
+		f.err = locales.HostKeyRequired()
 		return
 	}
 	name := strings.TrimSpace(f.name)
@@ -168,7 +170,7 @@ func (a *app) saveForm() {
 		name = address
 	}
 	if a.nameTaken(name, f.editing) {
-		f.err = fmt.Sprintf("已经有一台叫 %s 的主机。跳板机按名称查找主机，请换一个名称。", name)
+		f.err = locales.HostNameTaken(name)
 		return
 	}
 	group := strings.TrimSpace(f.group)
@@ -183,8 +185,8 @@ func (a *app) saveForm() {
 	var jumps []string
 	if f.showJumps {
 		for i, j := range f.jumps {
-			if j == pickHost || strings.TrimSpace(j) == "" {
-				f.err = fmt.Sprintf("第 %d 台跳板机还没有选择主机。不需要的话点它右边的移除。", i+1)
+			if j == pickHost() || strings.TrimSpace(j) == "" {
+				f.err = locales.RouteJumpMissing(i + 1)
 				return
 			}
 			jumps = append(jumps, j)
@@ -230,7 +232,7 @@ func (a *app) saveForm() {
 	// 保存前就把链路完整解析一遍：写错的地址、互相引用成环，在这里说清楚，
 	// 而不是等到连接时才失败。
 	if _, err := hosts.ResolveRoute(h, append(all, h), a.localUser); err != nil {
-		f.err = "跳板机：" + err.Error()
+		f.err = locales.RouteJumpError(err.Error())
 		return
 	}
 	if h.Password != "" && a.vault.State() == vault.Unprotected {
@@ -248,12 +250,12 @@ func (a *app) saveForm() {
 			}
 		}
 	}
-	verb := "已添加 "
+	title := locales.HostAdded(name)
 	if f.editing != "" {
-		verb = "已保存 "
+		title = locales.HostSaved(name)
 	}
 	a.form = hostForm{}
-	a.toast(ui.Toast{Title: verb + name})
+	a.toast(ui.Toast{Title: title})
 }
 
 // askDelete 请用户确认删除主机。
@@ -296,27 +298,27 @@ func (a *app) deleteHost(h hosts.Host) {
 		return
 	}
 	a.removeRecentHost(h.ID)
-	a.toast(ui.Toast{Title: "已删除 " + h.Name})
+	a.toast(ui.Toast{Title: locales.HostDeleted(h.Name)})
 }
 
 // hostMenu 是主机的右键菜单，侧栏行尾的“更多”按钮打开同一个菜单。
 func (a *app) hostMenu(h hosts.Host) func(m *ui.Menu) {
 	return func(m *ui.Menu) {
-		if m.Item("连接").Chosen() {
+		if m.Item(locales.Connect()).Chosen() {
 			a.open(h)
 		}
-		if m.Item("编辑").Chosen() {
+		if m.Item(locales.Edit()).Chosen() {
 			a.openEdit(h)
 		}
-		if m.Item("复制").Chosen() {
+		if m.Item(locales.HostDuplicate()).Chosen() {
 			a.openDuplicate(h)
 		}
 		// 服务器重装、换了密钥时用。没有信任记录时没什么可重置的。
-		if m.Item("重置主机密钥").Disabled(!a.hasTrustRecord(h)).Chosen() {
+		if m.Item(locales.HostResetKey()).Disabled(!a.hasTrustRecord(h)).Chosen() {
 			a.resetHostKey(h)
 		}
 		m.Separator()
-		if m.Item("删除").Danger().Chosen() {
+		if m.Item(locales.Delete()).Danger().Chosen() {
 			a.askDelete(h)
 		}
 	}
@@ -328,12 +330,12 @@ func (a *app) deleteDialog(c *ui.Context) {
 		return
 	}
 	h := *a.deleting
-	message := "删除后无法恢复，为它保存的密码也会一并删除。已打开的会话不受影响。"
+	message := locales.HostDeleteBody()
 	if names := a.dependents(h); len(names) > 0 {
-		message += fmt.Sprintf("\n\n%s 经它跳转，删除后将无法连接。", strings.Join(names, "、"))
+		message += locales.HostDeleteJumps(strings.Join(names, locales.NameSeparator()))
 	}
 	open := true
-	choice := ui.AlertDialog(c, &open, "删除 "+h.Name+"？", message, "删除", "取消")
+	choice := ui.AlertDialog(c, &open, locales.HostDeleteTitle(h.Name), message, locales.Delete(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
@@ -351,12 +353,12 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	f := &a.form
-	title, submit := "添加主机", "添加"
+	title, submit := locales.AddHost(), locales.Add()
 	switch {
 	case f.editing != "":
-		title, submit = "编辑主机", "保存"
+		title, submit = locales.HostEdit(), locales.Save()
 	case f.copyOf != "":
-		title = "复制主机"
+		title = locales.HostDuplicateTitle()
 	}
 	half := func(fn func()) { ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(fn) }
 	sheet(c, colors, &f.open, &f.fresh, 440, 22, func() {
@@ -364,34 +366,34 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
 			ui.Row(c).Gap(10).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-					ui.Field(c, "地址", func() {
+					ui.Field(c, locales.Address(), func() {
 						c.Key("addAddress")
 						ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
 					})
 				})
 				ui.Column(c).Width(76).Children(func() {
-					ui.Field(c, "端口", func() {
+					ui.Field(c, locales.Port(), func() {
 						c.Key("addPort")
 						ui.TextInput(c, &f.port).Placeholder("22")
 					})
 				})
 			})
-			ui.Field(c, "用户名", func() {
+			ui.Field(c, locales.HostUsername(), func() {
 				c.Key("addUser")
 				ui.TextInput(c, &f.user).Placeholder("deploy")
 			})
 			ui.Row(c).Gap(10).Children(func() {
 				half(func() {
-					nameField := ui.Field(c, "名称", func() {
+					nameField := ui.Field(c, locales.Name(), func() {
 						c.Key("addName")
-						ui.TextInput(c, &f.name).Placeholder("留空时使用地址")
+						ui.TextInput(c, &f.name).Placeholder(locales.HostNamePlaceholder())
 					})
 					if n := a.renamingJumpCount(f); n > 0 {
-						nameField.Description(fmt.Sprintf("将同时更新 %d 台主机的跳板机设置。", n))
+						nameField.Description(locales.HostRenameJumps(n))
 					}
 				})
 				half(func() {
-					ui.Field(c, "分组", func() {
+					ui.Field(c, locales.HostGroup(), func() {
 						c.Key("addGroup")
 						ui.TextInput(c, &f.group).Placeholder(defaultGroup)
 					})
@@ -399,13 +401,13 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			})
 
 			descriptions := []string{
-				"依次尝试选定的私钥、ssh-agent，都不行时再询问密码。",
-				"只用密码登录。",
-				"只用选定的私钥登录。",
+				locales.HostAuthAutoHint(),
+				locales.HostAuthPasswordHint(),
+				locales.HostAuthKeyHint(),
 			}
-			ui.Field(c, "认证方式", func() {
+			ui.Field(c, locales.HostAuth(), func() {
 				c.Key("addAuth")
-				ui.Segmented(c, &f.auth, "自动", "密码", "私钥")
+				ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
 			}).Description(descriptions[f.auth])
 			if f.auth == 1 {
 				a.passwordField(c, f)
@@ -415,12 +417,12 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 
 			a.routeFields(c, colors, f)
 			c.Key("addProduction")
-			ui.Checkbox(c, &f.production, "这是生产环境")
+			ui.Checkbox(c, &f.production, locales.HostProduction())
 			if f.err != "" {
 				ui.Text(c, f.err).Key("addError").TextColor(t.Danger)
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "取消").Key("addCancel").OnClick(func() { a.form = hostForm{} })
+				ui.Button(c, locales.Cancel()).Key("addCancel").OnClick(func() { a.form = hostForm{} })
 				ui.PrimaryButton(c, submit).Key("addSubmit").OnClick(a.saveForm)
 			})
 		})
@@ -435,20 +437,20 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 func (a *app) keyField(c *ui.Context, f *hostForm) {
 	t := c.Theme()
 	if len(a.keys) == 0 {
-		ui.Field(c, "私钥", func() {
-			ui.Text(c, "还没有私钥。在侧栏的“密钥”里添加私钥文件或生成新密钥，就能在这里选择。").
+		ui.Field(c, locales.PrivateKey(), func() {
+			ui.Text(c, locales.HostNoPrivateKey()).
 				FontSize(design.TextSmall).TextColor(t.TextMuted)
 		})
 		return
 	}
-	options := []string{noKey}
+	options := []string{noKey()}
 	for _, k := range a.keys {
 		options = append(options, k.Name)
 	}
 	if !slices.Contains(options, f.keyName) {
-		f.keyName = noKey
+		f.keyName = noKey()
 	}
-	ui.Field(c, "私钥", func() {
+	ui.Field(c, locales.PrivateKey(), func() {
 		c.Key("addKey")
 		ui.Select(c, &f.keyName, options)
 	})
@@ -456,24 +458,24 @@ func (a *app) keyField(c *ui.Context, f *hostForm) {
 
 // passwordField 是密码输入框。已保存密码时，留空表示保持不变，并可以清除。
 func (a *app) passwordField(c *ui.Context, f *hostForm) {
-	placeholder := "留空时连接时询问"
+	placeholder := locales.HostPasswordPrompt()
 	switch {
 	case f.passwordSaved && f.clearPassword:
-		placeholder = "保存后清除已保存的密码"
+		placeholder = locales.HostClearPasswordPending()
 	case f.passwordSaved:
-		placeholder = "已保存，留空保持不变"
+		placeholder = locales.HostPasswordUnchanged()
 	}
 	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-			ui.Field(c, "密码", func() {
+			ui.Field(c, locales.Password(), func() {
 				c.Key("addPassword")
 				ui.TextInput(c, &f.password).Password().Placeholder(placeholder)
 			})
 		})
 		if f.passwordSaved {
-			text := "清除"
+			text := locales.Clear()
 			if f.clearPassword {
-				text = "撤销清除"
+				text = locales.HostUndoClear()
 			}
 			ui.Button(c, text).Key("addPasswordClear").OnClick(func() {
 				f.clearPassword = !f.clearPassword
