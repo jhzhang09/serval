@@ -167,6 +167,13 @@ type pane struct {
 	// shell 是这个窗格的远程 shell（本地终端为 nil），用来在终端结束时判断是断线还是远端自己退出。
 	shell *sshconn.Shell
 
+	searchOpen  bool
+	searchQuery string
+	// focusSearch、focusTerm 让下一帧把键盘焦点交给查找框或终端：打开查找后要立刻能输入搜索词，
+	// 否则按 ⌘F 之后打的字会落进终端、发给远端 shell；关闭查找后焦点回到终端。
+	focusSearch, focusTerm bool
+	searchStatus           terminal.SearchStatus
+
 	first, second *pane
 	vertical      bool
 	percent       float32
@@ -586,6 +593,22 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	a.saveSessionLayout()
 }
 
+func (a *app) openSearch(t *tab) {
+	if t == nil || t.focus == nil {
+		return
+	}
+	p := t.focus
+	p.searchOpen, p.focusSearch = true, true
+	if p.searchQuery != "" {
+		p.term.Search(p.searchQuery)
+	}
+}
+
+func (a *app) closeSearch(p *pane) {
+	p.searchOpen, p.focusTerm = false, true
+	p.term.EndSearch()
+}
+
 func (a *app) terminalFont() terminal.Font {
 	return design.TerminalFontWith(
 		a.settings.TerminalFontFamily,
@@ -739,6 +762,9 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		},
 		OnCopy: func(_ string, by terminal.CopySource) {
 			a.post(func() { a.copied(by) })
+		},
+		OnSearch: func(s terminal.SearchStatus) {
+			a.post(func() { p.searchStatus = s })
 		},
 	}
 	// 只在有远程 shell 时设置 Conn：值为 nil 的 *Shell 放进接口后接口并不是 nil，
