@@ -7,7 +7,7 @@
 ```mermaid
 flowchart TB
     subgraph app["应用层 package main（只在桌面上运行）"]
-        view["视图<br/>view.go · sheets.go · palette.go<br/>hostform.go · keyspanel.go"]
+        view["视图<br/>view.go · sheets.go · palette.go<br/>hostform.go · keyspanel.go · snippet.go"]
         state["状态与流程<br/>app.go（连接、标签、窗格）<br/>library.go（数据层）· knownhosts.go"]
     end
     design["design/<br/>配色 · 字体 · 图标 · 动效 · 斑纹"]
@@ -72,6 +72,7 @@ flowchart TB
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
+| `snippet.go` | 代码片段：变量替换、管理面板、发送到当前窗格 |
 | `paths.go` | `~/` 展开 |
 | `e2e.go` | 只在 `-tags e2e` 构建里引入自动化插件 |
 
@@ -136,7 +137,7 @@ view()
         ├── tabBar                 标签放在标题栏里
         └── workspace              窗格卡片树（paneView）+ 文件抽屉，没有标签时是 emptyState
 浮层（按渲染顺序，后面的盖在上面）：
-hostKeyDialog → authDialog → hostDialog → keysDialog → settingsDialog → setupDialog → deleteDialog → toasts → paletteDialog
+hostKeyDialog → authDialog → hostDialog → keysDialog → snippetsDialog → settingsDialog → setupDialog → deleteDialog → toasts → paletteDialog
 ```
 
 - 浮层的状态都在 `app` 上（`a.form`、`a.keyPanel`、`a.auth`、`a.setup` …），`open` 为假时渲染函数直接返回。

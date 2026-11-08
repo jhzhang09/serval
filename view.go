@@ -63,6 +63,7 @@ func (a *app) view(c *ui.Context) {
 	a.hostDialog(c, colors)
 	a.proxiesDialog(c, colors)
 	a.keysDialog(c, colors)
+	a.snippetsDialog(c, colors)
 	a.settingsDialog(c, colors)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)

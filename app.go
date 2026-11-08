@@ -27,11 +27,13 @@ import (
 type app struct {
 	post func(func())
 
-	// vault 是全部用户数据（主机、私钥、密码、同步设置）的唯一来源，hosts、keys、settings 是它解密后的副本。
+	// vault 是全部用户数据（主机、私钥、密码、代码片段、同步设置）的唯一来源，
+	// hosts、keys、snippets、settings 是它解密后的副本。
 	vault      *vault.Vault
 	hosts      []hosts.Host
 	keys       []keys.Key
 	proxies    []hosts.Proxy
+	snippets   []snippet
 	settings   settings
 	hostsError string
 	// local 是只属于本机的设置（device.json），不进保险库、不参与同步。
@@ -79,6 +81,7 @@ type app struct {
 	deleting      *hosts.Host
 	keyPanel      keyPanel
 	proxyPanel    proxyPanel
+	snippetPanel  snippetPanel
 	settingsPanel settingsPanel
 	setup         setupSheet
 	unlock        unlockState
@@ -266,7 +269,9 @@ func (a *app) lockVault() {
 	a.hosts = nil
 	a.keys = nil
 	a.proxies = nil
+	a.snippets = nil
 	a.proxyPanel = proxyPanel{}
+	a.snippetPanel = snippetPanel{}
 	a.settings = settings{}
 	a.hostsError = ""
 	a.notice = ""
