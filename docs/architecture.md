@@ -65,6 +65,8 @@ flowchart TB
 | `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
+| `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |
+| `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |

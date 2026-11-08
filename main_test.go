@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -621,29 +623,156 @@ func TestAddHost(t *testing.T) {
 	}
 }
 
-func TestAddHostValidatesJumpsAndProxy(t *testing.T) {
-	h := newHarness(t)
+// 跳板机和代理默认收起；跳板机按顺序选择已保存的主机，代理从独立管理的列表里选。
+func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
+	h := newHarness(t,
+		hosts.Host{ID: "gw", Name: "gw", Address: "10.0.0.9", Port: 22, User: "ops"})
+	if err := h.a.apply(proxyChange(hosts.Proxy{ID: "px", Name: "office", Kind: hosts.ProxySOCKS5,
+		Address: "127.0.0.1", Port: 1080})); err != nil {
+		t.Fatal(err)
+	}
 	h.click("添加主机")
+	h.tt.Frame()
+	if h.tt.HasText("选择主机…") || h.tt.HasText("不使用代理") {
+		t.Fatalf("跳板机和代理默认不应展开: %q", h.tt.Texts())
+	}
 	d := &h.a.form
 	d.address, d.user, d.name = "10.2.2.2", "ops", "inner"
-	for _, c := range []struct{ jumps, proxy, want string }{
-		{"gw:abc", "", "跳板机"},
-		{"inner", "", "循环"},
-		{"", "ftp://x:1", "代理"},
-		{"", "socks5://u:secret@127.0.0.1:1080", "不能带密码"},
-	} {
-		d.jumps, d.proxy = c.jumps, c.proxy
-		h.tt.Frame()
-		h.click("添加")
-		if !strings.Contains(d.err, c.want) {
-			t.Errorf("jumps=%q proxy=%q 错误 = %q，期望包含 %q", c.jumps, c.proxy, d.err, c.want)
-		}
-	}
-	d.jumps, d.proxy = " dev , ops@gw:2222 ", "socks5://127.0.0.1:1080"
+
+	h.click("添加跳板机")
 	h.tt.Frame()
 	h.click("添加")
-	if saved := h.host("inner"); saved.ProxyJump != "dev,ops@gw:2222" || saved.Proxy != "socks5://127.0.0.1:1080" {
-		t.Fatalf("saved=%+v add.err=%q", saved, d.err)
+	if !strings.Contains(d.err, "还没有选择主机") {
+		t.Fatalf("没选跳板机应提示: %q", d.err)
+	}
+	if opts := h.a.jumpOptions(d, 0); !slices.Contains(opts, "dev") || !slices.Contains(opts, "gw") {
+		t.Fatalf("跳板机应能选已保存的主机: %q", opts)
+	}
+	d.jumps[0] = "inner" // 选自己（名称相同）会形成循环
+	h.click("再加一台")
+	d.jumps[1] = "gw"
+	h.tt.Frame()
+	h.click("添加")
+	if !strings.Contains(d.err, "循环") {
+		t.Fatalf("跳板机循环应提示: %q", d.err)
+	}
+	h.click("移除第 1 台跳板机")
+	h.tt.Frame()
+
+	h.click("使用代理")
+	h.tt.Frame()
+	if d.proxyName != "office" {
+		t.Fatalf("只有一个代理时应直接选上: %q", d.proxyName)
+	}
+	h.click("添加")
+	saved := h.host("inner")
+	if saved.ProxyJump != "gw" || saved.ProxyID != "px" || saved.Proxy != "" {
+		t.Fatalf("saved=%+v err=%q", saved, d.err)
+	}
+
+	// 编辑时已有的设置自动展开；“不使用代理”后保存即去掉代理。
+	h.a.openEdit(saved)
+	h.tt.Frame()
+	if !h.tt.HasText("不使用代理") || len(h.a.form.jumps) != 1 {
+		t.Fatalf("编辑时应展开已有设置: %q", h.tt.Texts())
+	}
+	h.click("不使用代理")
+	h.click("移除第 1 台跳板机")
+	h.click("保存")
+	if got := h.host("inner"); got.ProxyID != "" || got.ProxyJump != "" {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
+// 旧版直接填写的代理和跳板机地址：编辑表单原样保留，连接仍然有效。
+func TestLegacyProxyAndJumpAreKept(t *testing.T) {
+	h := newHarness(t,
+		hosts.Host{ID: "old", Name: "old", Address: "10.0.0.3", Port: 22, User: "u",
+			ProxyJump: "ops@gw:2222", Proxy: "socks5://127.0.0.1:1080"})
+	h.a.openEdit(h.host("old"))
+	h.tt.Frame()
+	h.click("保存")
+	if got := h.host("old"); got.ProxyJump != "ops@gw:2222" || got.Proxy != "socks5://127.0.0.1:1080" {
+		t.Fatalf("旧设置被改动: %+v err=%q", got, h.a.form.err)
+	}
+}
+
+// 在表单里新建代理：表单让位、内容保留，保存后回到表单并选中新代理。
+func TestCreateProxyFromHostForm(t *testing.T) {
+	h := newHarness(t)
+	h.click("添加主机")
+	h.a.form.address, h.a.form.user, h.a.form.name = "10.3.3.3", "ops", "via-proxy"
+	h.tt.Frame()
+	h.click("使用代理")
+	h.tt.Frame()
+	if !h.tt.HasText("还没有代理，先新建一个。") {
+		t.Fatalf("没有代理时应指引新建: %q", h.tt.Texts())
+	}
+	h.click("新建代理")
+	h.tt.Frame()
+	p := &h.a.proxyPanel
+	p.kind, p.address, p.port, p.name = 1, "127.0.0.1", "7890", "clash"
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.proxyPanel.open || !h.a.form.open || h.a.form.address != "10.3.3.3" || h.a.form.proxyName != "clash" {
+		t.Fatalf("应回到表单并选中新代理: panel=%v form=%+v", h.a.proxyPanel.open, h.a.form)
+	}
+	h.click("添加")
+	got := h.host("via-proxy")
+	px, ok := h.a.proxyByID(got.ProxyID)
+	if !ok || px.Kind != hosts.ProxyHTTP || px.Port != 7890 {
+		t.Fatalf("host=%+v proxy=%+v", got, px)
+	}
+	cfg, _, _, _, err := h.a.prepareDialConfig(context.Background(), got, nil)
+	if err != nil || cfg.Proxy == nil || cfg.Proxy.Kind != "http" || cfg.Proxy.Addr != "127.0.0.1:7890" {
+		t.Fatalf("连接配置应使用选中的代理: %+v err=%v", cfg.Proxy, err)
+	}
+}
+
+// 代理面板：带密码的代理先设置主密码、加密保存；删除时使用它的主机改为直连。
+func TestProxyPanelPasswordAndDelete(t *testing.T) {
+	h := newBareHarness(t)
+	h.click("代理")
+	h.tt.Frame()
+	h.click("添加代理")
+	h.tt.Frame()
+	p := &h.a.proxyPanel
+	p.address, p.port, p.user, p.password = "10.8.8.8", "1080", "pu", "proxy-secret"
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	if !h.a.setup.open || len(h.a.proxies) != 0 {
+		t.Fatal("保存代理密码前应先设置主密码")
+	}
+	h.a.setup.password, h.a.setup.confirm = "master pw 1", "master pw 1"
+	h.tt.Frame()
+	h.click("设置并继续")
+	h.pump("设置主密码完成", func() bool { return !h.a.setup.open })
+	if len(h.a.proxies) != 1 || h.a.proxies[0].Password != "proxy-secret" || h.a.proxies[0].Name != "10.8.8.8:1080" {
+		t.Fatalf("proxies=%+v err=%q", h.a.proxies, h.a.proxyPanel.err)
+	}
+	if h.vaultFileContains("proxy-secret") {
+		t.Fatal("保险库文件里不应出现代理密码明文")
+	}
+	px := h.a.proxies[0]
+	dev := h.devHost()
+	dev.ProxyID = px.ID
+	h.a.apply(hostChange(dev))
+
+	h.a.deleteProxy(px)
+	if len(h.a.proxies) != 0 || h.devHost().ProxyID != "" {
+		t.Fatalf("删除后主机应改为直连: %+v", h.devHost())
+	}
+}
+
+// 引用的代理不存在时报错，而不是悄悄直连。
+func TestMissingProxyIsReported(t *testing.T) {
+	h := newHarness(t, hosts.Host{ID: "x", Name: "x", Address: "10.0.0.1", Port: 22, User: "u", ProxyID: "gone"})
+	h.click("x")
+	h.tt.Frame()
+	if len(h.a.connecting) != 0 || !strings.Contains(h.a.notice, "代理已经删除") {
+		t.Fatalf("notice=%q", h.a.notice)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 
 	"serval/core/hosts"
 	"serval/core/keys"
-	"serval/core/sshconn"
 	"serval/core/vault"
 	"serval/design"
 
@@ -37,8 +36,17 @@ type hostForm struct {
 	name, address, port, user, group string
 	auth                             int    // authModes 的下标
 	keyName                          string // 选中的私钥名称，noKey 表示不用
-	jumps, proxy                     string
 	production                       bool
+
+	// jumps 是按顺序选择的跳板机（主机名称；旧记录里直接填写的地址原样保留）。
+	// 默认不显示，点“添加跳板机”后才出现。
+	jumps     []string
+	showJumps bool
+	// proxyName 是选中的代理名称；legacyProxy 是旧记录里直接填写的代理地址。
+	// 代理同样默认不显示，点“使用代理”后才出现。
+	proxyName   string
+	legacyProxy string
+	showProxy   bool
 
 	// password 是新输入的密码，留空表示保持保存的密码不变。
 	password string
@@ -61,8 +69,18 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 	f := hostForm{
 		open: true, fresh: true,
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
-		jumps: h.ProxyJump, proxy: h.Proxy, production: h.Production,
+		production:    h.Production,
 		passwordSaved: h.Password != "", keyName: noKey,
+		jumps: hosts.SplitJumps(h.ProxyJump),
+	}
+	f.showJumps = len(f.jumps) > 0
+	if p, ok := a.proxyByID(h.ProxyID); ok {
+		f.proxyName, f.showProxy = p.Name, true
+	} else if h.ProxyID != "" {
+		f.showProxy = true // 引用的代理已删除：展开让用户重新选择
+	} else if h.Proxy != "" {
+		f.legacyProxy, f.showProxy = h.Proxy, true
+		f.proxyName = legacyProxyLabel(h.Proxy)
 	}
 	if k, ok := a.keyByID(h.KeyID); ok {
 		f.keyName = k.Name
@@ -157,21 +175,26 @@ func (a *app) saveForm() {
 	if group == "" {
 		group = defaultGroup
 	}
-	proxyText := strings.TrimSpace(f.proxy)
-	proxy, err := sshconn.ParseProxy(proxyText)
+	proxyID, legacyProxy, err := a.formProxy(f)
 	if err != nil {
-		f.err = "代理：" + err.Error()
+		f.err = err.Error()
 		return
 	}
-	if proxy != nil && proxy.Password != "" {
-		f.err = "代理地址里不能带密码。"
-		return
+	var jumps []string
+	if f.showJumps {
+		for i, j := range f.jumps {
+			if j == pickHost || strings.TrimSpace(j) == "" {
+				f.err = fmt.Sprintf("第 %d 台跳板机还没有选择主机。不需要的话点它右边的移除。", i+1)
+				return
+			}
+			jumps = append(jumps, j)
+		}
 	}
 
 	h := hosts.Host{
 		Name: name, Address: address, Port: port, User: user, Auth: auth, KeyID: keyID,
 		Group: group, Production: f.production,
-		ProxyJump: strings.Join(hosts.SplitJumps(f.jumps), ","), Proxy: proxyText,
+		ProxyJump: strings.Join(jumps, ","), ProxyID: proxyID, Proxy: legacyProxy,
 	}
 	// 密码：新输入的覆盖；要求清除的清除；密码以外的登录方式也保留已有密码（自动模式会用到），
 	// 只有“私钥”模式用不上密码，清掉。复制来的主机沿用来源的密码。
@@ -322,7 +345,8 @@ func (a *app) deleteDialog(c *ui.Context) {
 
 // hostDialog 是添加、编辑、复制主机的表单面板。设置主密码的面板打开时让位，表单内容保留。
 func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
-	if !a.form.open || a.setup.open {
+	// 从表单里新建代理时代理面板盖在上面，表单让位，内容保留。
+	if !a.form.open || a.setup.open || a.proxyPanel.open {
 		return
 	}
 	t := c.Theme()
@@ -389,20 +413,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 				a.keyField(c, f)
 			}
 
-			ui.Row(c).Gap(10).Children(func() {
-				half(func() {
-					ui.Field(c, "跳板机", func() {
-						c.Key("addJumps")
-						ui.TextInput(c, &f.jumps).Placeholder("bastion")
-					}).Description("多台用逗号分隔。")
-				})
-				half(func() {
-					ui.Field(c, "代理", func() {
-						c.Key("addProxy")
-						ui.TextInput(c, &f.proxy).Placeholder("socks5://127.0.0.1:1080")
-					}).Description("socks5 或 http，仅第一跳。")
-				})
-			})
+			a.routeFields(c, colors, f)
 			c.Key("addProduction")
 			ui.Checkbox(c, &f.production, "这是生产环境")
 			if f.err != "" {

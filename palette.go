@@ -199,6 +199,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("panel-left", "显示或收起侧栏", func() { a.sidebarOpen = !a.sidebarOpen })
 	action("plus", "添加主机", func() { a.openAdd() })
 	action("key-round", "密钥", a.openKeys)
+	action("globe", "代理", a.openProxies)
 	action("settings", "打开设置", a.openSettings)
 	action("server", "已知主机", a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {

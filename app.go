@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ type app struct {
 	vault      *vault.Vault
 	hosts      []hosts.Host
 	keys       []keys.Key
+	proxies    []hosts.Proxy
 	settings   settings
 	hostsError string
 	// local 是只属于本机的设置（device.json），不进保险库、不参与同步。
@@ -75,6 +78,7 @@ type app struct {
 	// deleting 是等待确认删除的主机。
 	deleting      *hosts.Host
 	keyPanel      keyPanel
+	proxyPanel    proxyPanel
 	settingsPanel settingsPanel
 	setup         setupSheet
 	unlock        unlockState
@@ -261,6 +265,8 @@ func (a *app) lockVault() {
 	}
 	a.hosts = nil
 	a.keys = nil
+	a.proxies = nil
+	a.proxyPanel = proxyPanel{}
 	a.settings = settings{}
 	a.hostsError = ""
 	a.notice = ""
@@ -422,13 +428,13 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 	}
 	// 代理只用于第一跳。目标主机没设代理时，沿用第一台跳板机自己的代理设置：
 	// 那台跳板机单独连接时要走这个代理，经由它连接时自然也要。
-	proxySpec := h.Proxy
-	if proxySpec == "" && len(route) > 0 {
-		proxySpec = route[0].Proxy
+	proxyOwner := h
+	if !hasProxy(h) && len(route) > 0 {
+		proxyOwner = route[0]
 	}
-	proxy, err := sshconn.ParseProxy(proxySpec)
+	proxy, err := a.dialProxy(proxyOwner)
 	if err != nil {
-		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：代理设置有误，%w", h.Name, err)
+		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：%w", h.Name, err)
 	}
 
 	// 所有跳共用一个主机密钥策略：每台机器都要核对指纹，信任记录也存在同一处。
@@ -458,6 +464,31 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 	cfg.Jumps = configs[:len(route)]
 	cfg.Proxy = proxy
 	return cfg, route, used, chain, nil
+}
+
+// hasProxy 报告主机是否设置了代理（引用的代理配置或旧版直接填写的地址）。
+func hasProxy(h hosts.Host) bool { return h.ProxyID != "" || h.Proxy != "" }
+
+// dialProxy 把主机的代理设置转成连接用的配置。没有代理时返回 nil。
+// 引用的代理已被删除时报错，而不是悄悄直连：用户可能就是靠代理才能出网。
+func (a *app) dialProxy(h hosts.Host) (*sshconn.Proxy, error) {
+	if h.ProxyID != "" {
+		p, ok := a.proxyByID(h.ProxyID)
+		if !ok {
+			return nil, fmt.Errorf("%s 选用的代理已经删除，请编辑这台主机，重新选择代理", h.Name)
+		}
+		kind := p.Kind
+		if kind == "" {
+			kind = hosts.ProxySOCKS5
+		}
+		return &sshconn.Proxy{Kind: kind, Addr: net.JoinHostPort(p.Address, strconv.Itoa(p.Port)),
+			User: p.User, Password: p.Password}, nil
+	}
+	proxy, err := sshconn.ParseProxy(h.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("代理设置有误，%w", err)
+	}
+	return proxy, nil
 }
 
 // hopConfig 生成连接链路上一台机器的配置。认证方式决定尝试哪些登录方法。

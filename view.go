@@ -61,6 +61,7 @@ func (a *app) view(c *ui.Context) {
 	a.authDialog(c, colors)
 	a.challengeDialog(c, colors)
 	a.hostDialog(c, colors)
+	a.proxiesDialog(c, colors)
 	a.keysDialog(c, colors)
 	a.settingsDialog(c, colors)
 	a.setupDialog(c, colors)
@@ -218,6 +219,18 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openKeys)
+			proxiesButton := ui.ButtonBase(c).Key("openProxies").Label("代理").Height(30).Padding(0, 10).Gap(8).
+				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+			if proxiesButton.Hovered() {
+				proxiesButton.Background(colors.Hover)
+			}
+			proxiesButton.Children(func() {
+				ui.Icon(c, design.Icon("globe")).FontSize(14).TextColor(t.TextMuted)
+				ui.Text(c, "代理").TextColor(t.TextMuted).Grow(1)
+				if n := len(a.proxies); n > 0 {
+					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+				}
+			}).OnClick(a.openProxies)
 			settingsButton := ui.ButtonBase(c).Key("openSettings").Label("设置").Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if settingsButton.Hovered() {
