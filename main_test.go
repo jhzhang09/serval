@@ -91,6 +91,9 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	design.RegisterFonts()
 	serverDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(serverDir, "go.mod"), []byte("module serval\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	server, err := devsshd.Start(devsshd.Options{Password: testPassword, Dir: serverDir})
 	if err != nil {
 		t.Fatal(err)
