@@ -49,7 +49,10 @@ func (a *app) startSyncDir() {
 	if strings.TrimSpace(a.local.SyncDir) == "" || !a.vaultOpen() || a.post == nil || a.syncDirStop != nil {
 		return
 	}
-	a.exportSyncDir()
+	// 启用前另一台设备可能已经把更新的保险库放进文件夹了。
+	// 必须先读进来合并，再导出本机状态；顺序反了会用本机旧状态覆盖掉远端的新数据。
+	// consumeSyncDir 对读不到、读失败和“是另一个保险库”的情况都不会写文件。
+	a.consumeSyncDir(readSyncDir(a.local.SyncDir))
 	every := a.syncDirEvery
 	if every <= 0 {
 		every = defaultSyncDirEvery

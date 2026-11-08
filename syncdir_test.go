@@ -125,6 +125,31 @@ func TestSyncDirConflictCopyNeedsConfirm(t *testing.T) {
 	}
 }
 
+// 回归：另一台设备先把更新的数据放进同步文件夹，本机后来才启用同步时，
+// 必须先把文件夹里的数据合并进来，而不是用本机旧状态直接覆盖它。
+func TestSyncDirEnableMergesExistingFolderData(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	h.a.syncDirEvery = 20 * time.Millisecond
+
+	// 先启用一次，把本机保险库放进文件夹，再停掉，模拟另一台设备接着往里写。
+	if err := h.a.setSyncDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	h.a.stopSyncDir()
+	edited := editFolderVault(t, filepath.Join(dir, "vault.json"), h.a.vault.Key(), "folder-first", `{"name":"folder-first","address":"10.7.7.7","port":22,"user":"u","group":"我的主机"}`)
+	if err := writePrivateFile(filepath.Join(dir, "vault.json"), edited); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.a.setSyncDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.a.stopSyncDir)
+	h.pump("合并文件夹里别的设备写的数据", func() bool { return h.tt.HasText("folder-first") })
+	h.pump("把合并结果导回文件夹", func() bool { return remoteHasHost(t, dir, h.a.vault.Key(), "folder-first") })
+}
+
 func editFolderVault(t *testing.T, src string, key []byte, id, data string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(src)
