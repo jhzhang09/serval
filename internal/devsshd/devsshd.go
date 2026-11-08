@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -194,7 +195,7 @@ func (s *Server) serve(raw net.Conn) {
 		return
 	}
 	defer conn.Close()
-	go ssh.DiscardRequests(reqs)
+	go s.serveGlobal(conn, reqs)
 	for newChannel := range chans {
 		if newChannel.ChannelType() == "direct-tcpip" {
 			go s.forward(newChannel)
@@ -247,6 +248,156 @@ func (s *Server) forward(newChannel ssh.NewChannel) {
 	<-done
 	channel.Close()
 	upstream.Close()
+}
+
+// serveGlobal 处理 tcpip-forward，让测试能覆盖远程端口转发。
+// 只允许绑回环地址：这是测试工具，不能在机器的其他网卡上开端口。
+func (s *Server) serveGlobal(conn *ssh.ServerConn, reqs <-chan *ssh.Request) {
+	var mu sync.Mutex
+	listeners := map[string]net.Listener{}
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ln := range listeners {
+			ln.Close()
+		}
+	}()
+	for req := range reqs {
+		switch req.Type {
+		case "tcpip-forward":
+			s.acceptForward(conn, req, &mu, listeners)
+		case "cancel-tcpip-forward":
+			s.cancelForward(req, &mu, listeners)
+		default:
+			if req.WantReply {
+				req.Reply(false, nil)
+			}
+		}
+	}
+}
+
+func (s *Server) acceptForward(conn *ssh.ServerConn, req *ssh.Request, mu *sync.Mutex, listeners map[string]net.Listener) {
+	var msg struct {
+		Addr string
+		Port uint32
+	}
+	if err := ssh.Unmarshal(req.Payload, &msg); err != nil || !loopbackBind(msg.Addr) {
+		reply(req, false, nil)
+		return
+	}
+	bind := msg.Addr
+	if bind == "localhost" {
+		bind = "127.0.0.1"
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(bind, strconv.Itoa(int(msg.Port))))
+	if err != nil {
+		reply(req, false, nil)
+		return
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	key := net.JoinHostPort(msg.Addr, strconv.Itoa(port))
+	mu.Lock()
+	if old := listeners[key]; old != nil {
+		old.Close()
+	}
+	listeners[key] = ln
+	mu.Unlock()
+	var payload []byte
+	if msg.Port == 0 {
+		payload = ssh.Marshal(struct{ Port uint32 }{uint32(port)})
+	}
+	reply(req, true, payload)
+	go func() {
+		for {
+			raw, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go openForwarded(conn, raw, msg.Addr, port)
+		}
+	}()
+}
+
+func (s *Server) cancelForward(req *ssh.Request, mu *sync.Mutex, listeners map[string]net.Listener) {
+	var msg struct {
+		Addr string
+		Port uint32
+	}
+	if err := ssh.Unmarshal(req.Payload, &msg); err != nil {
+		reply(req, false, nil)
+		return
+	}
+	key := net.JoinHostPort(msg.Addr, strconv.Itoa(int(msg.Port)))
+	mu.Lock()
+	ln := listeners[key]
+	delete(listeners, key)
+	mu.Unlock()
+	if ln == nil {
+		reply(req, false, nil)
+		return
+	}
+	ln.Close()
+	reply(req, true, nil)
+}
+
+// loopbackBind 判断远程转发请求的监听地址是不是回环。空地址和 0.0.0.0 会听在所有网卡上，拒绝。
+func loopbackBind(addr string) bool {
+	if addr == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
+}
+
+func openForwarded(conn *ssh.ServerConn, raw net.Conn, host string, port int) {
+	originIP, originPort := "127.0.0.1", 1
+	if tcp, ok := raw.RemoteAddr().(*net.TCPAddr); ok && tcp.IP != nil {
+		originIP = tcp.IP.String()
+		if tcp.Port > 0 {
+			originPort = tcp.Port
+		}
+	}
+	ch, reqs, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(struct {
+		Addr       string
+		Port       uint32
+		OriginAddr string
+		OriginPort uint32
+	}{host, uint32(port), originIP, uint32(originPort)}))
+	if err != nil {
+		raw.Close()
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+	bridge(raw, ch)
+}
+
+func bridge(a, b io.ReadWriteCloser) {
+	type halfCloser interface{ CloseWrite() error }
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(a, b)
+		if h, ok := a.(halfCloser); ok {
+			h.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(b, a)
+		if h, ok := b.(halfCloser); ok {
+			h.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+	a.Close()
+	b.Close()
+}
+
+func reply(req *ssh.Request, ok bool, payload []byte) {
+	if req.WantReply {
+		req.Reply(ok, payload)
+	}
 }
 
 // session 处理单个通道上的 pty-req、shell、window-change 和 sftp 请求。

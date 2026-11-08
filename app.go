@@ -32,6 +32,7 @@ type app struct {
 	hosts      []hosts.Host
 	keys       []keys.Key
 	proxies    []hosts.Proxy
+	forwards   []hosts.Forward
 	settings   settings
 	hostsError string
 	// local 是只属于本机的设置（device.json），不进保险库、不参与同步。
@@ -76,9 +77,13 @@ type app struct {
 	auth authSheet
 	form hostForm
 	// deleting 是等待确认删除的主机。
-	deleting      *hosts.Host
-	keyPanel      keyPanel
-	proxyPanel    proxyPanel
+	deleting     *hosts.Host
+	keyPanel     keyPanel
+	proxyPanel   proxyPanel
+	forwardPanel forwardPanel
+	// tunnels 是正在监听的转发，键是规则 ID。forwardErr 是最近一次启动失败的说明。
+	tunnels       map[string]*liveTunnel
+	forwardErr    map[string]string
 	settingsPanel settingsPanel
 	setup         setupSheet
 	unlock        unlockState
@@ -230,6 +235,8 @@ func newApp() *app {
 		sidebarOpen: true,
 		connecting:  map[string]context.CancelFunc{},
 		arrived:     map[int]bool{},
+		tunnels:     map[string]*liveTunnel{},
+		forwardErr:  map[string]string{},
 	}
 	return a
 }
@@ -265,8 +272,12 @@ func (a *app) lockVault() {
 	}
 	a.hosts = nil
 	a.keys = nil
+	a.stopAllTunnels()
 	a.proxies = nil
+	a.forwards = nil
 	a.proxyPanel = proxyPanel{}
+	a.forwardPanel = forwardPanel{}
+	a.forwardErr = map[string]string{}
 	a.settings = settings{}
 	a.hostsError = ""
 	a.notice = ""
@@ -675,6 +686,7 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 		a.ensureFiles(t)
 	}
 	a.saveSessionLayout()
+	a.syncHostForwards(h.ID)
 }
 
 func (a *app) openSearch(t *tab) {
@@ -749,6 +761,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 		a.ensureFiles(t)
 	}
 	a.saveSessionLayout()
+	a.syncHostForwards(h.ID)
 }
 
 // insertRestoredTab 把标签放进标签栏。恢复会话的连接是并行建立的，先连上的不一定排在前面：
@@ -1096,13 +1109,19 @@ func (a *app) closeTab(t *tab) {
 	if i < 0 {
 		return
 	}
+	hostID := t.host.ID
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if a.active >= len(a.tabs) {
 		a.active = max(0, len(a.tabs)-1)
 	}
 	a.saveSessionLayout()
-	// 断开网络连接可能阻塞，不放在主线程。
-	go t.close()
+	// 先关掉这条连接上的转发，再关连接本身；还有同主机会话时，等端口释放后再改挂过去。
+	a.stopTunnelsForTab(t.id, func() {
+		go t.close()
+		if hostID != "" {
+			a.syncHostForwards(hostID)
+		}
+	})
 }
 
 func (t *tab) close() {
@@ -1129,11 +1148,31 @@ func (t *tab) close() {
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
 func (a *app) closeAll() {
 	a.saveSessionLayout()
+	byTab := map[int][]*liveTunnel{}
+	tabIDs := map[int]bool{}
+	for _, t := range a.tabs {
+		tabIDs[t.id] = true
+	}
+	var orphans []*liveTunnel
+	for _, live := range a.takeTunnels("", 0) {
+		if tabIDs[live.tabID] {
+			byTab[live.tabID] = append(byTab[live.tabID], live)
+		} else {
+			orphans = append(orphans, live)
+		}
+	}
+	if len(orphans) > 0 {
+		go closeLiveTunnels(orphans)
+	}
 	for _, cancel := range a.connecting {
 		cancel()
 	}
 	for _, t := range a.tabs {
-		go t.close()
+		lives := byTab[t.id]
+		go func() {
+			closeLiveTunnels(lives)
+			t.close()
+		}()
 	}
 	a.tabs = nil
 }
@@ -1262,9 +1301,15 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 	}
 	oldClient := t.client
 	t.client = client
-	if oldClient != nil {
-		go oldClient.Close()
-	}
+	// 取消远程监听要走旧连接，所以先关转发再关旧连接，端口释放后再在新连接上打开。
+	a.stopTunnelsForTab(t.id, func() {
+		if oldClient != nil {
+			go oldClient.Close()
+		}
+		if slices.Contains(a.tabs, t) && t.client == client && !t.reconnecting {
+			a.syncHostForwards(t.host.ID)
+		}
+	})
 	if t.files != nil {
 		oldFiles := t.files
 		t.files = nil
