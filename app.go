@@ -59,7 +59,7 @@ type app struct {
 	syncDirStop      context.CancelFunc
 	askConflicts     bool
 	pendingConflicts []syncConflict
-	ignoredConflicts map[string]int64
+	ignoredConflicts map[string]string
 
 	// pingInterval 和 reconnectBaseDelay 用于测试调节保活和重连退避时间，零值使用默认值。
 	pingInterval time.Duration

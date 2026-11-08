@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -22,7 +24,15 @@ type syncConflict struct {
 	name string
 	path string
 	body []byte
-	size int64
+	// sum 是 body 的内容指纹。“不再问”按它记忆：大小相同但内容变了要重新问。
+	sum string
+}
+
+// conflictFingerprint 用内容而不是大小识别冲突副本：同步软件更新后
+// 大小可能不变，只看大小会漏掉新内容，用户就再也没机会合并它了。
+func conflictFingerprint(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 type syncDirSnap struct {
@@ -200,7 +210,7 @@ func (a *app) consumeSyncDir(snap syncDirSnap) {
 	}
 	var fresh []syncConflict
 	for _, f := range snap.files {
-		if a.ignoredConflicts[f.path] == f.size {
+		if a.ignoredConflicts[f.path] == f.sum {
 			continue
 		}
 		fresh = append(fresh, f)
@@ -233,10 +243,10 @@ func (a *app) syncConflictDialog(c *ui.Context) {
 	a.pendingConflicts = nil
 	if choice != 0 {
 		if a.ignoredConflicts == nil {
-			a.ignoredConflicts = map[string]int64{}
+			a.ignoredConflicts = map[string]string{}
 		}
 		for _, f := range pending {
-			a.ignoredConflicts[f.path] = f.size
+			a.ignoredConflicts[f.path] = f.sum
 		}
 		return
 	}
@@ -306,7 +316,7 @@ func readSyncDir(dir string) syncDirSnap {
 		if err != nil {
 			continue
 		}
-		snap.files = append(snap.files, syncConflict{name: e.Name(), path: path, body: b, size: info.Size()})
+		snap.files = append(snap.files, syncConflict{name: e.Name(), path: path, body: b, sum: conflictFingerprint(b)})
 	}
 	return snap
 }

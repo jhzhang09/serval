@@ -194,6 +194,41 @@ func TestSyncDirConflictCopyChangedDuringConfirm(t *testing.T) {
 	}
 }
 
+// 回归：“不再问”按内容记忆。同样大小但内容不同的冲突副本，更新后要重新问。
+func TestSyncDirIgnoredConflictUsesContentNotSize(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	h.a.syncDirEvery = time.Hour
+	if err := h.a.setSyncDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.a.stopSyncDir)
+
+	conflictPath := filepath.Join(dir, "vault.sync-conflict-20261109-140000-ABCDEF.json")
+	body := editFolderVault(t, filepath.Join(dir, "vault.json"), h.a.vault.Key(), "conflict-ask", `{"name":"conflict-ask","address":"10.10.0.1","port":22,"user":"u","group":"我的主机"}`)
+	if err := writePrivateFile(conflictPath, body); err != nil {
+		t.Fatal(err)
+	}
+	h.a.consumeSyncDir(readSyncDir(dir))
+	h.pump("冲突副本确认", func() bool { return h.tt.HasText("发现冲突副本") })
+	h.click("取消")
+	h.tt.Frame()
+	h.a.consumeSyncDir(readSyncDir(dir))
+	h.tt.Frame()
+	if h.tt.HasText("发现冲突副本") {
+		t.Fatal("内容没变，不应再问")
+	}
+
+	// 内容变了一个字节，大小不变。
+	mutated := append([]byte(nil), body...)
+	mutated[len(mutated)-1] ^= 1
+	if err := writePrivateFile(conflictPath, mutated); err != nil {
+		t.Fatal(err)
+	}
+	h.a.consumeSyncDir(readSyncDir(dir))
+	h.pump("内容变了应再问", func() bool { return h.tt.HasText("发现冲突副本") })
+}
+
 func editFolderVault(t *testing.T, src string, key []byte, id, data string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(src)
