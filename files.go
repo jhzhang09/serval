@@ -65,7 +65,7 @@ func (a *app) startDownload(t *tab, remotePath, fileName string) {
 	if localPath == "" {
 		return // 用户取消
 	}
-	a.runTransfer(t, transferDownload, remotePath, localPath, fileName)
+	a.runTransfer(t, transferDownload, remotePath, localPath, fileName, false)
 }
 
 // startUpload 选一个本地文件上传到当前目录。远端已有同名文件时先请用户确认替换。
@@ -205,7 +205,7 @@ func (a *app) uploadTo(t *tab, localPath, remotePath string) {
 				a.pendingUploads = append(a.pendingUploads, &pendingUpload{tab: t, localPath: localPath, remotePath: remotePath, fileName: fileName})
 				return
 			}
-			a.runTransfer(t, transferUpload, remotePath, localPath, fileName)
+			a.runTransfer(t, transferUpload, remotePath, localPath, fileName, false)
 		})
 	}()
 }
@@ -224,12 +224,13 @@ func (a *app) uploadConfirmDialog(c *ui.Context) {
 	}
 	a.pendingUploads = a.pendingUploads[1:]
 	if choice == 0 && slices.Contains(a.tabs, u.tab) {
-		a.runTransfer(u.tab, transferUpload, u.remotePath, u.localPath, u.fileName)
+		a.runTransfer(u.tab, transferUpload, u.remotePath, u.localPath, u.fileName, false)
 	}
 }
 
 // runTransfer 在后台执行一次传输，进度通过原子字段给界面读取，结束后回到主线程提示结果。
-func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, fileName string) {
+// guardLocal 为真时，下载落盘前再检查一次本地同名文件，存在就不覆盖（拖放下载承诺不覆盖）。
+func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, fileName string, guardLocal bool) {
 	if t.files == nil {
 		return
 	}
@@ -249,9 +250,12 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 			}
 		}
 		var err error
-		if kind == transferDownload {
+		switch {
+		case kind == transferDownload && guardLocal:
+			err = files.DownloadIfAbsent(ctx, remotePath, localPath, progress)
+		case kind == transferDownload:
 			err = files.Download(ctx, remotePath, localPath, progress)
-		} else {
+		default:
 			err = files.Upload(ctx, localPath, remotePath, progress)
 		}
 		a.post(func() {
@@ -265,6 +269,9 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 			case ctx.Err() != nil:
 				tr.err = "已取消"
 				a.toast(ui.Toast{Title: "已取消" + verb + " " + fileName})
+			case errors.Is(err, sshconn.ErrLocalExists):
+				tr.err = "本地已经有同名的文件或文件夹"
+				a.toast(ui.Toast{Title: "没有下载 " + fileName, Description: "下载期间本地出现了同名的文件或文件夹，没有覆盖它，请先把原来的移走。", Type: "error"})
 			case err != nil:
 				tr.err = transferReason(err)
 				a.toast(ui.Toast{Title: verb + " " + fileName + " 失败", Description: tr.err, Type: "error"})

@@ -136,7 +136,9 @@ func (a *app) acceptPaneDrop(t *tab, destLocal bool, destDir string, item paneDr
 		a.runFolderDownload(t, item.path, local, item.name)
 		return
 	}
-	a.runTransfer(t, transferDownload, item.path, local, item.name)
+	// 拖放时先查一次是为了即时反馈；下载完成、改名落盘前 DownloadIfAbsent
+	// 会再查一次，兜住“检查之后、落盘之前”本地出现同名文件的窗口。
+	a.runTransfer(t, transferDownload, item.path, local, item.name, true)
 }
 
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {

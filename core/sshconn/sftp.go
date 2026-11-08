@@ -108,11 +108,23 @@ func copyWithProgress(ctx context.Context, dst io.Writer, src io.Reader, total i
 	}
 }
 
-// Download 把远程文件流式下载到 localPath。
+// Download 把远程文件流式下载到 localPath，目标已有同名文件时覆盖
+// （保存对话框里用户已经选过要不要替换）。
 //
 // 先写到同一目录下的临时文件，完成后再改名：中途失败或取消时删除临时文件，
 // 不会留下写了一半的文件，也不会弄坏 localPath 原有的内容。
-func (f *Files) Download(ctx context.Context, remotePath, localPath string, progress func(transferred, total int64)) (err error) {
+func (f *Files) Download(ctx context.Context, remotePath, localPath string, progress func(transferred, total int64)) error {
+	return f.download(ctx, remotePath, localPath, progress, false)
+}
+
+// DownloadIfAbsent 与 Download 相同，但改名落盘前再检查一次目标是否已经存在：
+// 从开始下载到落盘之间，别的程序可能创建了同名文件。存在时返回 ErrLocalExists，
+// 不覆盖，临时文件删掉。
+func (f *Files) DownloadIfAbsent(ctx context.Context, remotePath, localPath string, progress func(transferred, total int64)) error {
+	return f.download(ctx, remotePath, localPath, progress, true)
+}
+
+func (f *Files) download(ctx context.Context, remotePath, localPath string, progress func(transferred, total int64), guard bool) (err error) {
 	src, err := f.client.Open(remotePath)
 	if err != nil {
 		return fmt.Errorf("打开远程文件失败: %w", err)
@@ -137,6 +149,11 @@ func (f *Files) Download(ctx context.Context, remotePath, localPath string, prog
 	}
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("写入本地文件失败: %w", err)
+	}
+	if guard {
+		if _, statErr := os.Lstat(localPath); statErr == nil {
+			return ErrLocalExists
+		}
 	}
 	if err = os.Rename(tmp.Name(), localPath); err != nil {
 		return fmt.Errorf("保存本地文件失败: %w", err)

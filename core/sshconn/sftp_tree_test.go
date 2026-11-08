@@ -161,3 +161,39 @@ func partFiles(t *testing.T, root string) []string {
 	}
 	return parts
 }
+
+// 回归：DownloadIfAbsent 落盘前检查目标，已存在时返回 ErrLocalExists 而不是覆盖。
+func TestDownloadIfAbsentRefusesExisting(t *testing.T) {
+	remote := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remote, "a.txt"), []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := startServer(t, devsshd.Options{})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	files, err := client.OpenFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "a.txt")
+	if err := files.DownloadIfAbsent(context.Background(), filepath.Join(remote, "a.txt"), target, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 目标在下载开始后才出现的场景：落盘前检查到它，拒绝覆盖。
+	if err := os.WriteFile(target, []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := files.DownloadIfAbsent(context.Background(), filepath.Join(remote, "a.txt"), target, nil); !errors.Is(err, ErrLocalExists) {
+		t.Fatalf("目标已存在时应返回 ErrLocalExists，err=%v", err)
+	}
+	if got := readLocal(t, target); got != "local" {
+		t.Fatalf("不应覆盖本地内容，= %q", got)
+	}
+	// 拒绝后不应留下写了一半的临时文件。
+	matches, _ := filepath.Glob(filepath.Join(dir, ".a.txt.*.part"))
+	if len(matches) != 0 {
+		t.Fatalf("应清掉临时文件: %v", matches)
+	}
+}

@@ -53,6 +53,29 @@ func TestDualPaneDragsBothWays(t *testing.T) {
 	}
 }
 
+// 回归：拖放下载承诺“本地已有同名文件不覆盖”。目标在下载开始之后才出现
+// （检查与落盘之间的窗口）也不能覆盖：走带保护的下载路径，收到 ErrLocalExists。
+func TestPaneDownloadGuardsLateLocalFile(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("打开文件抽屉", func() bool { return tb.dir != "" })
+	remote := filepath.Join(tb.dir, "late.txt")
+	if err := os.WriteFile(remote, []byte("remote"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(t.TempDir(), "late.txt")
+	if err := os.WriteFile(local, []byte("keep-me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.a.runTransfer(tb, transferDownload, remote, local, "late.txt", true)
+	h.pump("下载结束", func() bool { return h.tt.HasText("没有下载 late.txt") })
+	if got := readFile(t, local); got != "keep-me" {
+		t.Fatalf("不应覆盖本地内容，= %q", got)
+	}
+}
+
 // dragOnto 把一个文件行拖到另一个元素上松开。移动要超过拖动阈值，否则只算点击。
 func dragOnto(t *testing.T, h *harness, from, to string) {
 	t.Helper()
