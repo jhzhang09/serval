@@ -83,6 +83,8 @@ type deviceSettings struct {
 	DisableRestoreSession bool `json:"disableRestoreSession,omitempty"`
 	// SavedSession 是本机退出时保存的标签与窗格布局。
 	SavedSession *savedSession `json:"savedSession,omitempty"`
+	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
+	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。

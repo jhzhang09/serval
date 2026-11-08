@@ -151,30 +151,67 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
 
 		ui.Column(c).Padding(2, 12, 12, 12).Children(func() {
-			search := ui.ButtonBase(c).Key("search").Label("搜索主机和操作").Height(32).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Transition(design.Hover)
-			if search.Hovered() {
-				search.Background(colors.Hover)
-			}
-			search.Children(func() {
-				ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "搜索").TextColor(t.TextMuted).Grow(1)
-				ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
-			}).OnClick(a.openPalette)
+			// 侧栏框直接过滤主机。命令面板仍由旁边的快捷键按钮和 ⌘K 打开，两者不再绑在同一次点击上。
+			ui.Row(c).Key("hostFilterRow").Height(32).Padding(0, 4, 0, 10).Gap(6).
+				AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
+				ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted).Shrink(0)
+				c.Key("hostFilter")
+				ui.TextInput(c, &a.hostFilter).Placeholder("过滤主机").Label("过滤主机").
+					Grow(1).MinWidth(0).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
+				cmd := ui.ButtonBase(c).Key("openPalette").Label("搜索主机和操作").Size(22, 22).Radius(6).Shrink(0).
+					Tooltip("命令面板（" + shortcutText("K") + "）")
+				if cmd.Hovered() {
+					cmd.Background(colors.Hover)
+				}
+				cmd.Children(func() {
+					ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+				}).OnClick(a.openPalette)
+			})
 		})
 
 		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).Padding(0, 10, 10, 10).Gap(16).Children(func() {
 				if len(a.hosts) == 0 {
 					a.sidebarEmpty(c)
+					return
+				}
+				matched := false
+				for _, group := range a.groups() {
+					if len(a.hostsInGroup(group)) > 0 {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					ui.Text(c, "没有匹配的主机").FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(10, 10)
+					return
 				}
 				for _, group := range a.groups() {
+					rows := a.hostsInGroup(group)
+					if len(rows) == 0 {
+						continue
+					}
+					collapsed := a.groupCollapsed(group)
 					ui.Column(c).Key("group:" + group).Gap(2).Children(func() {
-						ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).Padding(0, 10, 4, 10)
-						for _, h := range a.hosts {
-							if h.Group == group {
-								a.hostRow(c, colors, h)
-							}
+						iconName, action := "chevron-down", "折叠"
+						if collapsed {
+							iconName, action = "chevron-right", "展开"
+						}
+						header := ui.ButtonBase(c).Key("groupToggle:"+group).Label(action+" "+group).
+							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
+							Radius(design.RadiusRow).Transition(design.Hover)
+						if header.Hovered() {
+							header.Background(colors.Hover)
+						}
+						header.Children(func() {
+							ui.Icon(c, design.Icon(iconName)).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
+							ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).SingleLine()
+						}).OnClick(func() { a.toggleGroup(group) })
+						if collapsed {
+							return
+						}
+						for _, h := range rows {
+							a.hostRow(c, colors, h)
 						}
 					})
 				}

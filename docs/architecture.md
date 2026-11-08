@@ -131,7 +131,7 @@ view()
 ├── backdrop                       窗口底色渐变
 ├── lockScreen                     保险库锁定时只渲染它
 └── Row
-    ├── sidebar                    搜索、按分组的主机列表、添加主机、密钥
+    ├── sidebar                    过滤主机、可折叠分组、添加主机、密钥
     └── Column
         ├── tabBar                 标签放在标题栏里
         └── workspace              窗格卡片树（paneView）+ 文件抽屉，没有标签时是 emptyState
