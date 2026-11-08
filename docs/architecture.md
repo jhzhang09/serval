@@ -33,7 +33,7 @@ flowchart TB
 
 | 文件 | 职责 | 关键类型 |
 |---|---|---|
-| `client.go` | 建立连接：逐跳握手、认证方式组装、超时、保活 | `Config`、`Client`、`HopError`、哨兵错误 `ErrAuthFailed` 等 |
+| `client.go` | 建立连接：逐跳握手、认证方式组装、超时、保活、ssh-agent 转发 | `Config`、`Client`、`HopError`、哨兵错误 `ErrAuthFailed` 等 |
 | `proxy.go` | SOCKS5、HTTP CONNECT 代理，只用于第一跳 | `Proxy`、`ParseProxy` |
 | `hostkey.go` | 主机密钥校验：只读的 `~/.ssh/known_hosts` 加应用提供的信任存储 | `HostKeyPolicy`、`TrustedKeys`、`HostKeyChangedError` |
 | `shell.go` | 带 PTY 的交互 shell，实现 `io.ReadWriteCloser` 交给终端插件 | `Shell` |

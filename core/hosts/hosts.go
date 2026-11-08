@@ -30,6 +30,9 @@ type Host struct {
 	ProxyID string `json:"proxyId,omitempty"`
 	// Proxy 是直接填写的代理地址（兼容旧记录），例如 socks5://127.0.0.1:1080。
 	Proxy string `json:"proxy,omitempty"`
+	// ForwardAgent 为 true 时，连接这台主机后把本机 ssh-agent 转发给它。
+	// 默认关闭：转发后，这台机器上的程序可以用本机钥匙再登录其他服务器。
+	ForwardAgent bool `json:"forwardAgent,omitempty"`
 }
 
 // Proxy 是一条独立管理的代理配置，供多台主机复用，整条记录（包括密码）加密存进保险库。

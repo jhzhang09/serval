@@ -13,7 +13,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -208,7 +210,7 @@ func (s *Server) serve(raw net.Conn) {
 		if err != nil {
 			continue
 		}
-		go s.session(channel, requests)
+		go s.session(conn, channel, requests)
 	}
 }
 
@@ -249,12 +251,19 @@ func (s *Server) forward(newChannel ssh.NewChannel) {
 	upstream.Close()
 }
 
-// session 处理单个通道上的 pty-req、shell、window-change 和 sftp 请求。
-func (s *Server) session(channel ssh.Channel, requests <-chan *ssh.Request) {
+// session 处理单个通道上的 pty-req、shell、window-change、agent 转发和 sftp 请求。
+func (s *Server) session(conn *ssh.ServerConn, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 	var ptmx *os.File
 	var shellCmd *exec.Cmd
 	var size *pty.Winsize
+	var agentSock string
+	var stopAgent func()
+	defer func() {
+		if stopAgent != nil {
+			stopAgent()
+		}
+	}()
 	term := "xterm-256color"
 	done := make(chan struct{})
 
@@ -302,11 +311,22 @@ func (s *Server) session(channel ssh.Channel, requests <-chan *ssh.Request) {
 				if req.WantReply {
 					req.Reply(true, nil)
 				}
+			case "auth-agent-req@openssh.com":
+				// 测试用的 agent 转发：给这个会话一个套接字，连上来时再开通道回到客户端。
+				if agentSock == "" {
+					path, stop, err := serveAgentSocket(conn)
+					if err != nil {
+						req.Reply(false, nil)
+						continue
+					}
+					agentSock, stopAgent = path, stop
+				}
+				req.Reply(true, nil)
 			case "shell":
 				if size == nil {
 					size = &pty.Winsize{Cols: 80, Rows: 24}
 				}
-				f, cmd, err := s.startShell(channel, term, size, done)
+				f, cmd, err := s.startShell(channel, term, size, agentSock, done)
 				if err != nil {
 					req.Reply(false, nil)
 					return
@@ -341,10 +361,12 @@ func (s *Server) session(channel ssh.Channel, requests <-chan *ssh.Request) {
 	}
 }
 
-func (s *Server) startShell(channel ssh.Channel, term string, size *pty.Winsize, done chan struct{}) (*os.File, *exec.Cmd, error) {
+func (s *Server) startShell(channel ssh.Channel, term string, size *pty.Winsize, agentSock string, done chan struct{}) (*os.File, *exec.Cmd, error) {
 	cmd := exec.Command(s.opts.Shell[0], s.opts.Shell[1:]...)
 	cmd.Dir = s.opts.Dir
-	cmd.Env = append(os.Environ(), "TERM="+term)
+	// 去掉进程自带的 SSH_AUTH_SOCK：开发服务器和测试跑在同一台机器上，
+	// 留下它的话，shell 会直接连到测试进程的 agent，转发测出来的结果是假的。
+	cmd.Env = shellEnv(term, agentSock)
 	ptmx, err := pty.StartWithSize(cmd, size)
 	if err != nil {
 		return nil, nil, err
@@ -364,4 +386,75 @@ func (s *Server) startShell(channel ssh.Channel, term string, size *pty.Winsize,
 		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{uint32(code)}))
 	}()
 	return ptmx, cmd, nil
+}
+
+// shellEnv 构造 shell 的环境变量。agentSock 非空时才设置 SSH_AUTH_SOCK。
+func shellEnv(term, agentSock string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "SSH_AUTH_SOCK=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env, "TERM="+term)
+	if agentSock != "" {
+		env = append(env, "SSH_AUTH_SOCK="+agentSock)
+	}
+	return env
+}
+
+// serveAgentSocket 监听一个短路径的 Unix 套接字，把连进来的连接转成
+// auth-agent@openssh.com 通道。路径放在 /tmp 下：macOS 的套接字路径上限约 104 字节。
+func serveAgentSocket(conn *ssh.ServerConn) (string, func(), error) {
+	dir, err := os.MkdirTemp("/tmp", "sa-")
+	if err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", nil, err
+	}
+	go func() {
+		for {
+			local, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go proxyAgentChannel(conn, local)
+		}
+	}()
+	stop := func() {
+		ln.Close()
+		os.RemoveAll(dir)
+	}
+	return path, stop, nil
+}
+
+// proxyAgentChannel 把本地套接字和客户端的 agent 通道接在一起。
+func proxyAgentChannel(conn *ssh.ServerConn, local net.Conn) {
+	defer local.Close()
+	ch, reqs, err := conn.OpenChannel("auth-agent@openssh.com", nil)
+	if err != nil {
+		return
+	}
+	defer ch.Close()
+	go ssh.DiscardRequests(reqs)
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(ch, local)
+		ch.CloseWrite()
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(local, ch)
+		if u, ok := local.(*net.UnixConn); ok {
+			u.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }

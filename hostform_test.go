@@ -360,3 +360,34 @@ func TestRenameHostUpdatesJumpReferences(t *testing.T) {
 		t.Fatalf("改名后应能正常解析跳板机链路: route=%+v err=%v", route, err)
 	}
 }
+
+// 转发 ssh-agent 默认关闭；勾选后能看到风险提示，保存后写进主机记录，再次编辑仍然勾选。
+func TestForwardAgentOptionWarnsAndPersists(t *testing.T) {
+	h := newHarness(t)
+	h.a.openEdit(h.devHost())
+	h.tt.Frame()
+	if h.a.form.forwardAgent {
+		t.Fatal("转发 ssh-agent 应默认关闭")
+	}
+	if h.tt.HasText("只在信任这台机器时保持开启。") {
+		t.Fatal("未开启时不应展示风险提示")
+	}
+	h.click("转发 ssh-agent")
+	h.tt.Frame()
+	if !h.a.form.forwardAgent || !h.tt.HasText("只在信任这台机器时保持开启。") {
+		t.Fatalf("勾选后应打开选项并提示风险: on=%v texts=%q", h.a.form.forwardAgent, h.tt.Texts())
+	}
+	h.click("保存")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("保存失败: %s", h.a.form.err)
+	}
+	if !h.devHost().ForwardAgent {
+		t.Fatal("转发选项应写入主机记录")
+	}
+	h.a.openEdit(h.devHost())
+	h.tt.Frame()
+	if !h.a.form.forwardAgent || !h.tt.HasText("只在信任这台机器时保持开启。") {
+		t.Fatal("再次编辑应保持开启并继续提示风险")
+	}
+}

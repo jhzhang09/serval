@@ -16,7 +16,7 @@
 
 ## 当前进度（2026-11-08 第一批验收后）
 
-第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。下一批可从 F7、C3、C6、T3–T6、S1、P3、N1 中挑选。
+第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。下一批可从 F7、C3、T3–T6、S1、P3、N1 中挑选。C6 在 `feat/C6-agent-forward`。
 
 ## 已完成（0.1.0）
 
@@ -156,10 +156,11 @@
 - **验收**：macOS 上打开本地终端运行命令（界面测试）；Windows、Linux 上手动验证（随 R1、R2）。
 - **依赖**：无。
 
-### C6 ssh-agent 转发（S）
+### C6 ssh-agent 转发（S，feat/C6-agent-forward）
 
 - **范围**：主机选项“转发 ssh-agent”（默认关闭，开启时提示安全风险）；`core/sshconn` 用 `agent.ForwardToRemote`。
 - **验收**：经跳板机连接后，在目标主机上 `ssh-add -l` 能看到本机 agent 的钥匙（集成测试）。
+- **实现**：选项写在主机记录 `forwardAgent`。连接目标时转发；本机没有 agent 则整次连接失败并说明原因。开发服务器会去掉继承来的 `SSH_AUTH_SOCK`，避免测试误把本机套接字当成转发成功。
 
 ### C7 证书与硬件密钥（L，需决策）
 

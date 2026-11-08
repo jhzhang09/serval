@@ -37,6 +37,7 @@ type hostForm struct {
 	auth                             int    // authModes 的下标
 	keyName                          string // 选中的私钥名称，noKey 表示不用
 	production                       bool
+	forwardAgent                     bool
 
 	// jumps 是按顺序选择的跳板机（主机名称；旧记录里直接填写的地址原样保留）。
 	// 默认不显示，点“添加跳板机”后才出现。
@@ -70,6 +71,7 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 		open: true, fresh: true,
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
 		production:    h.Production,
+		forwardAgent:  h.ForwardAgent,
 		passwordSaved: h.Password != "", keyName: noKey,
 		jumps: hosts.SplitJumps(h.ProxyJump),
 	}
@@ -193,7 +195,7 @@ func (a *app) saveForm() {
 
 	h := hosts.Host{
 		Name: name, Address: address, Port: port, User: user, Auth: auth, KeyID: keyID,
-		Group: group, Production: f.production,
+		Group: group, Production: f.production, ForwardAgent: f.forwardAgent,
 		ProxyJump: strings.Join(jumps, ","), ProxyID: proxyID, Proxy: legacyProxy,
 	}
 	// 密码：新输入的覆盖；要求清除的清除；密码以外的登录方式也保留已有密码（自动模式会用到），
@@ -416,6 +418,12 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			a.routeFields(c, colors, f)
 			c.Key("addProduction")
 			ui.Checkbox(c, &f.production, "这是生产环境")
+			c.Key("addForwardAgent")
+			ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
+			if f.forwardAgent {
+				ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
+					FontSize(design.TextSmall).TextColor(colors.Danger)
+			}
 			if f.err != "" {
 				ui.Text(c, f.err).Key("addError").TextColor(t.Danger)
 			}
