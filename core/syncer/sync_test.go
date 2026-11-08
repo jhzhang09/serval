@@ -78,6 +78,26 @@ func mustHave(t *testing.T, v *vault.Vault, ids ...string) {
 	}
 }
 
+func TestProbe(t *testing.T) {
+	url, client := webdavServer(t, "alice", "s3cret")
+	ctx := context.Background()
+	ok := &Client{URL: url, User: "alice", Password: "s3cret", HTTP: client}
+	if err := ok.Probe(ctx); err != nil {
+		t.Fatalf("文件还不存在时也应能连上: %v", err)
+	}
+	bad := &Client{URL: url, User: "alice", Password: "nope", HTTP: client}
+	if err := bad.Probe(ctx); !errors.Is(err, ErrAuth) {
+		t.Fatalf("密码错误应返回 ErrAuth，得到 %v", err)
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL + "/vault.json"
+	closedClient := closed.Client()
+	closed.Close()
+	if err := (&Client{URL: closedURL, HTTP: closedClient}).Probe(ctx); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("连不上时应返回 ErrUnavailable，得到 %v", err)
+	}
+}
+
 func TestFileURL(t *testing.T) {
 	got, err := FileURL("https://dav.example/remote/")
 	if err != nil || got != "https://dav.example/remote/vault.json" {

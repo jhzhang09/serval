@@ -63,6 +63,25 @@ func FileURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// Probe 检查账号能否访问这个地址。文件还不存在也算连上了，因为新设备第一次同步时远端就是空的。
+func (c *Client) Probe(ctx context.Context) error {
+	resp, err := c.do(ctx, http.MethodGet, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNotFound:
+		return nil
+	default:
+		if err := classify(resp.StatusCode); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+	}
+}
+
 // Download 读取远端文件。404 返回 ErrNotFound。
 func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 	resp, err := c.do(ctx, http.MethodGet, nil, nil)

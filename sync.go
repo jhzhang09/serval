@@ -65,6 +65,74 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 	return nil
 }
 
+// saveSyncSettings 把设置页里的草稿写入本机。密码留空时不覆盖系统安全存储里已有的密码。
+func (a *app) saveSyncSettings() {
+	p := &a.settingsPanel
+	p.probeMsg = ""
+	if err := a.configureSync(p.syncURL, p.syncUser, p.syncPassword, p.syncOn); err != nil {
+		p.err = err.Error()
+		return
+	}
+	p.err = ""
+	p.syncPassword = ""
+	p.syncURL = a.local.SyncURL
+	p.syncUser = a.local.SyncUser
+	p.syncOn = a.local.SyncOn
+	a.toast(ui.Toast{Title: "已保存同步设置"})
+}
+
+// testSyncFromPanel 用当前草稿试一次连接，不保存、不上传。密码留空时用已保存的密码。
+func (a *app) testSyncFromPanel() {
+	p := &a.settingsPanel
+	if p.probeBusy {
+		return
+	}
+	rawURL := strings.TrimSpace(p.syncURL)
+	fileURL, err := syncer.FileURL(rawURL)
+	if err != nil {
+		p.probeOK = false
+		p.probeMsg = err.Error()
+		p.err = ""
+		return
+	}
+	password := p.syncPassword
+	if password == "" {
+		password = a.syncPassword()
+	}
+	if a.post == nil {
+		p.probeOK = false
+		p.probeMsg = "窗口还没准备好，稍后再试。"
+		return
+	}
+	user := strings.TrimSpace(p.syncUser)
+	p.probeBusy = true
+	p.probeOK = false
+	p.probeMsg = ""
+	p.err = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err := (&syncer.Client{URL: fileURL, User: user, Password: password}).Probe(ctx)
+		msg := "可以连接。"
+		ok := err == nil
+		if err != nil {
+			msg = syncUserMessage(err)
+		}
+		a.post(func() {
+			if !a.settingsPanel.open {
+				return
+			}
+			a.settingsPanel.probeBusy = false
+			a.settingsPanel.probeOK = ok
+			a.settingsPanel.probeMsg = msg
+		})
+	}()
+}
+
+func formatSyncTime(t time.Time) string {
+	return t.Local().Format("2006-01-02 15:04")
+}
+
 func (a *app) syncPassword() string {
 	if a.device == nil {
 		return ""

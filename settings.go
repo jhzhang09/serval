@@ -135,6 +135,7 @@ type settingsTab int
 const (
 	settingsTabGeneral settingsTab = iota
 	settingsTabTerminal
+	settingsTabSync
 )
 
 // settingsPanel 是“设置”浮层面板的状态。
@@ -156,6 +157,13 @@ type settingsPanel struct {
 	// revealChangePw 让刚展开的修改主密码表单滚动到可见位置（设置项在滚动区域里，表单可能在下方）。
 	revealChangePw bool
 	restoreSession bool
+
+	// 同步页的草稿。密码只在点保存时写入系统安全存储，空着表示保留已有密码。
+	syncURL, syncUser, syncPassword string
+	syncOn                          bool
+	probeBusy                       bool
+	probeOK                         bool
+	probeMsg                        string
 }
 
 // openSettings 打开设置面板。
@@ -165,6 +173,9 @@ func (a *app) openSettings() {
 		fresh:          true,
 		rememberDevice: a.isRememberedOnDevice(),
 		restoreSession: !a.local.DisableRestoreSession,
+		syncURL:        a.local.SyncURL,
+		syncUser:       a.local.SyncUser,
+		syncOn:         a.local.SyncOn,
 	}
 }
 
@@ -348,7 +359,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600).Grow(1)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
-				ui.Segmented(c, &tabIdx, "通用", "终端").OnChange(func() {
+				ui.Segmented(c, &tabIdx, "通用", "终端", "同步").OnChange(func() {
 					p.tab = settingsTab(tabIdx)
 				})
 			})
@@ -464,6 +475,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						a.knownHostsSection(c, colors)
 						return
 					}
+					if p.tab == settingsTabSync {
+						a.syncSettingsSection(c, colors)
+						return
+					}
 					ui.Field(c, "终端字号", func() {
 						c.Key("settingsFontSize")
 						ui.Segmented(c, &sizeIdx, fontSizeLabels...).OnChange(func() {
@@ -518,6 +533,51 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	})
 	if !p.open {
 		a.settingsPanel = settingsPanel{}
+	}
+}
+
+// syncSettingsSection 是设置里的“同步”页。地址和账号写在本机，密码只在保存时进系统安全存储。
+func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	ui.Field(c, "服务地址", func() {
+		c.Key("syncURL")
+		ui.TextInput(c, &p.syncURL).Placeholder("https://example.com/remote/")
+	}).Description("填目录或 vault.json 的地址。账号和密码不要写在地址里。")
+	ui.Field(c, "账号", func() {
+		c.Key("syncUser")
+		ui.TextInput(c, &p.syncUser).Placeholder("可选")
+	})
+	ui.Field(c, "同步密码", func() {
+		c.Key("syncPassword")
+		ui.TextInput(c, &p.syncPassword).Password().Placeholder("留空则保留已保存的密码")
+	}).Description("密码只放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
+	c.Key("syncEnabled")
+	ui.Checkbox(c, &p.syncOn, "启用同步")
+	ui.Text(c, "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。").
+		FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	ui.Row(c).Gap(8).Children(func() {
+		label := "测试连接"
+		if p.probeBusy {
+			label = "正在测试连接"
+		}
+		ui.Button(c, label).Key("syncTest").Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
+		ui.PrimaryButton(c, "保存同步设置").Key("syncSave").OnClick(a.saveSyncSettings)
+	})
+	if p.probeMsg != "" {
+		col := c.Theme().TextMuted
+		if !p.probeOK {
+			col = colors.Danger
+		}
+		ui.Text(c, p.probeMsg).Key("syncProbe").FontSize(design.TextSmall).TextColor(col).Selectable()
+	}
+	switch {
+	case a.syncing:
+		ui.Text(c, "正在同步…").Key("syncProgress").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	case !a.lastSync.IsZero():
+		ui.Text(c, "上次同步 "+formatSyncTime(a.lastSync)).Key("syncLast").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	}
+	if a.syncErr != "" {
+		ui.Text(c, a.syncErr).Key("syncError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 	}
 }
 
