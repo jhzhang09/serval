@@ -4,6 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"serval/core/hosts"
+	"serval/internal/devsshd"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -157,7 +161,7 @@ func TestDragOutOffersFileAfterDownload(t *testing.T) {
 			if e.Name != name {
 				continue
 			}
-			c := h.a.dragCopies[e.Path]
+			c := h.a.dragCopies[dragKey{tb.id, e.Path}]
 			if c != nil && c.local != "" && !c.preparing {
 				path = c.local
 				return true
@@ -183,6 +187,107 @@ func TestDragOutOffersFileAfterDownload(t *testing.T) {
 	}
 	if !offered {
 		t.Fatal("下载完成后再次拖动应交出本地路径")
+	}
+}
+
+// 回归：两个标签连到不同主机、远端路径（和大小、修改时间）相同时，
+// 拖出副本必须分开记录，否则会把 A 主机下载的内容当成 B 主机的交给用户。
+func TestDragOutSeparatesTabs(t *testing.T) {
+	dir2 := t.TempDir()
+	second, err := devsshd.Start(devsshd.Options{Password: testPassword, Dir: dir2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	h := newHarness(t, hosts.Host{ID: "second", Name: "second", Address: "127.0.0.1", Port: second.Addr().Port, User: "tester"})
+
+	// 第二台主机上先放好文件；第一台主机的文件等它的目录列出来再放。
+	stamp := time.Now().Add(-time.Hour)
+	secondFile := filepath.Join(dir2, "same.txt")
+	if err := os.WriteFile(secondFile, []byte("AAAA-secnd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(secondFile, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	tb1 := h.connectDev()
+	h.click("文件（⌘J）")
+	h.pump("打开第一个标签的文件列表", func() bool { return tb1.dir != "" })
+	first := filepath.Join(tb1.dir, "same.txt")
+	if err := os.WriteFile(first, []byte("AAAA-first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(first, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	h.click("刷新")
+	h.pump("列出第一个标签的文件", func() bool {
+		for _, e := range tb1.entries {
+			if e.Name == "same.txt" {
+				return true
+			}
+		}
+		return false
+	})
+	dragRow(t, h, "same.txt")
+	h.pump("第一个标签的副本下好", func() bool {
+		for _, e := range tb1.entries {
+			if e.Name != "same.txt" {
+				continue
+			}
+			c := h.a.dragCopies[dragKey{tb1.id, e.Path}]
+			return c != nil && c.local != "" && !c.preparing
+		}
+		return false
+	})
+
+	// 连上第二台主机，新标签成为当前标签。
+	h.click("second")
+	h.pump("密码询问", func() bool { return h.a.auth.open })
+	h.a.auth.secret = testPassword
+	h.tt.Frame()
+	h.click("连接")
+	h.pump("第二台主机指纹", func() bool { return len(h.a.prompts) > 0 })
+	h.click("信任并连接")
+	h.pump("第二个会话建立", func() bool { return len(h.a.tabs) == 2 })
+	tb2 := h.a.tabs[1]
+	// 抽屉是全局开关，第二台主机连上后已经对着新标签列出目录，直接刷新即可。
+	h.pump("打开第二个标签的文件列表", func() bool { return tb2.dir != "" })
+	h.click("刷新")
+	h.pump("列出第二个标签的文件", func() bool {
+		for _, e := range tb2.entries {
+			if e.Name == "same.txt" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 第一次拖动必须重新下载第二台主机上的文件，不能复用第一台的副本。
+	dragRow(t, h, "same.txt")
+	h.pump("第二个标签的副本下好", func() bool {
+		for _, e := range tb2.entries {
+			if e.Name != "same.txt" {
+				continue
+			}
+			c := h.a.dragCopies[dragKey{tb2.id, e.Path}]
+			return c != nil && c.local != "" && !c.preparing
+		}
+		return false
+	})
+	dragRow(t, h, "same.txt")
+	var offered string
+	for _, c := range h.a.dragCopies {
+		if c.offered {
+			offered = c.local
+		}
+	}
+	if offered == "" {
+		t.Fatal("下载完成后再次拖动应交出本地路径")
+	}
+	if got := readFile(t, offered); got != "AAAA-secnd" {
+		t.Fatalf("交给系统的应是第二台主机的内容，得到 %q", got)
 	}
 }
 

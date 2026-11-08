@@ -98,9 +98,10 @@ type app struct {
 	chooseUploadFolder   func() (string, error)
 	chooseDownloadFolder func() (string, error)
 	chooseSavePath       func(defaultName string) (string, error)
-	// dragRoot 是拖到桌面之前临时下载的目录。dragCopies 按远程路径记下准备好的副本，只在主线程读写。
+	// dragRoot 是拖到桌面之前临时下载的目录。dragCopies 按标签和远程路径记下准备好的副本：
+	// 同一路径在不同主机上是不同的文件。只在主线程读写。
 	dragRoot   string
-	dragCopies map[string]*dragCopy
+	dragCopies map[dragKey]*dragCopy
 	// localDir 是文件抽屉左侧列出的本机目录。localGen 用来丢掉过期的列举结果。
 	localDir     string
 	localEntries []localEntry

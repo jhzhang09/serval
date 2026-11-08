@@ -715,7 +715,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			a.prepareDragOut(t, entry)
 		}
 	}
-	if _, ready := a.dragReady(entry); ready {
+	if _, ready := a.dragReady(t, entry); ready {
 		a.bindDragOut(row, t, entry)
 	}
 	if row.Hovered() {

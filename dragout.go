@@ -28,6 +28,13 @@ type dragCopy struct {
 	offered bool
 }
 
+// dragKey 唯一确定一份拖出副本。只按远程路径记会把不同主机的同名文件混在一起：
+// 两台机器上路径、大小、修改时间都相同的文件，内容可能完全不同。
+type dragKey struct {
+	tab  int
+	path string
+}
+
 // bindDragOut 让文件行可以拖到桌面。只允许复制，避免文件管理器把临时文件移走。
 func (a *app) bindDragOut(row ui.Element, t *tab, entry sshconn.Entry) {
 	if t.local || t.files == nil {
@@ -41,10 +48,10 @@ func (a *app) bindDragOut(row ui.Element, t *tab, entry sshconn.Entry) {
 }
 
 func (a *app) dragOutData(t *tab, entry sshconn.Entry) transfer.Data {
-	if local, ok := a.dragReady(entry); ok {
+	if local, ok := a.dragReady(t, entry); ok {
 		data, err := transfer.FileData(local)
 		if err == nil {
-			if c := a.dragCopies[entry.Path]; c != nil {
+			if c := a.dragCopies[dragKey{t.id, entry.Path}]; c != nil {
 				c.offered = true
 			}
 			return data
@@ -54,8 +61,8 @@ func (a *app) dragOutData(t *tab, entry sshconn.Entry) transfer.Data {
 	return transfer.Data{}
 }
 
-func (a *app) dragReady(entry sshconn.Entry) (string, bool) {
-	c := a.dragCopies[entry.Path]
+func (a *app) dragReady(t *tab, entry sshconn.Entry) (string, bool) {
+	c := a.dragCopies[dragKey{t.id, entry.Path}]
 	if c == nil || c.preparing || c.local == "" || c.size != entry.Size || c.modUnix != entry.ModTime.UnixNano() {
 		return "", false
 	}
@@ -70,7 +77,7 @@ func (a *app) prepareDragOut(t *tab, entry sshconn.Entry) {
 	if t == nil || t.local || t.files == nil || !slices.Contains(a.tabs, t) {
 		return
 	}
-	if _, ok := a.dragReady(entry); ok {
+	if _, ok := a.dragReady(t, entry); ok {
 		return
 	}
 	if err := validateFileName(entry.Name); err != nil {
@@ -78,9 +85,10 @@ func (a *app) prepareDragOut(t *tab, entry sshconn.Entry) {
 		return
 	}
 	if a.dragCopies == nil {
-		a.dragCopies = map[string]*dragCopy{}
+		a.dragCopies = map[dragKey]*dragCopy{}
 	}
-	if c := a.dragCopies[entry.Path]; c != nil && c.preparing {
+	key := dragKey{t.id, entry.Path}
+	if c := a.dragCopies[key]; c != nil && c.preparing {
 		a.toast(ui.Toast{Title: entry.Name + " 还在下载", Description: "完成后再拖一次，就可以拖到桌面。"})
 		return
 	}
@@ -97,7 +105,7 @@ func (a *app) prepareDragOut(t *tab, entry sshconn.Entry) {
 	}
 	local := filepath.Join(destDir, entry.Name)
 	copy := &dragCopy{size: entry.Size, modUnix: entry.ModTime.UnixNano(), preparing: true}
-	a.dragCopies[entry.Path] = copy
+	a.dragCopies[key] = copy
 	a.toast(ui.Toast{Title: "正在下载 " + entry.Name, Description: "下载完成后再拖一次，就能拖到桌面。"})
 
 	files := t.files
@@ -111,7 +119,7 @@ func (a *app) prepareDragOut(t *tab, entry sshconn.Entry) {
 			err = files.Download(context.Background(), remote, local, nil)
 		}
 		a.post(func() {
-			cur := a.dragCopies[remote]
+			cur := a.dragCopies[key]
 			if cur != copy {
 				os.RemoveAll(destDir)
 				return
@@ -119,7 +127,7 @@ func (a *app) prepareDragOut(t *tab, entry sshconn.Entry) {
 			copy.preparing = false
 			if !slices.Contains(a.tabs, t) || err != nil {
 				os.RemoveAll(destDir)
-				delete(a.dragCopies, remote)
+				delete(a.dragCopies, key)
 				if err != nil && slices.Contains(a.tabs, t) {
 					a.toast(ui.Toast{Title: "没法拖出 " + name, Description: transferReason(err), Type: "error"})
 				}
