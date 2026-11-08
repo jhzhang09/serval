@@ -169,7 +169,7 @@
 
 ## T 终端
 
-### T1 终端设置（M，修改中：`feat/T1-terminal-settings`）
+### T1 终端设置（M，已完成：feat/T1-terminal-settings）
 
 - **范围**：字体（优先已安装的等宽字体）、字号、行高、光标样式、回滚行数、配色主题（MyGo 终端插件自带 Ghostty 的主题列表，浅色和深色各选一套）。设置随同步。可选：单台主机覆盖主题（生产环境默认用偏红的主题，需决策）。
 - **涉及**：`design/tokens.go`（`Terminal`、`TerminalFont` 改为读设置）、`settings.go`、设置面板。

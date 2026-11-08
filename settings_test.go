@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/egoist/mygo/plugins/terminal"
 	"os"
 	"path/filepath"
 	"slices"
@@ -478,5 +479,138 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	h.tt.Frame()
 	if !h.a.isRememberedOnDevice() {
 		t.Fatal("重新勾选后应记在安全存储中")
+	}
+}
+
+// 终端设置（字号、行高、光标样式、回滚行数、配色主题）修改后已打开终端立即生效，且重启后保留。
+func TestTerminalSettingsPersistAndApplyLive(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.tt.Frame()
+
+	// 初始默认值
+	initFont := h.a.terminalFont()
+	if initFont.Size != 13 || initFont.LineHeight != 1.15 {
+		t.Fatalf("初始字体设置异常: %+v", initFont)
+	}
+
+	// 打开设置面板并切换到“终端”标签
+	h.click("设置")
+	h.tt.Frame()
+	if !h.a.settingsPanel.open {
+		t.Fatal("设置面板未打开")
+	}
+	h.click("终端")
+	h.tt.Frame()
+
+	// 修改字号为 15
+	h.click("15")
+	h.tt.Frame()
+	if h.a.settings.TerminalFontSize != 15 {
+		t.Fatalf("字号未更新: %v", h.a.settings.TerminalFontSize)
+	}
+
+	// 修改行高为 1.3
+	h.click("1.3")
+	h.tt.Frame()
+	if h.a.settings.TerminalLineHeight != 1.3 {
+		t.Fatalf("行高未更新: %v", h.a.settings.TerminalLineHeight)
+	}
+
+	// 修改光标样式为下划线
+	h.click("下划线")
+	h.tt.Frame()
+	if h.a.settings.TerminalCursor != "underline" {
+		t.Fatalf("光标样式未更新: %v", h.a.settings.TerminalCursor)
+	}
+
+	// 修改回滚缓冲区为 100 MB（终端插件按字节计）
+	h.click("100 MB")
+	h.tt.Frame()
+	if h.a.settings.TerminalScrollbackMB != 100 || h.a.terminalScrollback() != 100<<20 {
+		t.Fatalf("回滚缓冲区未更新: %v", h.a.settings.TerminalScrollbackMB)
+	}
+
+	// 修改深色配色主题为 Dracula
+	h.click("Dracula")
+	h.tt.Frame()
+	if h.a.settings.TerminalThemeDark != "Dracula" {
+		t.Fatalf("深色主题未更新: %v", h.a.settings.TerminalThemeDark)
+	}
+
+	// 修改浅色配色主题为 GitHub
+	h.click("GitHub")
+	h.tt.Frame()
+	if h.a.settings.TerminalThemeLight != "GitHub Light Default" {
+		t.Fatalf("浅色主题未更新: %v", h.a.settings.TerminalThemeLight)
+	}
+
+	// 验证运行中终端立即应用了新字体和主题
+	curFont := h.a.terminalFont()
+	if curFont.Size != 15 || curFont.LineHeight != 1.3 {
+		t.Fatalf("应用运行中字体未更新: %+v", curFont)
+	}
+	if tb.focus.term == nil {
+		t.Fatal("焦点窗格终端为空")
+	}
+
+	h.click("完成")
+	h.tt.Frame()
+
+	// 记住本机密钥后重启应用，验证设置持久化保存在保险库中
+	h.a.rememberOnDevice(true)
+	h.reopen()
+	if h.a.settings.TerminalFontSize != 15 ||
+		h.a.settings.TerminalLineHeight != 1.3 ||
+		h.a.settings.TerminalCursor != "underline" ||
+		h.a.settings.TerminalScrollbackMB != 100 ||
+		h.a.settings.TerminalThemeDark != "Dracula" ||
+		h.a.settings.TerminalThemeLight != "GitHub Light Default" {
+		t.Fatalf("重启后终端设置未持久化保留: %+v", h.a.settings)
+	}
+}
+
+// 预设配色必须在 Ghostty 主题表里存在，否则选了没有任何效果（验收时发现 4 个名字写错）。
+func TestTerminalThemePresetsExist(t *testing.T) {
+	for _, list := range [][]string{popularDarkThemes, popularLightThemes} {
+		for _, name := range list {
+			if name == "" {
+				continue
+			}
+			if _, err := terminal.GhosttyTheme(name); err != nil {
+				t.Errorf("预设配色 %q 不存在: %v", name, err)
+			}
+			if themeNote(name) != "" {
+				t.Errorf("存在的配色不应提示找不到: %q", name)
+			}
+		}
+	}
+	if themeNote("No Such Theme") == "" {
+		t.Error("找不到的配色应提示正在使用默认配色")
+	}
+}
+
+// 选中排在默认项前面的选项（11 号字、1.0 行高）时，高亮的仍是它自己。
+func TestSettingIndexKeepsEarlierChoices(t *testing.T) {
+	if got := indexOr(fontSizes, 11, 2); got != 0 {
+		t.Errorf("11 号字的下标 = %d，期望 0", got)
+	}
+	if got := indexOr(lineHeights, 1.0, 1); got != 0 {
+		t.Errorf("1.0 行高的下标 = %d，期望 0", got)
+	}
+	if got := indexOr(fontSizes, 99, 2); got != 2 {
+		t.Errorf("找不到时应返回默认下标 2，得到 %d", got)
+	}
+
+	h := newHarness(t)
+	h.click("设置")
+	h.tt.Frame()
+	h.click("终端")
+	h.tt.Frame()
+	h.click("11")
+	h.tt.Frame()
+	h.tt.Frame() // 再渲染几帧：错误的高亮下标会通过 OnChange 把设置改回去
+	if h.a.settings.TerminalFontSize != 11 {
+		t.Fatalf("选 11 号字后设置变成了 %v", h.a.settings.TerminalFontSize)
 	}
 }

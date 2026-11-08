@@ -527,15 +527,44 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	}
 }
 
+func (a *app) terminalFont() terminal.Font {
+	return design.TerminalFontWith(
+		a.settings.TerminalFontFamily,
+		a.settings.TerminalFontSize,
+		a.settings.TerminalLineHeight,
+	)
+}
+
+func (a *app) terminalCursor() terminal.CursorStyle {
+	switch a.settings.TerminalCursor {
+	case "bar":
+		return terminal.CursorBar
+	case "underline":
+		return terminal.CursorUnderline
+	default:
+		return terminal.CursorBlock
+	}
+}
+
+// terminalScrollback 返回终端插件的 Scrollback 选项（单位是字节；0 表示插件默认的 10 MB）。
+func (a *app) terminalScrollback() int {
+	if mb := a.settings.TerminalScrollbackMB; mb > 0 {
+		return mb << 20
+	}
+	return 0
+}
+
 func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 	a.nextID++
 	p := &pane{id: a.nextID}
 	term, err := terminal.New(terminal.Options{
-		Conn:      shell,
-		Font:      design.TerminalFont(),
-		Theme:     a.terminalTheme(false),
-		DarkTheme: a.terminalTheme(true),
-		Padding:   terminal.Padding{X: 10, Y: 8},
+		Conn:       shell,
+		Font:       a.terminalFont(),
+		Theme:      a.terminalTheme(false),
+		DarkTheme:  a.terminalTheme(true),
+		Cursor:     a.terminalCursor(),
+		Scrollback: a.terminalScrollback(),
+		Padding:    terminal.Padding{X: 10, Y: 8},
 		OnExit: func(int) {
 			a.post(func() { a.paneEnded(t, p) })
 		},
@@ -553,20 +582,34 @@ func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 // terminalTheme 返回 windowDark 外观的窗口里终端应使用的配色。
 // 用户手动指定外观时，无论窗口实际是明是暗都用同一套。
 func (a *app) terminalTheme(windowDark bool) *terminal.Theme {
+	dark := windowDark
 	switch a.settings.Appearance {
 	case appearanceLight:
-		return design.Terminal(false)
+		dark = false
 	case appearanceDark:
-		return design.Terminal(true)
+		dark = true
 	}
-	return design.Terminal(windowDark)
+	themeName := a.settings.TerminalThemeLight
+	if dark {
+		themeName = a.settings.TerminalThemeDark
+	}
+	if themeName != "" {
+		if th, err := terminal.GhosttyTheme(themeName); err == nil && th != nil {
+			return th
+		}
+	}
+	return design.Terminal(dark)
 }
 
-// refreshTerminals 让所有运行中的终端应用最新的配色设置。
+// refreshTerminals 让所有运行中的终端应用最新的字体与配色设置。
 func (a *app) refreshTerminals() {
+	font := a.terminalFont()
+	light := a.terminalTheme(false)
+	dark := a.terminalTheme(true)
 	for _, t := range a.tabs {
 		t.root.each(func(p *pane) {
-			p.term.SetTheme(a.terminalTheme(false), a.terminalTheme(true))
+			p.term.SetTheme(light, dark)
+			p.term.SetFont(font)
 		})
 	}
 }
