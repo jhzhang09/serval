@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"serval/core/hosts"
@@ -84,6 +85,15 @@ type app struct {
 	unlock        unlockState
 	pal           palette
 	askingLock    bool
+	// broadcastOn 为真时，当前焦点窗格的键盘输入会同时发到 broadcast 里的其他窗格。
+	broadcastOn bool
+	// broadcast 是参与广播的窗格 id，只在主线程读写。
+	broadcast map[int]bool
+	// broadcastAsk 是等待确认加入的生产环境窗格。
+	broadcastAsk *broadcastAsk
+	// broadcastSource 是正在接收键盘的窗格 id。主线程写，终端输入 goroutine 只读。
+	// 0 表示不镜像。被 Send 进去的窗格 id 不同，所以不会再转发出去。
+	broadcastSource atomic.Int64
 	// idleTime 返回用户多久没有使用键盘和鼠标（系统级，正式运行时是 mygo.Power.IdleTime）。
 	// 自动锁定按它判断：不能用“界面最后一次重绘”的时间，终端输出、动画、定时器都会触发重绘。
 	idleTime func() time.Duration
@@ -283,6 +293,7 @@ func (a *app) lockVault() {
 	a.setup = setupSheet{}
 	a.settingsPanel = settingsPanel{}
 	a.pal = palette{}
+	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.toast(ui.Toast{Title: "保险库已锁定"})
@@ -858,8 +869,27 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		z = newZmodemConn(shell, func(s *zmodemSession) {
 			a.post(func() { a.startZmodem(t, p, z, s) })
 		})
+		// 回调在终端的输入 goroutine 上：只比较原子里的窗格 id，把字节拷走再回到主线程。
+		z.onInput = func(b []byte) {
+			if a.broadcastSource.Load() != int64(p.id) {
+				return
+			}
+			cp := append([]byte(nil), b...)
+			a.post(func() { a.mirrorBroadcast(p.id, cp) })
+		}
 		opts.Conn = z
 		p.zconn = z
+	} else {
+		// 本地终端的按键不经过 Conn。返回 false，本机 shell 仍收到这个键。
+		opts.OnKey = func(mods ui.Modifiers, key ui.Key) bool {
+			if a.broadcastSource.Load() != int64(p.id) {
+				return false
+			}
+			if b := localBroadcastBytes(mods, key); len(b) > 0 {
+				a.mirrorBroadcast(p.id, b)
+			}
+			return false
+		}
 	}
 	return terminal.New(opts)
 }
@@ -1021,6 +1051,8 @@ func (a *app) split(t *tab, vertical bool) {
 			t.replace(target, &pane{id: a.nextID, first: target, second: leaf, vertical: vertical, percent: 50})
 			t.focus = leaf
 			a.arrived[leaf.id] = true
+			// 新窗格还没加入广播。焦点已经移走，不能再把原来那个窗格的写入镜像出去。
+			a.syncBroadcastSource()
 			a.saveSessionLayout()
 		})
 	}()
@@ -1057,6 +1089,7 @@ func (a *app) closeFocused(t *tab) {
 		return
 	}
 	closing := t.focus
+	a.removeBroadcast(closing.id)
 	var parent *pane
 	var walk func(*pane)
 	walk = func(p *pane) {
@@ -1086,6 +1119,8 @@ func (a *app) closeFocused(t *tab) {
 			t.focus = p
 		}
 	})
+	// removeBroadcast 时焦点还在要关掉的窗格上，这里按新焦点再算一次镜像源。
+	a.syncBroadcastSource()
 	a.saveSessionLayout()
 	term := closing.term
 	go term.Close()
@@ -1096,6 +1131,7 @@ func (a *app) closeTab(t *tab) {
 	if i < 0 {
 		return
 	}
+	a.dropTabBroadcast(t)
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if a.active >= len(a.tabs) {
 		a.active = max(0, len(a.tabs)-1)
@@ -1136,6 +1172,7 @@ func (a *app) closeAll() {
 		go t.close()
 	}
 	a.tabs = nil
+	a.clearBroadcast()
 }
 
 // reconnect 用同样的主机信息重新连接，替换已断开的标签。
@@ -1608,6 +1645,8 @@ func (a *app) paneEnded(t *tab, p *pane, shell *sshconn.Shell) {
 		return
 	}
 	p.ended = true
+	// 会话已经结束，再往里送命令没有意义。重连成功后不会自动加回广播。
+	a.removeBroadcast(p.id)
 	if t.reconnecting {
 		return
 	}

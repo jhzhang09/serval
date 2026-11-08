@@ -73,6 +73,9 @@ func (a *app) view(c *ui.Context) {
 	a.fileDeleteDialog(c)
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
+	a.broadcastDialog(c)
+	// 焦点可能在这一帧才从窗格里的 FocusWithin 改过来，镜像源要跟着重算。
+	a.syncBroadcastSource()
 }
 
 // backdrop 给窗口铺上底色渐变。开启毛玻璃时渐变略透明，让桌面的颜色微微透出来，
@@ -451,10 +454,8 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	card.AnimatePose(pose, design.Pop)
 	// 焦点切换时，薄纱淡入淡出，而不是瞬间出现。
 	veil := card.AnimateTo("veil", boolToFloat(dim), design.Fade)
-	if t.host.Production {
-		// 生产环境的卡片描一圈淡红色的边，任何时候瞥一眼都能看到。
-		card.BorderColor(colors.Danger.Alpha(0.45))
-	}
+	// 边框宽度一步到位，不做成动画：宽度变化会让终端改一次尺寸，动画则会连发几十次。
+	broadcastMark(card, colors, c.Theme().Accent, a.broadcast[p.id], t.host.Production)
 	card.Children(func() {
 		a.paneHeader(c, colors, t, p)
 		if p.searchOpen {
@@ -556,6 +557,16 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if !compact {
 			ui.Textf(c, "%d × %d", cols, rows).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 		}
+		if a.broadcast[p.id] {
+			fg, bg := theme.Accent, theme.Accent.Alpha(0.14)
+			if t.host.Production {
+				fg, bg = colors.Danger, colors.DangerSoft
+			}
+			chip(c, "广播", fg, bg)
+		}
+		// 同一台主机拆开后标题相同，标签带上序号，避免点到另一个窗格。
+		label := broadcastButtonLabel(a.broadcast[p.id], t.host.Name, paneOrdinal(t.root, p))
+		iconButton(c, colors, "radio", label, func() { a.togglePaneBroadcast(t, p) }).Disabled(p.ended && !a.broadcast[p.id])
 	})
 }
 

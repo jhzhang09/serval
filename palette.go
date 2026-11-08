@@ -194,6 +194,11 @@ func (a *app) paletteItems(query string) []paletteItem {
 		action("rows-2", "向下拆分", func() { a.split(t, true) })
 		action("x", "关闭当前窗格", func() { a.closeFocused(t) })
 	}
+	if a.broadcastOn {
+		action("radio", "关闭广播", a.toggleBroadcast)
+	} else {
+		action("radio", "广播输入", a.toggleBroadcast)
+	}
 	action("folder", "显示或收起文件", a.toggleFiles)
 	action("terminal", "新建本地终端", a.openLocalTerminal)
 	action("panel-left", "显示或收起侧栏", func() { a.sidebarOpen = !a.sidebarOpen })
