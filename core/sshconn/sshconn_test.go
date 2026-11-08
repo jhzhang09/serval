@@ -538,3 +538,29 @@ func TestDevServerRefusesNonLoopback(t *testing.T) {
 		t.Fatal("开发服务器不应监听非回环地址")
 	}
 }
+
+// Exited 区分“远端 shell 自己退出”和“连接中断”。
+func TestShellExitedDistinguishesExitFromDisconnect(t *testing.T) {
+	server := startServer(t, devsshd.Options{Password: testPassword})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+
+	shell, err := client.OpenShell(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go io.Copy(io.Discard, shell)
+	fmt.Fprintf(shell, "exit 3\n")
+	if !shell.Exited(5 * time.Second) {
+		t.Fatal("输入 exit 后应判定为远端自己退出（退出码非 0 也算）")
+	}
+
+	other, err := client.OpenShell(80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go io.Copy(io.Discard, other)
+	server.Close() // 服务器消失：没有退出状态
+	if other.Exited(5 * time.Second) {
+		t.Fatal("连接中断不应判定为远端自己退出")
+	}
+}

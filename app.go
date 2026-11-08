@@ -41,7 +41,9 @@ type app struct {
 	localUser string
 
 	// pingInterval 和 reconnectBaseDelay 用于测试调节保活和重连退避时间，零值使用默认值。
-	pingInterval       time.Duration
+	pingInterval time.Duration
+	// restoreActive 是恢复会话时上次激活的标签位置（从 1 开始），见 insertRestoredTab。
+	restoreActive      int
 	reconnectBaseDelay time.Duration
 
 	sidebarOpen bool
@@ -138,6 +140,9 @@ type tab struct {
 	latency time.Duration
 	stalled bool
 
+	// restoreSlot 是恢复会话时这个标签在上次会话里的位置（从 1 开始），普通标签为 0。
+	restoreSlot int
+
 	reconnecting     bool
 	reconnectAttempt int
 	reconnectCancel  context.CancelFunc
@@ -157,6 +162,8 @@ type pane struct {
 	id    int
 	term  *terminal.Terminal
 	ended bool
+	// shell 是这个窗格的远程 shell（本地终端为 nil），用来在终端结束时判断是断线还是远端自己退出。
+	shell *sshconn.Shell
 
 	first, second *pane
 	vertical      bool
@@ -268,11 +275,12 @@ func (a *app) open(h hosts.Host) {
 // connect 在后台建立连接，有跳板机时逐跳连接。creds 是用户刚输入的密码或口令，
 // 按链路位置（见 authSheet.hop）索引，只用于这一次连接尝试；没输入的部分用保险库里保存的。
 func (a *app) connect(h hosts.Host, creds map[int]credential) {
-	a.connectWithLayout(h, creds, nil)
+	a.connectWithLayout(h, creds, nil, 0)
 }
 
 // connectWithLayout 在后台建立连接，并按 layout 恢复窗格结构（为 nil 时打开单个窗格）。
-func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *savedPane) {
+// slot 是恢复会话时这个标签在上次会话里的位置（从 1 开始），普通连接为 0。
+func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *savedPane, slot int) {
 	if _, busy := a.connecting[h.ID]; busy {
 		return
 	}
@@ -332,7 +340,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 			}
 			a.rememberCredentials(chain, used)
 			if layout != nil {
-				a.addTabWithLayout(h, client, shells, layout)
+				a.addTabWithLayout(h, client, shells, layout, slot)
 			} else {
 				a.addTab(h, client, shells[0])
 			}
@@ -597,10 +605,10 @@ func (a *app) terminalScrollback() int {
 	return 0
 }
 
-func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*sshconn.Shell, layout *savedPane) {
+func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*sshconn.Shell, layout *savedPane, slot int) {
 	a.nextID++
 	ctx, stop := context.WithCancel(context.Background())
-	t := &tab{id: a.nextID, host: h, client: client, stop: stop}
+	t := &tab{id: a.nextID, host: h, client: client, stop: stop, restoreSlot: slot}
 	idx := 0
 	root, err := a.restorePaneNode(t, shells, &idx, layout)
 	if err != nil {
@@ -617,8 +625,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 	root.each(func(p *pane) {
 		a.arrived[p.id] = true
 	})
-	a.tabs = append(a.tabs, t)
-	a.active = len(a.tabs) - 1
+	a.insertRestoredTab(t)
 	if _, ok := a.hostByID(h.ID); ok {
 		a.recordRecentHost(h.ID)
 	}
@@ -627,6 +634,31 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 		a.ensureFiles(t)
 	}
 	a.saveSessionLayout()
+}
+
+// insertRestoredTab 把标签放进标签栏。恢复会话的连接是并行建立的，先连上的不一定排在前面：
+// 按上次会话里的位置插入，只有上次激活的那个标签连上时才切换过去，
+// 免得恢复过程中用户刚切换的标签被抢走。普通连接（slot 为 0）照常放到最后并切换过去。
+func (a *app) insertRestoredTab(t *tab) {
+	if t.restoreSlot == 0 {
+		a.tabs = append(a.tabs, t)
+		a.active = len(a.tabs) - 1
+		return
+	}
+	at := 0
+	for _, other := range a.tabs {
+		if other.restoreSlot > 0 && other.restoreSlot < t.restoreSlot {
+			at++
+		}
+	}
+	current := a.current()
+	a.tabs = slices.Insert(a.tabs, at, t)
+	switch {
+	case t.restoreSlot == a.restoreActive || current == nil:
+		a.active = at
+	default:
+		a.active = slices.Index(a.tabs, current)
+	}
 }
 
 func (a *app) restorePaneNode(t *tab, shells []*sshconn.Shell, idx *int, layout *savedPane) (*pane, error) {
@@ -687,6 +719,7 @@ func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 		return nil, err
 	}
 	p.term = term
+	p.shell = shell
 	return p, nil
 }
 
@@ -976,6 +1009,36 @@ func (a *app) startAutoReconnect(t *tab) {
 	a.retryReconnect(ctx, t, 1)
 }
 
+// reconnectRetryable 报告这个错误值不值得自动重试。只有网络类错误会自己好起来；
+// 认证失败、主机密钥变化（可能有人冒充服务器）、用户拒绝信任，重试只会重复失败，
+// 主机密钥变化时一直重试还会掩盖安全问题。
+func reconnectRetryable(err error) bool {
+	var changed *sshconn.HostKeyChangedError
+	switch {
+	case errors.As(err, &changed),
+		errors.Is(err, sshconn.ErrHostKeyRejected),
+		errors.Is(err, sshconn.ErrAuthFailed),
+		errors.Is(err, sshconn.ErrNoAuthMethod),
+		errors.Is(err, sshconn.ErrKeyEncrypted),
+		errors.Is(err, sshconn.ErrBadPassphrase):
+		return false
+	}
+	return true
+}
+
+// stopReconnect 停止自动重连，把原因告诉用户。会话保持“已结束”，用户可以点“重新连接”，
+// 走完整的连接流程（重新输入密码、核对指纹）。
+func (a *app) stopReconnect(t *tab, err error) {
+	a.cancelReconnect(t)
+	var changed *sshconn.HostKeyChangedError
+	if errors.As(err, &changed) {
+		a.notice = fmt.Sprintf("%s 的主机密钥和上次不同，可能有人冒充这台服务器，已停止自动重连。"+
+			"如果服务器确实重装过，右键 %s 选择“重置主机密钥”，再重新连接。", t.host.Name, t.host.Name)
+		return
+	}
+	a.notice = fmt.Sprintf("%s 自动重连已停止：%v。点窗格上的“重新连接”可以重新输入密码或核对指纹。", t.host.Name, err)
+}
+
 func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
 	if ctx.Err() != nil || !t.reconnecting || !slices.Contains(a.tabs, t) {
 		return
@@ -983,10 +1046,8 @@ func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
 	t.reconnectAttempt = attempt
 	cfg, _, _, _, err := a.prepareDialConfig(ctx, t.host, nil)
 	if err != nil {
-		delay := a.reconnectDelay(attempt)
-		time.AfterFunc(delay, func() {
-			a.post(func() { a.retryReconnect(ctx, t, attempt+1) })
-		})
+		// 主机配置本身有问题（私钥被删、跳板机写错），重试不会好转。
+		a.stopReconnect(t, err)
 		return
 	}
 	go func() {
@@ -999,6 +1060,10 @@ func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
 				return
 			}
 			if err != nil {
+				if !reconnectRetryable(err) {
+					a.stopReconnect(t, err)
+					return
+				}
 				delay := a.reconnectDelay(attempt)
 				time.AfterFunc(delay, func() {
 					a.post(func() { a.retryReconnect(ctx, t, attempt+1) })
@@ -1058,6 +1123,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 			go oldTerm.Close()
 		}
 		p.term = term
+		p.shell = shell
 		p.ended = false
 	})
 	a.saveSessionLayout()
@@ -1109,16 +1175,15 @@ func (a *app) restoreSession() {
 	if a.local.DisableRestoreSession || a.local.SavedSession == nil || len(a.local.SavedSession.Tabs) == 0 {
 		return
 	}
+	// 各台主机并行连接。需要密码或核对指纹的主机会各自弹出询问。
 	session := a.local.SavedSession
-	for _, st := range session.Tabs {
+	a.restoreActive = session.Active + 1
+	for i, st := range session.Tabs {
 		h, ok := a.hostByID(st.HostID)
 		if !ok {
 			continue
 		}
-		a.connectWithLayout(h, nil, st.Root)
-	}
-	if session.Active >= 0 && session.Active < len(session.Tabs) {
-		a.active = session.Active
+		a.connectWithLayout(h, nil, st.Root, i+1)
 	}
 }
 
@@ -1305,18 +1370,34 @@ func (a *app) paneEnded(t *tab, p *pane) {
 		a.toast(ui.Toast{Title: t.host.Name + " 的一个窗格已结束"})
 		return
 	}
-	// 连接已中断或保活失败时自动重连；主动 exit 退出时显示提示。
-	pingFailed := t.stalled
-	if !pingFailed && t.client != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := t.client.Ping(ctx)
-		cancel()
-		pingFailed = err != nil
-	}
-	if pingFailed {
+	// 保活已经失败，肯定是断线。否则看远端有没有发来退出状态：用户输入 exit 时有，断线时没有
+	// （见 sshconn.Shell.Exited）。在后台等，不阻塞界面；不靠 ping，高延迟链路上 ping 慢不代表断线。
+	if t.stalled {
 		a.startAutoReconnect(t)
 		return
 	}
+	if p.shell == nil {
+		a.showSessionEnded(t)
+		return
+	}
+	shell := p.shell
+	go func() {
+		exited := shell.Exited(3 * time.Second)
+		a.post(func() {
+			if !slices.Contains(a.tabs, t) || t.reconnecting {
+				return
+			}
+			if !exited {
+				a.startAutoReconnect(t)
+				return
+			}
+			a.showSessionEnded(t)
+		})
+	}()
+}
+
+// showSessionEnded 提示远端会话已经结束，提供重新连接。
+func (a *app) showSessionEnded(t *tab) {
 	a.toast(ui.Toast{
 		ID:       fmt.Sprintf("ended:%d", t.id),
 		Title:    t.host.Name + " 的会话已结束",
