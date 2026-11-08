@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func init() {
@@ -226,5 +227,39 @@ func TestNewerFormatIsRejected(t *testing.T) {
 	os.WriteFile(path, []byte(`{"format":99,"records":[]}`), 0o600)
 	if _, err := Open(path, "d"); err == nil || !strings.Contains(err.Error(), "升级") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// 派生密钥（Argon2id）在锁外进行：Protect、Unlock 进行中，State() 不应等待。
+// 这里用正式参数，测试里调低的参数太快，测不出等锁。
+func TestKDFDoesNotHoldLock(t *testing.T) {
+	old := DefaultKDF
+	DefaultKDF = KDF{Alg: "argon2id", Time: 3, MemoryKiB: 64 * 1024, Threads: 4}
+	defer func() { DefaultKDF = old }()
+	v, path := newVault(t)
+
+	measure := func(op func() error) (time.Duration, time.Duration) {
+		done := make(chan time.Duration, 1)
+		go func() {
+			s := time.Now()
+			if err := op(); err != nil {
+				t.Error(err)
+			}
+			done <- time.Since(s)
+		}()
+		time.Sleep(5 * time.Millisecond)
+		s := time.Now()
+		v.State()
+		return time.Since(s), <-done
+	}
+	if wait, total := measure(func() error { return v.Protect(password) }); wait > 5*time.Millisecond {
+		t.Fatalf("Protect 进行中 State() 等了 %v（Protect 共 %v）", wait, total)
+	}
+	v, _ = Open(path, "dev1")
+	if wait, total := measure(func() error { return v.Unlock(password) }); wait > 5*time.Millisecond {
+		t.Fatalf("Unlock 进行中 State() 等了 %v（Unlock 共 %v）", wait, total)
+	}
+	if wait, total := measure(func() error { return v.ChangePassword(password, "another password") }); wait > 5*time.Millisecond {
+		t.Fatalf("ChangePassword 进行中 State() 等了 %v（共 %v）", wait, total)
 	}
 }

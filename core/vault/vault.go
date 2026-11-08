@@ -186,20 +186,55 @@ func (v *Vault) Key() []byte {
 	return slices.Clone(v.key)
 }
 
-// Unlock 用主密码解锁。
-func (v *Vault) Unlock(password string) error {
+// ErrKeyChanged 表示派生密钥期间主密码被修改了（例如同步合并进了另一台设备改过的主密码），需要重试。
+var ErrKeyChanged = errors.New("主密码刚刚被修改，请重新输入")
+
+// keySnapshot 是派生密钥需要的头部信息。派生（Argon2id）很慢，要在锁外进行：
+// 否则派生期间任何线程调用 State() 之类的方法都会等锁，界面会卡住。
+type keySnapshot struct {
+	protected  bool
+	vaultID    string
+	kdf        KDF
+	wrappedKey string
+}
+
+func (v *Vault) snapshot() keySnapshot {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if !v.f.Protected {
+	s := keySnapshot{protected: v.f.Protected, vaultID: v.f.VaultID, wrappedKey: v.f.WrappedKey}
+	if v.f.KDF != nil {
+		s.kdf = *v.f.KDF
+	}
+	return s
+}
+
+// openWith 在锁外用主密码解开快照里的 VK。
+func (s keySnapshot) openWith(password string) ([]byte, error) {
+	kek, err := deriveKey(password, &s.kdf)
+	if err != nil {
+		return nil, err
+	}
+	vk, err := open(kek, s.wrappedKey, wrapAAD(s.vaultID))
+	if err != nil {
+		return nil, ErrWrongPassword
+	}
+	return vk, nil
+}
+
+// Unlock 用主密码解锁。密钥派生在锁外进行，期间其他方法不会被阻塞。
+func (v *Vault) Unlock(password string) error {
+	snap := v.snapshot()
+	if !snap.protected {
 		return nil
 	}
-	kek, err := deriveKey(password, v.f.KDF)
+	vk, err := snap.openWith(password)
 	if err != nil {
 		return err
 	}
-	vk, err := open(kek, v.f.WrappedKey, wrapAAD(v.f.VaultID))
-	if err != nil {
-		return ErrWrongPassword
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.f.WrappedKey != snap.wrappedKey {
+		return ErrKeyChanged
 	}
 	return v.unlockWith(vk)
 }
@@ -251,11 +286,11 @@ func (v *Vault) Protect(password string) error {
 	if err := checkPassword(password); err != nil {
 		return err
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.f.Protected {
+	snap := v.snapshot()
+	if snap.protected {
 		return ErrAlreadyProtected
 	}
+	// 派生在锁外进行，见 keySnapshot。
 	kdf := DefaultKDF
 	kdf.Salt = base64.StdEncoding.EncodeToString(randomBytes(16))
 	kek, err := deriveKey(password, &kdf)
@@ -263,9 +298,16 @@ func (v *Vault) Protect(password string) error {
 		return err
 	}
 	vk := randomBytes(chacha20poly1305.KeySize)
+	wrapped := seal(kek, vk, wrapAAD(snap.vaultID))
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.f.Protected {
+		return ErrAlreadyProtected // 派生期间别处已经设置了主密码
+	}
 	next := v.f
 	next.Protected, next.KDF = true, &kdf
-	next.WrappedKey = seal(kek, vk, wrapAAD(next.VaultID))
+	next.WrappedKey = wrapped
 	next.KeyRev = v.nextRev("")
 	previous := v.f
 	v.f, v.key = next, vk
@@ -281,18 +323,14 @@ func (v *Vault) ChangePassword(current, next string) error {
 	if err := checkPassword(next); err != nil {
 		return err
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if !v.f.Protected {
+	snap := v.snapshot()
+	if !snap.protected {
 		return errors.New("还没有设置主密码")
 	}
-	kek, err := deriveKey(current, v.f.KDF)
+	// 两次派生都在锁外进行，见 keySnapshot。
+	vk, err := snap.openWith(current)
 	if err != nil {
 		return err
-	}
-	vk, err := open(kek, v.f.WrappedKey, wrapAAD(v.f.VaultID))
-	if err != nil {
-		return ErrWrongPassword
 	}
 	kdf := DefaultKDF
 	kdf.Salt = base64.StdEncoding.EncodeToString(randomBytes(16))
@@ -300,8 +338,15 @@ func (v *Vault) ChangePassword(current, next string) error {
 	if err != nil {
 		return err
 	}
+	wrapped := seal(newKEK, vk, wrapAAD(snap.vaultID))
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.f.WrappedKey != snap.wrappedKey {
+		return ErrKeyChanged
+	}
 	previous := v.f
-	v.f.KDF, v.f.WrappedKey = &kdf, seal(newKEK, vk, wrapAAD(v.f.VaultID))
+	v.f.KDF, v.f.WrappedKey = &kdf, wrapped
 	v.f.KeyRev = v.nextRev(v.f.KeyRev)
 	if err := v.save(); err != nil {
 		v.f = previous
