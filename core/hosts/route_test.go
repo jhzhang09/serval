@@ -89,3 +89,23 @@ func TestResolveRouteLimit(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRenameJumpAndResolveRoute(t *testing.T) {
+	got, changed := RenameJump(" bastion , gw:2222, bastion ", "bastion", "edge")
+	if !changed || got != "edge,gw:2222,edge" {
+		t.Fatalf("got=%q changed=%v", got, changed)
+	}
+	if got, changed := RenameJump("ops@bastion:22,other", "bastion", "edge"); changed || got != "ops@bastion:22,other" {
+		t.Fatalf("不应替换直接写的地址: got=%q changed=%v", got, changed)
+	}
+
+	all := []Host{
+		{ID: "1", Name: "edge", Address: "10.0.0.1", User: "u1", Port: 22},
+		{ID: "2", Name: "app", Address: "10.0.0.2", User: "u2", Port: 22, ProxyJump: "bastion"},
+	}
+	all[1].ProxyJump, _ = RenameJump(all[1].ProxyJump, "bastion", "edge")
+	route, err := ResolveRoute(all[1], all, "me")
+	if err != nil || len(route) != 1 || route[0].ID != "1" || route[0].Name != "edge" {
+		t.Fatalf("改名后应仍能解析链路: route=%+v err=%v", route, err)
+	}
+}
