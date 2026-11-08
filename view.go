@@ -66,6 +66,7 @@ func (a *app) view(c *ui.Context) {
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
 	a.uploadConfirmDialog(c)
+	a.folderConflictDialog(c)
 	a.lockConfirmDialog(c)
 	a.fileOpDialog(c, colors)
 	a.fileDeleteDialog(c)
@@ -614,6 +615,9 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 					if item.kind == transferUpload {
 						icon = "arrow-up"
 					}
+					if item.folder {
+						icon = "folder"
+					}
 					ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
 					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).SingleLine()
 					if !item.done.Load() {
@@ -635,6 +639,9 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 							speedStr = " · " + formatSize(speed) + "/s"
 						}
 						info = fmt.Sprintf("%s / %s%s", formatSize(item.transferred.Load()), formatSize(item.total.Load()), speedStr)
+						if item.folder {
+							info = fmt.Sprintf("%d / %d 个文件 · %s", item.filesDone.Load(), item.filesTotal.Load(), info)
+						}
 					}
 					color := colors.TextFaint
 					if item.err != "" {

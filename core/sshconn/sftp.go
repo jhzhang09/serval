@@ -202,6 +202,11 @@ func (f *Files) Mkdir(remotePath string) error {
 	return f.client.Mkdir(remotePath)
 }
 
+// MkdirAll 在远程创建目录及缺少的上级目录，目录已存在时不报错。
+func (f *Files) MkdirAll(remotePath string) error {
+	return f.client.MkdirAll(remotePath)
+}
+
 // Rename 重命名或移动远程文件/目录。
 func (f *Files) Rename(oldPath, newPath string) error {
 	return f.client.Rename(oldPath, newPath)

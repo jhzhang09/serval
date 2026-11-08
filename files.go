@@ -37,8 +37,12 @@ type fileTransfer struct {
 	transferred atomic.Int64
 	speed       atomic.Int64 // bytes / sec
 	done        atomic.Bool
-	err         string
-	cancel      context.CancelFunc
+	// folder 表示这是一个文件夹的上传，filesDone/filesTotal 是文件数进度。
+	folder     bool
+	filesDone  atomic.Int64
+	filesTotal atomic.Int64
+	err        string
+	cancel     context.CancelFunc
 }
 
 // pendingUpload 是远端已有同名文件、等用户确认替换的上传。
@@ -367,8 +371,9 @@ func (a *app) confirmDeleteFile() {
 	}()
 }
 
-// uploadDropped 把拖到终端上的文件用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
+// uploadDropped 把拖到终端上的文件和文件夹用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
 // 没拿到当前目录时（服务器的 shell 没有上报）传到主目录，并告诉用户。传输进度在文件抽屉里，所以打开它。
+// 文件夹见 planFolderUpload：远端已有同名文件夹时合并，有同名文件时问一次。
 func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 	if t.local || t.client == nil {
 		return
@@ -381,15 +386,12 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 			continue
 		}
 		if info.IsDir() {
-			folders = append(folders, info.Name())
+			folders = append(folders, local)
 			continue
 		}
 		locals = append(locals, local)
 	}
-	if len(folders) > 0 {
-		a.toast(ui.Toast{Title: "暂不支持上传文件夹", Description: "已跳过 " + strings.Join(folders, "、") + "。", Type: "error"})
-	}
-	if len(locals) == 0 {
+	if len(locals) == 0 && len(folders) == 0 {
 		return
 	}
 	cwd := p.term.Dir()
@@ -398,10 +400,16 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 		if !slices.Contains(a.tabs, t) || t.files == nil {
 			return
 		}
-		if cwd != "" {
+		upload := func(dir string) {
 			for _, local := range locals {
-				a.uploadTo(t, local, path.Join(cwd, filepath.Base(local)))
+				a.uploadTo(t, local, path.Join(dir, filepath.Base(local)))
 			}
+			for _, folder := range folders {
+				a.planFolderUpload(t, folder, dir)
+			}
+		}
+		if cwd != "" {
+			upload(cwd)
 			return
 		}
 		files := t.files
@@ -413,9 +421,7 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 					return
 				}
 				a.toast(ui.Toast{Title: "上传到了主目录", Description: "没有拿到终端的当前目录（服务器的 shell 没有上报），文件放在 " + home + "。"})
-				for _, local := range locals {
-					a.uploadTo(t, local, path.Join(home, filepath.Base(local)))
-				}
+				upload(home)
 			})
 		}()
 	}
