@@ -82,8 +82,12 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 			if a.auth.passphrase {
 				remember = "记住口令"
 			}
-			c.Key("authRemember")
-			ui.Checkbox(c, &a.auth.remember, remember+"（加密保存在保险库里）")
+			// 临时连接的主机（快速连接、直接写在跳板机列表里的地址）不在保险库里，没有地方保存密码，
+			// 不显示“记住”，免得用户以为记住了。
+			if _, saved := a.hostByID(a.auth.host.ID); saved {
+				c.Key("authRemember")
+				ui.Checkbox(c, &a.auth.remember, remember+"（加密保存在保险库里）")
+			}
 			submit := input.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 				ui.Button(c, "取消").Key("authCancel").OnClick(func() {

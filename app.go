@@ -257,6 +257,12 @@ func (a *app) isDark(systemDark bool) bool {
 	return systemDark
 }
 
+// isSavedHost 判断主机是否已保存在保险库中。临时快速连接的主机不在保险库里。
+func (a *app) isSavedHost(id string) bool {
+	_, ok := a.hostByID(id)
+	return ok
+}
+
 // open 打开主机：已有会话时切换过去，否则新建连接。
 func (a *app) open(h hosts.Host) {
 	for i, t := range a.tabs {
