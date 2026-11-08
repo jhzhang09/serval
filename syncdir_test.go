@@ -42,10 +42,7 @@ func TestSyncDirExportsAndMergesFolder(t *testing.T) {
 	h.click("同步")
 	h.tt.Frame()
 	h.click("选择同步文件夹")
-	h.tt.Frame()
-	if h.a.local.SyncDir != dir {
-		t.Fatalf("同步文件夹 = %q", h.a.local.SyncDir)
-	}
+	h.pump("选择同步文件夹", func() bool { return h.a.local.SyncDir == dir })
 	raw, err := os.ReadFile(h.a.devicePath)
 	if err != nil {
 		t.Fatal(err)

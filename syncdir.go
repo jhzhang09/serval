@@ -124,25 +124,31 @@ func (a *app) setSyncDir(dir string) error {
 	return nil
 }
 
+// chooseSyncDir 弹出系统的文件夹选择框。选择框会阻塞，放在后台，结果回到主线程。
 func (a *app) chooseSyncDir() {
 	if a.chooseFolder == nil {
 		a.settingsPanel.err = "这台设备不能选择文件夹。"
 		return
 	}
-	dir, err := a.chooseFolder()
-	if err != nil {
-		a.settingsPanel.err = "没能打开文件夹选择框，请再试一次。"
-		return
-	}
-	if dir == "" {
-		return
-	}
-	if err := a.setSyncDir(dir); err != nil {
-		a.settingsPanel.err = err.Error()
-		return
-	}
-	a.settingsPanel.err = ""
-	a.toast(ui.Toast{Title: "已使用同步文件夹"})
+	choose := a.chooseFolder
+	go func() {
+		dir, err := choose()
+		a.post(func() {
+			if err != nil {
+				a.settingsPanel.err = "没能打开文件夹选择框，请再试一次。"
+				return
+			}
+			if dir == "" {
+				return // 用户取消
+			}
+			if err := a.setSyncDir(dir); err != nil {
+				a.settingsPanel.err = err.Error()
+				return
+			}
+			a.settingsPanel.err = ""
+			a.toast(ui.Toast{Title: "已使用同步文件夹"})
+		})
+	}()
 }
 
 // exportSyncDir 把当前保险库写进同步文件夹。文件夹里若是另一个保险库，不覆盖。
