@@ -94,6 +94,7 @@ func main() {
 		win.OnClosed(func() {
 			stop()
 			a.stopSyncLoop()
+			a.stopSyncDir()
 			a.closeAll()
 		})
 	})

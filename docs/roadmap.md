@@ -16,7 +16,7 @@
 
 ## 当前进度（2026-11-08 第一批验收后）
 
-第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。下一批可从 F7、C3、C6、T3–T6、S5、P3、N1 中挑选。S1 已在 `feat/S1-webdav` 实现，S2 已在 `feat/S2-sync-settings` 实现，S3 已在 `feat/S3-restore` 实现，均尚未合并。
+第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。下一批可从 F7、C3、C6、T3–T6、P3、N1 中挑选。S1–S3、S5 已分别在 `feat/S1-webdav`、`feat/S2-sync-settings`、`feat/S3-restore`、`feat/S5-sync-folder` 实现，均尚未合并。
 
 ## 已完成（0.1.0）
 
@@ -235,9 +235,10 @@
 - **范围**：AWS S3、Cloudflare R2、MinIO 等。用条件写入（`If-Match`）防覆盖。是否引入 SDK 需决策（手写 SigV4 也可，标准库足够）。
 - **依赖**：S1。
 
-### S5 同步文件夹（S）
+### S5 同步文件夹（S，实现：`feat/S5-sync-folder`，尚未合并）
 
 - **范围**：把保险库副本放进用户选择的文件夹（iCloud Drive、Dropbox、Syncthing），监听文件变化后合并。只适合桌面；要处理同步软件生成的“冲突副本”文件（逐个合并后删除，删除前确认）。
+- **实现**：设置页选择文件夹，路径记在 `device.json` 的 `syncDir`。本地修改后立刻把加密的 `vault.json` 写进该文件夹；每 5 秒读回，有变化就 `Merge`。识别 Syncthing 的 `.sync-conflict-` 和 Dropbox / Nextcloud 的 `conflicted copy`。删除前用确认框，默认取消；取消后同一份文件不再反复问，文件变化后才再问。不用新依赖，轮询而不是文件系统监听。文件夹里若是另一个保险库，不覆盖。
 - **依赖**：S1。
 
 ---

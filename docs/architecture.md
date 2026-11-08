@@ -68,7 +68,7 @@ flowchart TB
 | `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
 | `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
 | `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
-| `sync.go` | WebDAV 同步的触发：解锁后、本地写入去抖、定时、命令面板“立即同步”、设置页里的测试连接。密码只进出系统安全存储 |
+| `sync.go`、`syncdir.go` | WebDAV 同步的触发，以及同步文件夹：本地写入后导出、轮询合并、冲突副本确认后删除。密码只进出系统安全存储，文件夹路径在本机设置 |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |

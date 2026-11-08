@@ -278,16 +278,23 @@ func (a *app) syncPassword() string {
 
 // onVaultReady 在保险库解锁并且本机设置已经加载后调用：开了同步就先对齐一次，之后每几分钟再对齐。
 func (a *app) onVaultReady() {
-	if !a.syncConfigured() || !a.vaultOpen() || a.post == nil {
+	if !a.vaultOpen() || a.post == nil {
 		return
 	}
-	a.startSyncLoop()
-	a.syncNow(false)
+	if a.syncConfigured() {
+		a.startSyncLoop()
+		a.syncNow(false)
+	}
+	a.startSyncDir()
 }
 
 // noteVaultChanged 在本地写入成功后调用。短时间里的连续修改合成一次同步。
 func (a *app) noteVaultChanged() {
-	if !a.syncConfigured() || !a.vaultOpen() {
+	if !a.vaultOpen() {
+		return
+	}
+	a.exportSyncDir()
+	if !a.syncConfigured() {
 		return
 	}
 	delay := a.syncDelay

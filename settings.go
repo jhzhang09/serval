@@ -89,6 +89,8 @@ type deviceSettings struct {
 	SyncUser string `json:"syncUser,omitempty"`
 	// SyncOn 为真时，解锁后、本地修改后和每隔几分钟会同步。
 	SyncOn bool `json:"syncOn,omitempty"`
+	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
+	SyncDir string `json:"syncDir,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
@@ -571,6 +573,24 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		hint = "这台设备还没有数据。要下载另一台设备上的保险库，用侧栏的“从同步恢复”。"
 	}
 	ui.Text(c, hint).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	ui.Divider(c)
+	dirLabel := "未选择文件夹"
+	if a.local.SyncDir != "" {
+		dirLabel = a.local.SyncDir
+	}
+	ui.Field(c, "同步文件夹", func() {
+		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
+	}).Description("把保险库副本放进 iCloud Drive、Dropbox 或 Syncthing 的文件夹。文件仍然是加密的。")
+	ui.Row(c).Gap(8).Children(func() {
+		ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
+		if a.local.SyncDir != "" {
+			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
+				if err := a.setSyncDir(""); err != nil {
+					p.err = err.Error()
+				}
+			})
+		}
+	})
 	ui.Row(c).Gap(8).Children(func() {
 		label := "测试连接"
 		if p.probeBusy {

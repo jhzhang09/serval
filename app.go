@@ -54,6 +54,12 @@ type app struct {
 	syncManual   bool
 	syncErr      string
 	lastSync     time.Time
+	// syncDirEvery 用于测试缩短同步文件夹的轮询间隔，零值是 5 秒。
+	syncDirEvery     time.Duration
+	syncDirStop      context.CancelFunc
+	askConflicts     bool
+	pendingConflicts []syncConflict
+	ignoredConflicts map[string]int64
 
 	// pingInterval 和 reconnectBaseDelay 用于测试调节保活和重连退避时间，零值使用默认值。
 	pingInterval time.Duration
@@ -273,6 +279,7 @@ func (a *app) askLockVault() {
 func (a *app) lockVault() {
 	remembered := a.isRememberedOnDevice()
 	a.stopSyncLoop()
+	a.stopSyncDir()
 	a.syncErr = ""
 	a.closeAll()
 	if a.vault != nil {
