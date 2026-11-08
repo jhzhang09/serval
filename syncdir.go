@@ -249,6 +249,12 @@ func (a *app) mergeConflictCopies(files []syncConflict) {
 	}
 	merged := false
 	for _, f := range files {
+		// 从读盘到用户确认之间，同步软件可能又写了一版。这时不能按当初读到的
+		// 旧内容合并删除，否则最新一版会丢：跳过它，等下一轮重新读、重新询问。
+		if now, err := os.ReadFile(f.path); err != nil || !bytes.Equal(now, f.body) {
+			a.syncErr = "有一份冲突副本刚被同步软件更新，没有合并，稍后会再问一次。"
+			continue
+		}
 		if _, err := a.vault.Merge(f.body); err != nil {
 			a.syncErr = "有一份冲突副本没能合并，文件还留在文件夹里。"
 			continue

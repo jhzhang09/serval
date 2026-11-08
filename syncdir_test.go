@@ -150,6 +150,50 @@ func TestSyncDirEnableMergesExistingFolderData(t *testing.T) {
 	h.pump("把合并结果导回文件夹", func() bool { return remoteHasHost(t, dir, h.a.vault.Key(), "folder-first") })
 }
 
+// 回归：用户确认冲突副本期间，同步软件又更新了同一个文件。
+// 这时不能按当初读到的旧内容合并并删除，否则最新一版会丢。
+func TestSyncDirConflictCopyChangedDuringConfirm(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	// 轮询放慢，手动喂快照，保证确认时手里拿的是哪一版是确定的。
+	h.a.syncDirEvery = time.Hour
+	if err := h.a.setSyncDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(h.a.stopSyncDir)
+
+	conflictPath := filepath.Join(dir, "vault.sync-conflict-20261109-130000-ABCDEF.json")
+	old := editFolderVault(t, filepath.Join(dir, "vault.json"), h.a.vault.Key(), "conflict-old", `{"name":"conflict-old","address":"10.8.8.8","port":22,"user":"u","group":"我的主机"}`)
+	if err := writePrivateFile(conflictPath, old); err != nil {
+		t.Fatal(err)
+	}
+	h.a.consumeSyncDir(readSyncDir(dir))
+	h.pump("冲突副本确认", func() bool { return h.tt.HasText("发现冲突副本") })
+
+	// 确认期间同步软件写了一版新的。
+	newer := editFolderVault(t, filepath.Join(dir, "vault.json"), h.a.vault.Key(), "conflict-new", `{"name":"conflict-new","address":"10.9.9.9","port":22,"user":"u","group":"我的主机"}`)
+	if err := writePrivateFile(conflictPath, newer); err != nil {
+		t.Fatal(err)
+	}
+	h.click("合并并删除")
+	h.tt.Frame()
+	if _, err := os.Stat(conflictPath); err != nil {
+		t.Fatalf("内容已变化，不应删除冲突副本: %v", err)
+	}
+	if h.tt.HasText("conflict-old") {
+		t.Fatal("旧内容不应被合并")
+	}
+
+	// 下一轮应带着最新内容重新询问，确认后合并的才是新内容。
+	h.a.consumeSyncDir(readSyncDir(dir))
+	h.pump("重新询问", func() bool { return h.tt.HasText("发现冲突副本") })
+	h.click("合并并删除")
+	h.pump("合并最新内容", func() bool { return h.tt.HasText("conflict-new") })
+	if _, err := os.Stat(conflictPath); !os.IsNotExist(err) {
+		t.Fatalf("确认后应删除冲突副本: %v", err)
+	}
+}
+
 func editFolderVault(t *testing.T, src string, key []byte, id, data string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(src)
