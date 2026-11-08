@@ -11,7 +11,7 @@
 ```bash
 go tool mygo dev      # 开发运行
 go test ./...         # 运行测试
-go tool mygo build    # 打包到 build/（应用标识符：io.github.serval-app.serval）
+go tool mygo build    # 打包到 build/（应用标识符：io.github.jhzhang09.serval）
 go run ./cmd/genicon  # 重新生成应用图标
 ```
 

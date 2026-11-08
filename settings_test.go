@@ -631,3 +631,35 @@ func TestRecentHostSaveFailureIsReported(t *testing.T) {
 		t.Fatal("没有保存成功，内存里的设置不应改变")
 	}
 }
+
+// 换了应用标识符后，系统安全存储按新标识符找不到原来“记住”的钥匙：
+// 显示锁定页面，用主密码解锁并重新记住后，下次启动又能自动解锁，保险库数据完整。
+func TestRememberedKeyMissingAfterIdentifierChange(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+	hostsBefore := len(h.a.hosts)
+
+	h.device = &memDevice{m: map[string][]byte{}} // 新标识符对应一个空的安全存储
+	h.a.device = h.device
+	h.reopen()
+	if h.a.vault.State() != vault.Locked || !h.tt.HasText("Serval 已锁定") {
+		t.Fatalf("找不到记住的钥匙时应显示锁定页面: state=%v", h.a.vault.State())
+	}
+
+	h.a.unlock.password = masterPassword
+	h.a.unlock.remember = true
+	h.tt.Frame()
+	h.click("解锁")
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
+	if h.a.vault.State() != vault.Unlocked || len(h.a.hosts) != hostsBefore {
+		t.Fatalf("主密码应能解锁且数据完整: state=%v hosts=%d→%d", h.a.vault.State(), hostsBefore, len(h.a.hosts))
+	}
+	if !h.a.isRememberedOnDevice() {
+		t.Fatal("勾选“记住”后应写入新的安全存储")
+	}
+
+	h.reopen()
+	if h.a.vault.State() != vault.Unlocked {
+		t.Fatalf("重新记住后，下次启动应自动解锁: state=%v", h.a.vault.State())
+	}
+}
