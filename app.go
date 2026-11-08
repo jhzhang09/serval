@@ -87,9 +87,12 @@ type app struct {
 	// chooseKeyFile 选私钥（默认打开 ~/.ssh）；chooseUploadFile 选要上传的文件；chooseSavePath 选下载保存的位置。
 	chooseKeyFile    func() (string, error)
 	chooseUploadFile func() (string, error)
-	chooseSavePath   func(defaultName string) (string, error)
-	// pendingUpload 是等待确认替换远端同名文件的上传。
-	pendingUpload *pendingUpload
+	// chooseUploadFiles 选要用 rz 上传的文件（可多选）；chooseFolder 选 sz 收到的文件存放的文件夹。
+	chooseUploadFiles func() ([]string, error)
+	chooseFolder      func() (string, error)
+	chooseSavePath    func(defaultName string) (string, error)
+	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
+	pendingUploads []*pendingUpload
 	// challenges 是等待用户回答的多步验证（keyboard-interactive）询问，依次显示。
 	// 经跳板机连接时，跳板机和目标主机可能先后都要求验证码。
 	challenges []*challengeSheet
@@ -180,9 +183,11 @@ type tab struct {
 	files      *sshconn.Files
 	filesBusy  bool
 	filesError string
-	dir        string
-	entries    []sshconn.Entry
-	followed   string
+	// filesWaiting 是等文件通道打开后再执行的操作（例如通道还没打开时拖进来的文件）。
+	filesWaiting []func()
+	dir          string
+	entries      []sshconn.Entry
+	followed     string
 	// listGen 用来丢弃过期的目录结果：用户连续切换目录时，只有最后一次请求生效。
 	listGen int
 
@@ -196,6 +201,9 @@ type pane struct {
 	ended bool
 	// shell 是这个窗格的远程 shell（本地终端为 nil），用来在终端结束时判断是断线还是远端自己退出。
 	shell *sshconn.Shell
+	// zconn 位于 shell 和终端之间，处理 rz/sz；zmodem 是正在进行的 rz/sz 传输，界面显示进度。
+	zconn  *zmodemConn
+	zmodem *zmodemTransfer
 
 	searchOpen  bool
 	searchQuery string
@@ -203,6 +211,8 @@ type pane struct {
 	// 否则按 ⌘F 之后打的字会落进终端、发给远端 shell；关闭查找后焦点回到终端。
 	focusSearch, focusTerm bool
 	searchStatus           terminal.SearchStatus
+	// fileDrag 表示上一帧有文件从别的程序拖到这个窗格上方，这时铺一层接收拖放的透明层。
+	fileDrag bool
 
 	first, second *pane
 	vertical      bool
@@ -809,9 +819,14 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		},
 	}
 	// 只在有远程 shell 时设置 Conn：值为 nil 的 *Shell 放进接口后接口并不是 nil，
-	// 终端插件会以为有连接，本地终端就打不开了。
+	// 终端插件会以为有连接，本地终端就打不开了。远程 shell 外面套一层 zmodemConn 处理 rz/sz。
 	if shell != nil {
-		opts.Conn = shell
+		var z *zmodemConn
+		z = newZmodemConn(shell, func(s *zmodemSession) {
+			a.post(func() { a.startZmodem(t, p, z, s) })
+		})
+		opts.Conn = z
+		p.zconn = z
 	}
 	return terminal.New(opts)
 }
@@ -1423,8 +1438,13 @@ func (a *app) ensureFiles(t *tab) {
 		}
 		a.post(func() {
 			t.filesBusy = false
+			waiting := t.filesWaiting
+			t.filesWaiting = nil
 			if err != nil {
 				t.filesError = err.Error()
+				if len(waiting) > 0 {
+					a.toast(ui.Toast{Title: "无法上传", Description: "打不开文件传输通道：" + err.Error(), Type: "error"})
+				}
 				return
 			}
 			if !slices.Contains(a.tabs, t) {
@@ -1433,6 +1453,9 @@ func (a *app) ensureFiles(t *tab) {
 			}
 			t.files = files
 			a.openDir(t, home)
+			for _, fn := range waiting {
+				fn()
+			}
 		})
 	}()
 }
