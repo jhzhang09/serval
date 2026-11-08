@@ -43,6 +43,18 @@ type app struct {
 	// localUser 是本机用户名。主机和跳板机没写用户名时用它，和 OpenSSH 一致。
 	localUser string
 
+	// syncDelay、syncEvery 用于测试缩短去抖和周期，零值使用 3 秒和 5 分钟。
+	// syncTimer、syncLoopStop、syncing 只在主线程读写；同步本身在后台做。
+	syncDelay    time.Duration
+	syncEvery    time.Duration
+	syncTimer    *time.Timer
+	syncLoopStop context.CancelFunc
+	syncing      bool
+	syncAgain    bool
+	syncManual   bool
+	syncErr      string
+	lastSync     time.Time
+
 	// pingInterval 和 reconnectBaseDelay 用于测试调节保活和重连退避时间，零值使用默认值。
 	pingInterval time.Duration
 	// restoreActive 是恢复会话时上次激活的标签位置（从 1 开始），见 insertRestoredTab。
@@ -259,6 +271,8 @@ func (a *app) askLockVault() {
 // 包括还没提交的密码询问（a.auth 里可能有用户刚输入的密码）、表单、待确认的操作。
 func (a *app) lockVault() {
 	remembered := a.isRememberedOnDevice()
+	a.stopSyncLoop()
+	a.syncErr = ""
 	a.closeAll()
 	if a.vault != nil {
 		a.vault.Lock()

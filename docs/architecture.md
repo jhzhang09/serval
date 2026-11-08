@@ -16,16 +16,17 @@ flowchart TB
         vault["vault<br/>加密保险库 · 时钟 · 合并"]
         keys["keys<br/>私钥解析与生成"]
         hosts["hosts<br/>主机结构 · 链路解析"]
+        syncer["syncer<br/>WebDAV 同步"]
     end
     mygo["MyGo：窗口、原生 UI、终端插件、玻璃插件、系统安全存储"]
     view --> state
     view --> design
-    state --> sshconn & vault & keys & hosts
+    state --> sshconn & vault & keys & hosts & syncer
     view --> mygo
     state --> mygo
 ```
 
-依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。目前四个 core 包互不引用，需要互相引用时只能单向，不能成环。
+依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。core 包之间需要互相引用时只能单向，不能成环。`syncer` 不引用其他 core 包，只通过 `Merge` / `Bytes` 接口使用保险库。
 
 ## 分层职责
 
@@ -56,6 +57,10 @@ flowchart TB
 - `keys.Key`：名称、类型、PEM 私钥、公钥、指纹、可选口令。`Parse` 导入时就校验口令；`Generate` 生成 Ed25519 或 RSA 4096。
 - `hosts.Host`：主机记录（包括密码）。`ResolveRoute` 把 `ProxyJump` 展开成跳板机链路，处理名称引用、`[user@]host[:port]` 写法、环路和级数上限。
 
+### core/syncer
+
+下载远端 `vault.json`，调用保险库的 `Merge`，再用 ETag（`If-Match` / `If-None-Match`）上传。WebDAV 只用 GET、PUT 和 PROPFIND。地址规范、冲突重试和断网错误都在这一层，应用层负责何时触发、把密码放进系统安全存储。
+
 ### 应用层（package main）
 
 | 文件 | 职责 |
@@ -63,6 +68,7 @@ flowchart TB
 | `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
 | `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
 | `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
+| `sync.go` | WebDAV 同步的触发：解锁后、本地写入去抖、定时、命令面板“立即同步”。密码只进出系统安全存储 |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |

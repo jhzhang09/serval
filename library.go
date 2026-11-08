@@ -200,6 +200,7 @@ func (a *app) apply(changes ...vault.Change) error {
 			t.host = a.hosts[i]
 		}
 	}
+	a.noteVaultChanged()
 	return nil
 }
 
@@ -267,6 +268,7 @@ func (a *app) submitSetup() {
 			a.rememberOnDevice(s.remember)
 			then := s.then
 			a.setup = setupSheet{}
+			a.noteVaultChanged()
 			a.toast(ui.Toast{Title: "已设置主密码"})
 			if then != nil {
 				then()
@@ -352,6 +354,7 @@ func (a *app) submitUnlock() {
 			a.unlock = unlockState{}
 			a.reload()
 			a.restoreSession()
+			a.onVaultReady()
 		})
 	}()
 }

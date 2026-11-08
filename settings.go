@@ -83,6 +83,12 @@ type deviceSettings struct {
 	DisableRestoreSession bool `json:"disableRestoreSession,omitempty"`
 	// SavedSession 是本机退出时保存的标签与窗格布局。
 	SavedSession *savedSession `json:"savedSession,omitempty"`
+	// SyncURL 是 WebDAV 上 vault.json 的地址，或它所在的目录。密码不在这里。
+	SyncURL string `json:"syncURL,omitempty"`
+	// SyncUser 是 WebDAV 账号。密码在系统安全存储的 sync-password。
+	SyncUser string `json:"syncUser,omitempty"`
+	// SyncOn 为真时，解锁后、本地修改后和每隔几分钟会同步。
+	SyncOn bool `json:"syncOn,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
@@ -298,6 +304,7 @@ func (a *app) submitChangePassword() {
 			default:
 				p.changePwOpen = false
 				p.currentPassword, p.newPassword, p.confirmPassword, p.changePwErr = "", "", "", ""
+				a.noteVaultChanged()
 				a.toast(ui.Toast{Title: "已修改主密码"})
 			}
 		})

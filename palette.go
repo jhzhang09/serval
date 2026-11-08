@@ -200,6 +200,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("plus", "添加主机", func() { a.openAdd() })
 	action("key-round", "密钥", a.openKeys)
 	action("globe", "代理", a.openProxies)
+	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
 	action("settings", "打开设置", a.openSettings)
 	action("server", "已知主机", a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {
