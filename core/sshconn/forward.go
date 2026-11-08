@@ -22,7 +22,8 @@ var (
 	ErrForwardInUse = errors.New("sshconn: 端口已被占用")
 )
 
-// Tunnel 是一条正在监听的端口转发。关闭后本机端口立即释放；远程转发还会通知服务器取消监听。
+// Tunnel 是一条正在监听的端口转发。关闭后本机端口立即释放，已经建立的转发连接
+// 也会一并断开；远程转发还会通知服务器取消监听。
 // Close 可能要等网络往返，不要在界面主线程上直接调用。
 type Tunnel struct {
 	addr string
@@ -30,7 +31,9 @@ type Tunnel struct {
 	ln     net.Listener
 	mu     sync.Mutex
 	closed bool
-	once   sync.Once
+	// conns 是已经接受、还在转发的连接，Close 时一并断开。
+	conns map[net.Conn]struct{}
+	once  sync.Once
 
 	in, out atomic.Int64
 	errText atomic.Pointer[string]
@@ -64,7 +67,7 @@ func (t *Tunnel) Err() string {
 	return *p
 }
 
-// Close 停止监听。可以重复调用。
+// Close 停止监听，并断开所有还在转发的连接。可以重复调用。
 func (t *Tunnel) Close() error {
 	if t == nil {
 		return nil
@@ -74,12 +77,43 @@ func (t *Tunnel) Close() error {
 		t.mu.Lock()
 		t.closed = true
 		ln := t.ln
+		conns := make([]net.Conn, 0, len(t.conns))
+		for c := range t.conns {
+			conns = append(conns, c)
+		}
 		t.mu.Unlock()
 		if ln != nil {
 			err = ln.Close()
 		}
+		// 只关用户侧连接就够了：relay 两个方向的复制都会失败退出，
+		// 目标侧连接由 relay 的 defer 关闭。不关的话，用户停止转发后
+		// 这些连接还在悄悄转流量，端口和 goroutine 也一直占着。
+		for _, c := range conns {
+			c.Close()
+		}
 	})
 	return err
+}
+
+// trackConn 登记一条活动连接，Close 时一并断开；返回的函数在连接处理结束时注销。
+// 隧道已经关闭时，新接受的连接直接断掉。
+func (t *Tunnel) trackConn(c net.Conn) func() {
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		c.Close()
+		return func() {}
+	}
+	if t.conns == nil {
+		t.conns = make(map[net.Conn]struct{})
+	}
+	t.conns[c] = struct{}{}
+	t.mu.Unlock()
+	return func() {
+		t.mu.Lock()
+		delete(t.conns, c)
+		t.mu.Unlock()
+	}
 }
 
 func (t *Tunnel) isClosed() bool {
@@ -219,7 +253,11 @@ func (t *Tunnel) accept(ln net.Listener, handle func(net.Conn)) {
 			}
 			return
 		}
-		go handle(conn)
+		go func() {
+			untrack := t.trackConn(conn)
+			defer untrack()
+			handle(conn)
+		}()
 	}
 }
 

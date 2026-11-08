@@ -139,6 +139,42 @@ func TestDynamicForwardRoundTrip(t *testing.T) {
 	}
 }
 
+// 回归：停止转发后，已经建立的连接必须一起断开。原来 Close 只关监听，
+// 界面显示“未启动”，存量连接却还在继续转发流量。
+func TestTunnelCloseDropsActiveConns(t *testing.T) {
+	server := startServer(t, devsshd.Options{})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	host, port := echoServer(t)
+	tun, err := client.ListenLocal("127.0.0.1", 0, host, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DialTimeout("tcp", tun.Addr(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tun.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 关闭后这条连接不应还能继续转发。
+	if _, err := conn.Write([]byte("pong")); err == nil {
+		if _, err := io.ReadFull(conn, buf); err == nil {
+			t.Fatal("关闭转发后，已建立的连接不应还能收发")
+		}
+	}
+	waitUnreachable(t, tun.Addr())
+}
+
 func TestForwardRejectsBadInput(t *testing.T) {
 	server := startServer(t, devsshd.Options{})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
