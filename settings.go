@@ -79,6 +79,47 @@ type deviceSettings struct {
 	RecentHosts []string `json:"recentHosts,omitempty"`
 	// AutoLockMinutes 是闲置指定分钟后自动锁定的时间，0 表示不自动锁定。
 	AutoLockMinutes int `json:"autoLockMinutes,omitempty"`
+	// DisableRestoreSession 为真时不在启动时恢复上次会话。
+	DisableRestoreSession bool `json:"disableRestoreSession,omitempty"`
+	// SavedSession 是本机退出时保存的标签与窗格布局。
+	SavedSession *savedSession `json:"savedSession,omitempty"`
+}
+
+// savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
+type savedPane struct {
+	Vertical bool       `json:"vertical,omitempty"`
+	Percent  float32    `json:"percent,omitempty"`
+	First    *savedPane `json:"first,omitempty"`
+	Second   *savedPane `json:"second,omitempty"`
+}
+
+func (p *savedPane) leaves() int {
+	if p == nil || (p.First == nil && p.Second == nil) {
+		return 1
+	}
+	n := 0
+	if p.First != nil {
+		n += p.First.leaves()
+	}
+	if p.Second != nil {
+		n += p.Second.leaves()
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
+// savedTab 保存一个标签页的主机与窗格布局。
+type savedTab struct {
+	HostID string     `json:"hostID"`
+	Root   *savedPane `json:"root,omitempty"`
+}
+
+// savedSession 保存退出时的全部标签和激活位置。只保存在本机设置 device.json。
+type savedSession struct {
+	Tabs   []savedTab `json:"tabs,omitempty"`
+	Active int        `json:"active,omitempty"`
 }
 
 const maxRecentHosts = 20
@@ -108,6 +149,7 @@ type settingsPanel struct {
 	changePwBusy bool
 	// revealChangePw 让刚展开的修改主密码表单滚动到可见位置（设置项在滚动区域里，表单可能在下方）。
 	revealChangePw bool
+	restoreSession bool
 }
 
 // openSettings 打开设置面板。
@@ -116,6 +158,7 @@ func (a *app) openSettings() {
 		open:           true,
 		fresh:          true,
 		rememberDevice: a.isRememberedOnDevice(),
+		restoreSession: !a.local.DisableRestoreSession,
 	}
 }
 
@@ -323,6 +366,22 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								}
 							})
 						}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
+
+						ui.Field(c, "会话恢复", func() {
+							c.Key("settingsRestoreSession")
+							before := p.restoreSession
+							ui.Checkbox(c, &p.restoreSession, "启动时恢复上次打开的标签和窗格")
+							if p.restoreSession != before {
+								next := a.local
+								next.DisableRestoreSession = !p.restoreSession
+								if next.DisableRestoreSession {
+									next.SavedSession = nil
+								}
+								if err := a.saveLocal(next); err != nil {
+									p.err = err.Error()
+								}
+							}
+						}).Description("退出时记住当前打开的主机和窗格拆分，下次启动时自动恢复（仅保存在本机）。")
 
 						if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
 							ui.Field(c, "记住主密码", func() {

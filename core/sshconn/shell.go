@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -17,6 +18,9 @@ type Shell struct {
 	stdout  io.Reader
 	once    sync.Once
 	err     error
+	// done 在会话结束（Wait 返回）后关闭，waitErr 是 Wait 的结果。
+	done    chan struct{}
+	waitErr error
 }
 
 // OpenShell 申请 PTY 并启动登录 shell。
@@ -48,7 +52,27 @@ func (c *Client) OpenShell(cols, rows int) (*Shell, error) {
 		session.Close()
 		return nil, fmt.Errorf("启动 shell 失败: %w", err)
 	}
-	return &Shell{session: session, stdin: stdin, stdout: stdout}, nil
+	sh := &Shell{session: session, stdin: stdin, stdout: stdout, done: make(chan struct{})}
+	go func() {
+		sh.waitErr = session.Wait()
+		close(sh.done)
+	}()
+	return sh, nil
+}
+
+// Exited 等待会话结束（最多 timeout），报告远端 shell 是不是自己退出的。
+//
+// 远端 shell 退出时服务器会发来退出状态（不管退出码是多少），用户输入 exit、logout 都属于这种；
+// 连接中断时没有退出状态。界面据此区分“会话结束了”和“断线了，需要重连”，
+// 不能靠 ping：高延迟链路上 ping 慢不代表断线。超时也按“没有收到退出状态”处理。
+func (s *Shell) Exited(timeout time.Duration) bool {
+	select {
+	case <-s.done:
+	case <-time.After(timeout):
+		return false
+	}
+	var exitErr *ssh.ExitError
+	return s.waitErr == nil || errors.As(s.waitErr, &exitErr)
 }
 
 func (s *Shell) Read(p []byte) (int, error)  { return s.stdout.Read(p) }

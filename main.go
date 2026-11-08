@@ -60,6 +60,9 @@ func main() {
 		a.reload() // 未加密时直接读出；锁定时 reload 什么都读不到，界面显示解锁页面
 	}
 	a.loadLocal()
+	if a.vault.State() != vault.Locked {
+		a.restoreSession()
+	}
 	a.unlock.remember = true
 	a.pickFile = defaultPickFile(func(dir string) ([]string, error) {
 		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择私钥", DefaultPath: dir, ButtonLabel: "选择", ShowHiddenFiles: true})
