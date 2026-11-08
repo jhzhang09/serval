@@ -108,3 +108,20 @@ func TestRestoredTabsKeepOrderAndActive(t *testing.T) {
 		t.Fatalf("标签顺序 = %v，期望 [1 2 3 9]", order)
 	}
 }
+
+// 网络卡住（不是断开）时旧 shell 还活着，重连成功后关闭旧终端才会触发它的退出事件。
+// 这个迟到的事件不能把窗格里已经换上的新会话标成已结束。
+func TestStaleShellExitIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	p := tb.focus
+	stale := &sshconn.Shell{} // 已被替换掉的旧 shell
+	h.a.paneEnded(tb, p, stale)
+	if p.ended || tb.reconnecting {
+		t.Fatalf("旧 shell 的退出事件不应影响新会话: ended=%v reconnecting=%v", p.ended, tb.reconnecting)
+	}
+	h.a.paneEnded(tb, p, p.shell) // 当前 shell 的退出照常处理
+	if !p.ended {
+		t.Fatal("当前 shell 退出时窗格应标记为已结束")
+	}
+}
