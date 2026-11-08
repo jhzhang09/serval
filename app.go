@@ -256,6 +256,11 @@ func (a *app) lockVault() {
 	a.form = hostForm{}
 	a.deleting = nil
 	a.prompts, a.asking = nil, false
+	// 验证码对话框里可能有用户输了一半的答案；逐个取消，让等待的连接 goroutine 立即结束。
+	for _, ch := range a.challenges {
+		ch.answerChan <- challengeResult{err: errChallengeCancelled} // channel 有 1 个缓冲，每个询问只发送一次
+	}
+	a.challenges = nil
 	a.keyPanel = keyPanel{}
 	a.setup = setupSheet{}
 	a.settingsPanel = settingsPanel{}
