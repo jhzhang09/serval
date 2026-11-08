@@ -1099,6 +1099,16 @@ func (a *app) closeTab(t *tab) {
 	if i < 0 {
 		return
 	}
+	// 这个标签下还开着有未保存修改的文件时，先确认放弃修改，确认后再关标签；
+	// 直接关会把编辑器里没保存的内容悄悄丢掉。确认框开着期间不再重复触发。
+	if a.editor.open && a.editor.tab == t && a.editor.dirty {
+		if a.editor.askDiscard {
+			return
+		}
+		a.editor.askDiscard = true
+		a.editor.closeAfterDiscard = t
+		return
+	}
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if a.active >= len(a.tabs) {
 		a.active = max(0, len(a.tabs)-1)

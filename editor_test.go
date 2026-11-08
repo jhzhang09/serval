@@ -124,6 +124,47 @@ func TestEditorRejectsBinaryAndHuge(t *testing.T) {
 	})
 }
 
+// 回归：关闭标签时，标签下的编辑器里还有未保存的修改要先确认，
+// 不能不问一声就把内容丢掉。
+func TestEditorCloseTabConfirmsUnsaved(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	path := openEditorOn(t, h, tb, "note.txt", "hello")
+	h.a.editor.buf.Set("unsaved")
+	h.tt.Frame()
+	if !h.a.editor.dirty {
+		t.Fatal("应有未保存修改")
+	}
+
+	h.a.closeTab(tb)
+	h.tt.Frame()
+	if !h.tt.HasText("放弃修改？") {
+		t.Fatal("关标签时应先确认放弃修改")
+	}
+	if len(h.a.tabs) != 1 {
+		t.Fatal("确认前不应关闭标签")
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if len(h.a.tabs) != 1 || !h.a.editor.open {
+		t.Fatal("取消后标签和编辑器都应保留")
+	}
+	if h.a.editor.buf == nil || h.a.editor.buf.String() != "unsaved" {
+		t.Fatal("取消后内容不应丢失")
+	}
+
+	h.a.closeTab(tb)
+	h.pump("再次确认", func() bool { return h.tt.HasText("放弃修改？") })
+	h.click("放弃修改")
+	h.pump("关闭标签", func() bool { return len(h.a.tabs) == 0 })
+	if h.a.editor.open {
+		t.Fatal("放弃后编辑器应随标签一起关闭")
+	}
+	if got, _ := os.ReadFile(path); string(got) != "hello" {
+		t.Fatalf("放弃不应写回远端，= %q", got)
+	}
+}
+
 func openEditorOn(t *testing.T, h *harness, tb *tab, name, content string) string {
 	t.Helper()
 	if tb.dir == "" {

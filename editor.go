@@ -36,6 +36,9 @@ type editorState struct {
 
 	askDiscard   bool
 	askOverwrite bool
+	// closeAfterDiscard 是“放弃修改”确认后要一并关闭的标签页。
+	// 从标签页触发确认时记录；取消或从编辑器自己的关闭按钮触发时保持为空。
+	closeAfterDiscard *tab
 }
 
 func (a *app) openEditor(t *tab, remotePath, name string) {
@@ -86,6 +89,7 @@ func editorReason(err error) string {
 func (a *app) requestCloseEditor() {
 	if a.editor.dirty {
 		a.editor.askDiscard = true
+		a.editor.closeAfterDiscard = nil
 		return
 	}
 	a.editor = editorState{}
@@ -227,7 +231,14 @@ func (a *app) editorConfirm(c *ui.Context) {
 		}
 		ed.askDiscard = false
 		if choice == 0 {
+			// 确认来自关标签时，放弃修改后把那个标签也关掉。
+			t := ed.closeAfterDiscard
 			a.editor = editorState{}
+			if t != nil && slices.Contains(a.tabs, t) {
+				a.closeTab(t)
+			}
+		} else {
+			ed.closeAfterDiscard = nil
 		}
 		return
 	}
