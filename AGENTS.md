@@ -146,4 +146,5 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 - **测试按文字点击点到了标题**：标题和按钮同名时会点错，按钮文字要和标题不同。
 - **AlertDialog 弹在面板上面时**：面板里的同名按钮也在树里，点击会报“不是输入目标”，按钮改名或用 Key。
 - **主密码派生**：Argon2id 很慢，`vault` 在锁外派生（`keySnapshot`）。新增需要派生的方法时照此处理，否则派生期间所有线程调用 `State()` 都会等锁。
-- **只在测试里注入的函数字段**：`app` 上的 `pickFile` 这类字段，测试里会替换，正式运行时由 `main.go` 设置。新增这类字段时同时在 `main.go` 接线，并在真机上触发一次。
+- **长文字截断用 `SingleLine()`**：MyGo 的 `Ellipsis` 只在 `SingleLine`/`MaxLines` 截断时生效，`NoWrap().Ellipsis("…")` 不会截断，文字会画出布局框、压住旁边的元素，而布局矩形看起来完全正常。测试布局时要看像素（参考 `TestHostRowLongTextIsCutWithEllipsis`）。
+- **只在测试里注入的函数字段**：`app` 上的 `chooseKeyFile`、`chooseSavePath` 这类字段，测试里会替换，正式运行时由 `main.go` 设置。新增这类字段时同时在 `main.go` 接线，并在真机上触发一次。

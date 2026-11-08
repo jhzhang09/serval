@@ -113,11 +113,13 @@ func (a *app) resetHostKey(h hosts.Host) {
 	a.toast(ui.Toast{Title: "已重置 " + h.Name + " 的主机密钥", Description: "下次连接时会重新请你核对指纹。"})
 }
 
-// knownHostsList 返回保险库里保存的全部主机信任记录。
-func (a *app) knownHostsList() []knownHost {
+// knownHostsList 返回保险库里保存的全部主机信任记录。读取失败时返回错误，
+// 不能显示成“没有记录”，否则用户会以为信任记录丢了。
+// 只在设置面板打开时每帧调用一次，记录很少，不做缓存，省掉缓存失效的麻烦。
+func (a *app) knownHostsList() ([]knownHost, error) {
 	var list []knownHost
-	_ = decodeAll(a.vault, kindKnownHost, &list)
-	return list
+	err := decodeAll(a.vault, kindKnownHost, &list)
+	return list, err
 }
 
 // keySummaries 返回这台主机已信任公钥的类型和 SHA-256 指纹。

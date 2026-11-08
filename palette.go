@@ -278,10 +278,10 @@ func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item palett
 				ui.Icon(c, design.Icon(item.icon)).FontSize(15).TextColor(t.TextMuted)
 			})
 		}
-		ui.Text(c, item.title).FontWeight(500).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, item.title).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		if item.subtitle != "" {
 			ui.Spacer(c)
-			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1)
 		}
 	}).OnClick(run)
 }

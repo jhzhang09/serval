@@ -256,7 +256,9 @@ func (a *app) recordRecentHost(id string) {
 	}
 	next := a.local
 	next.RecentHosts = recent
-	_ = a.saveLocal(next)
+	if err := a.saveLocal(next); err != nil {
+		a.notice = "保存最近使用的主机失败：" + err.Error()
+	}
 }
 
 // removeRecentHost 从本机最近使用列表里移除已删除的主机。
@@ -266,7 +268,9 @@ func (a *app) removeRecentHost(id string) {
 	}
 	next := a.local
 	next.RecentHosts = slices.DeleteFunc(slices.Clone(a.local.RecentHosts), func(x string) bool { return x == id })
-	_ = a.saveLocal(next)
+	if err := a.saveLocal(next); err != nil {
+		a.notice = "保存最近使用的主机失败：" + err.Error()
+	}
 }
 
 // submitChangePassword 在后台修改主密码：要做两次 Argon2id，不能在主线程上执行。
@@ -512,8 +516,12 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) knownHostsSection(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
-	known := a.knownHostsList()
+	known, err := a.knownHostsList()
 	ui.Field(c, "已知主机", func() {
+		if err != nil {
+			ui.Text(c, "读取已知主机失败："+err.Error()).FontSize(design.TextSmall).TextColor(colors.Danger)
+			return
+		}
 		if len(known) == 0 {
 			ui.Text(c, "还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。").
 				FontSize(design.TextSmall).TextColor(t.TextMuted)
@@ -536,7 +544,7 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 		Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, host).FontWeight(500).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+				ui.Text(c, host).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 				if !k.Added.IsZero() {
 					ui.Text(c, k.Added.Local().Format("2006-01-02 15:04")).
 						FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
@@ -544,7 +552,7 @@ func (a *app) knownHostRow(c *ui.Context, colors design.Colors, k knownHost) {
 			})
 			for _, sum := range k.keySummaries() {
 				ui.Text(c, sum).Font(design.FontTerminal).FontSize(design.TextSmall).
-					TextColor(t.TextMuted).NoWrap().Ellipsis("…")
+					TextColor(t.TextMuted).SingleLine()
 			}
 		})
 		ui.Button(c, "删除").Key("knownDelete:" + host).OnClick(func() {

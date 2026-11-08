@@ -223,7 +223,7 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	h.a.closeAll()
 	h.tt.Frame()
 
-	known := h.a.knownHostsList()
+	known, _ := h.a.knownHostsList()
 	if len(known) != 1 {
 		t.Fatalf("保险库应有 1 条已知主机记录，实际 %d", len(known))
 	}
@@ -244,8 +244,8 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	// 删除该条已知主机记录（即使主机本身还在或已删都能独立删除）。
 	h.click("删除")
 	h.tt.Frame()
-	if len(h.a.knownHostsList()) != 0 || h.tt.HasText(sums[0]) || !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
-		t.Fatalf("删除后已知主机列表应为空: %+v texts=%q", h.a.knownHostsList(), h.tt.Texts())
+	if known, _ := h.a.knownHostsList(); len(known) != 0 || h.tt.HasText(sums[0]) || !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
+		t.Fatalf("删除后已知主机列表应为空: %+v texts=%q", known, h.tt.Texts())
 	}
 	h.click("完成")
 	h.tt.Frame()
@@ -612,5 +612,22 @@ func TestSettingIndexKeepsEarlierChoices(t *testing.T) {
 	h.tt.Frame() // 再渲染几帧：错误的高亮下标会通过 OnChange 把设置改回去
 	if h.a.settings.TerminalFontSize != 11 {
 		t.Fatalf("选 11 号字后设置变成了 %v", h.a.settings.TerminalFontSize)
+	}
+}
+
+// 本机设置写不进去时要告诉用户，不能悄悄丢掉最近使用记录。
+func TestRecentHostSaveFailureIsReported(t *testing.T) {
+	h := newHarness(t)
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.a.devicePath = filepath.Join(blocker, "device.json") // 父路径是文件，目录建不出来
+	h.a.recordRecentHost("dev")
+	if !strings.Contains(h.a.notice, "保存最近使用的主机失败") {
+		t.Fatalf("应提示保存失败: %q", h.a.notice)
+	}
+	if slices.Contains(h.a.local.RecentHosts, "dev") {
+		t.Fatal("没有保存成功，内存里的设置不应改变")
 	}
 }
