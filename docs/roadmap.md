@@ -58,7 +58,8 @@
 
 ### F1 正式的应用标识符（S，已完成：`feat/F1-app-identifier`）
 
-- **背景**：确定正式的应用标识符为 `io.github.serval-app.serval`。系统安全存储（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service）按它区分应用，隔离本应用的数据。
+- **背景**：确定正式的应用标识符为 `io.github.jhzhang09.serval`，和仓库 `github.com/jhzhang09/serval` 对应。系统安全存储（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service）按它区分应用，隔离本应用的数据。
+- **变更记录**：2026-11-08 由 `io.github.serval-app.serval` 改为现值（仓库建在个人账号下，没有 `serval-app` 组织）。保险库在配置目录 `Serval` 下，不受影响；旧标识符下“在这台设备上记住”的钥匙找不到了，第一次启动新版本要输入一次主密码，勾选“记住”后写入新条目。以后不要再改：每改一次，所有用户都要重新输入主密码。
 - **范围**：改 `mygo.json`；README 的打包说明。
 - **验收**：打包后 `codesign -dv` 显示新标识符；“记住”失效后能用主密码解锁，并重新记住。
 

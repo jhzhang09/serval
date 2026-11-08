@@ -1,6 +1,6 @@
 {
   "name": "Serval",
-  "identifier": "io.github.serval-app.serval",
+  "identifier": "io.github.jhzhang09.serval",
   "version": "0.1.0",
   "out": "build",
   "macos": {
