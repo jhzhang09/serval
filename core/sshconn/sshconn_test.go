@@ -675,3 +675,122 @@ func TestCancelledTransferLeavesNoPartialFiles(t *testing.T) {
 		t.Fatalf("Exists(不存在) = %v %v", ok, err)
 	}
 }
+
+func TestChallengeMultiQuestions(t *testing.T) {
+	server := startServer(t, devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"OTP: ", "PIN: "},
+		KeyboardAnswers:     []string{"123456", "9999"},
+	})
+	cfg := dialConfig(server, acceptAll(t))
+	cfg.Password = "not-used" // 服务器只接受 keyboard-interactive，密码方式会被拒绝
+	called := false
+	cfg.Challenge = func(name, instruction string, questions []Question) ([]string, error) {
+		called = true
+		if len(questions) != 2 {
+			t.Fatalf("questions count = %d, want 2", len(questions))
+		}
+		if questions[0].Text != "OTP: " || questions[1].Text != "PIN: " {
+			t.Fatalf("unexpected questions: %+v", questions)
+		}
+		return []string{"123456", "9999"}, nil
+	}
+
+	client, err := Dial(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Dial with Challenge failed: %v", err)
+	}
+	defer client.Close()
+	if !called {
+		t.Fatal("Challenge callback was not called")
+	}
+}
+
+func TestChallengeCancelled(t *testing.T) {
+	server := startServer(t, devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"OTP: "},
+		KeyboardAnswers:     []string{"123456"},
+	})
+	cfg := dialConfig(server, acceptAll(t))
+	cfg.Password = "not-used" // 服务器只接受 keyboard-interactive，密码方式会被拒绝
+	userCancelled := errors.New("user cancelled")
+	cfg.Challenge = func(name, instruction string, questions []Question) ([]string, error) {
+		return nil, userCancelled
+	}
+
+	_, err := Dial(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("Dial should fail when user cancels challenge")
+	}
+	if !strings.Contains(err.Error(), "user cancelled") && !errors.Is(err, userCancelled) {
+		t.Fatalf("expected user cancelled error, got: %v", err)
+	}
+}
+
+// 等用户回答验证码期间握手超时暂停：回答比 Timeout 慢也能连上。
+func TestChallengeWaitDoesNotTimeOut(t *testing.T) {
+	server := startServer(t, devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"OTP: "},
+		KeyboardAnswers:     []string{"123456"},
+	})
+	cfg := dialConfig(server, acceptAll(t))
+	cfg.Password = "not-used"
+	cfg.Timeout = 200 * time.Millisecond
+	cfg.Challenge = func(name, instruction string, questions []Question) ([]string, error) {
+		time.Sleep(600 * time.Millisecond) // 用户掏手机看验证码
+		return []string{"123456"}, nil
+	}
+	client, err := Dial(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("回答验证码比超时慢也应能连上: %v", err)
+	}
+	client.Close()
+}
+
+// 基于 PAM 的服务器用 keyboard-interactive 要密码：保存的密码自动填写，不打扰用户。
+func TestKeyboardInteractivePasswordAutoAnswered(t *testing.T) {
+	server := startServer(t, devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"Password: "},
+		KeyboardAnswers:     []string{testPassword},
+	})
+	cfg := dialConfig(server, acceptAll(t))
+	cfg.Challenge = func(string, string, []Question) ([]string, error) {
+		t.Error("密码问题应自动回答，不应交给用户")
+		return nil, errors.New("不应调用")
+	}
+	client, err := Dial(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+
+	// 密码不对：直接认证失败（界面会提示密码不正确），不把密码问题当验证码弹给用户。
+	cfg.Password = "wrong"
+	if _, err := Dial(context.Background(), cfg); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("密码错误应返回 ErrAuthFailed，得到 %v", err)
+	}
+}
+
+// 只问验证码的服务器：即使保存了密码，也不能拿密码去填验证码。
+func TestOTPPromptIsNotAnsweredWithPassword(t *testing.T) {
+	server := startServer(t, devsshd.Options{
+		KeyboardInteractive: true,
+		KeyboardQuestions:   []string{"Verification code: "},
+		KeyboardAnswers:     []string{"654321"},
+		Password:            "server-side-only", // 让密码方式失败，迫使走 keyboard-interactive
+	})
+	cfg := dialConfig(server, acceptAll(t))
+	asked := false
+	cfg.Challenge = func(_, _ string, qs []Question) ([]string, error) {
+		asked = true
+		return []string{"654321"}, nil
+	}
+	client, err := Dial(context.Background(), cfg)
+	if err != nil || !asked {
+		t.Fatalf("验证码应交给用户回答: asked=%v err=%v", asked, err)
+	}
+	client.Close()
+}

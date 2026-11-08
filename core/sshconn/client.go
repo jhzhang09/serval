@@ -39,6 +39,15 @@ var (
 	ErrBadPassphrase = errors.New("私钥口令不正确")
 )
 
+// Question 描述多步验证（keyboard-interactive）里的一个问题。
+type Question struct {
+	Text string
+	Echo bool
+}
+
+// ChallengeFunc 是多步验证的回调函数。
+type ChallengeFunc func(name, instruction string, questions []Question) ([]string, error)
+
 // Config 描述一次 SSH 连接。
 type Config struct {
 	Host string
@@ -52,6 +61,8 @@ type Config struct {
 	KeyPassphrase string
 	// UseAgent 为 true 时尝试使用 SSH_AUTH_SOCK 指向的 ssh-agent。
 	UseAgent bool
+	// Challenge 在服务器要求多步验证（OTP 等）时被调用。
+	Challenge ChallengeFunc
 
 	// HostKeys 决定如何校验服务器身份，必须提供。
 	HostKeys *HostKeyPolicy
@@ -173,6 +184,18 @@ func dialThrough(ctx context.Context, via *ssh.Client, addr string, timeout time
 // 不支持 SetDeadline。超时就关闭连接，等待用户确认主机密钥时暂停计时。
 func handshake(ctx context.Context, raw net.Conn, cfg Config, timeout time.Duration) (*ssh.Client, net.Conn, error) {
 	addr := cfg.addr()
+	// 等用户回答多步验证（掏手机看验证码）期间暂停握手超时，和确认主机指纹时一样。
+	// onWaiting 在计时器建好后赋值；认证回调要到握手开始后才会被调用。
+	var onWaiting func(bool)
+	if ask := cfg.Challenge; ask != nil {
+		cfg.Challenge = func(name, instruction string, questions []Question) ([]string, error) {
+			if onWaiting != nil {
+				onWaiting(true)
+				defer onWaiting(false)
+			}
+			return ask(name, instruction, questions)
+		}
+	}
 	auth, agentConn, err := authMethods(cfg)
 	if err != nil {
 		raw.Close()
@@ -195,13 +218,14 @@ func handshake(ctx context.Context, raw net.Conn, cfg Config, timeout time.Durat
 	stopWatch := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stopWatch()
 
-	callback, algorithms, err := cfg.HostKeys.callback(addr, func(waiting bool) {
+	onWaiting = func(waiting bool) {
 		if waiting {
 			timer.Stop()
 		} else {
 			timer.Reset(timeout)
 		}
-	})
+	}
+	callback, algorithms, err := cfg.HostKeys.callback(addr, onWaiting)
 	if err != nil {
 		return fail(err)
 	}
@@ -292,28 +316,53 @@ func authMethods(cfg Config) ([]ssh.AuthMethod, net.Conn, error) {
 	}
 
 	if cfg.Password != "" {
-		methods = append(methods,
-			ssh.Password(cfg.Password),
-			ssh.KeyboardInteractive(func(_, _ string, questions []string, echos []bool) ([]string, error) {
-				// 只回答单个隐藏输入的提示（通常就是密码）；OTP 等多步验证需要专门的界面。
-				if len(questions) == 0 {
-					return nil, nil
-				}
-				if len(questions) == 1 && !echos[0] {
-					return []string{cfg.Password}, nil
-				}
-				return nil, errors.New("服务器要求多步验证，当前版本尚不支持")
-			}),
-		)
+		methods = append(methods, ssh.Password(cfg.Password))
 	}
 
+	// 没有私钥、agent、密码时先问密码再握手：单有多步验证回调不算一种认证方式，
+	// 否则会白白握手一次（还要先确认指纹）才发现需要密码。
 	if len(methods) == 0 {
 		if agentConn != nil {
 			agentConn.Close()
 		}
 		return nil, nil, ErrNoAuthMethod
 	}
+
+	if cfg.Challenge != nil || cfg.Password != "" {
+		passwordUsed := false
+		methods = append(methods, ssh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+			if len(questions) == 0 {
+				return nil, nil
+			}
+			single := len(questions) == 1 && !echos[0]
+			// 基于 PAM 的服务器常用 keyboard-interactive 要密码：只有一个隐藏输入、而且看起来是在要密码的问题，
+			// 用保存的密码自动回答，只答一次。验证码之类的问题交给用户，不能拿密码去填。
+			if cfg.Password != "" && !passwordUsed && single && looksLikePasswordPrompt(questions[0]) {
+				passwordUsed = true
+				return []string{cfg.Password}, nil
+			}
+			// 答过密码后服务器又问密码，说明密码不对：直接失败，走“密码不正确”的流程，
+			// 而不是把密码问题当成验证码弹给用户。
+			if passwordUsed && single && looksLikePasswordPrompt(questions[0]) {
+				return nil, ErrAuthFailed
+			}
+			if cfg.Challenge == nil {
+				return nil, errors.New("服务器要求多步验证（例如验证码）")
+			}
+			qs := make([]Question, len(questions))
+			for i := range questions {
+				qs[i] = Question{Text: questions[i], Echo: echos[i]}
+			}
+			return cfg.Challenge(name, instruction, qs)
+		}))
+	}
 	return methods, agentConn, nil
+}
+
+// looksLikePasswordPrompt 判断 keyboard-interactive 的问题是不是在要密码（而不是验证码）。
+func looksLikePasswordPrompt(q string) bool {
+	q = strings.ToLower(q)
+	return strings.Contains(q, "password") || strings.Contains(q, "密码")
 }
 
 func loadKey(data []byte, path, passphrase string) (ssh.Signer, error) {

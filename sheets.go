@@ -282,3 +282,65 @@ func (a *app) lockConfirmDialog(c *ui.Context) {
 		a.lockVault()
 	}
 }
+
+// challengeDialog 弹出多步验证（keyboard-interactive）对话框。
+func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
+	ch := a.currentChallenge()
+	if ch == nil || !ch.open {
+		return
+	}
+	title := "多步验证"
+	if ch.name != "" {
+		title = ch.name
+	}
+	subtitle := fmt.Sprintf("%s · %s", ch.host.Name, ch.host.Target())
+	if ch.instruction != "" {
+		subtitle = ch.instruction
+	}
+	closeSheet := func() { a.cancelChallenge() }
+	sheet(c, colors, &ch.open, &ch.fresh, 400, 20, func() {
+		ui.Column(c).Key("challengeBody").Gap(16).Children(func() {
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				design.CoatView(c, ch.host.ID, ch.host.Production, 28)
+				ui.Column(c).Gap(2).Grow(1).Children(func() {
+					ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
+					ui.Text(c, subtitle).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+				})
+			})
+			ui.Divider(c)
+			var lastSubmitted bool
+			ui.Column(c).Gap(10).Children(func() {
+				for i, q := range ch.questions {
+					idx := i
+					label := q.Text
+					if label == "" {
+						label = fmt.Sprintf("问题 %d", idx+1)
+					}
+					var input ui.Element
+					ui.Field(c, label, func() {
+						c.Key(fmt.Sprintf("challengeInput:%d", idx))
+						input = ui.TextInput(c, &ch.answers[idx])
+						if !q.Echo {
+							input.Password()
+						}
+						if idx == 0 {
+							input.AutoFocus()
+						}
+					})
+					if idx == len(ch.questions)-1 && input.Submitted() {
+						lastSubmitted = true
+					}
+				}
+			})
+			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+				ui.Button(c, "取消").OnClick(closeSheet)
+				if ui.PrimaryButton(c, "验证").Key("submitChallenge").Clicked() || lastSubmitted {
+					a.submitChallenge()
+				}
+			})
+		})
+	})
+	if !ch.open && a.currentChallenge() == ch {
+		a.cancelChallenge()
+	}
+}

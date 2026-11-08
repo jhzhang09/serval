@@ -90,6 +90,9 @@ type app struct {
 	chooseSavePath   func(defaultName string) (string, error)
 	// pendingUpload 是等待确认替换远端同名文件的上传。
 	pendingUpload *pendingUpload
+	// challenges 是等待用户回答的多步验证（keyboard-interactive）询问，依次显示。
+	// 经跳板机连接时，跳板机和目标主机可能先后都要求验证码。
+	challenges []*challengeSheet
 }
 
 // hostKeyPrompt 是等待用户回答的未知主机询问。
@@ -131,6 +134,23 @@ type authSheet struct {
 	remember bool
 	// fresh 表示面板刚打开，这一帧从起始姿态弹出。
 	fresh bool
+}
+
+// challengeSheet 是服务器要求多步验证时的弹窗状态。
+type challengeSheet struct {
+	open        bool
+	fresh       bool
+	host        hosts.Host
+	name        string
+	instruction string
+	questions   []sshconn.Question
+	answers     []string
+	answerChan  chan challengeResult
+}
+
+type challengeResult struct {
+	answers []string
+	err     error
 }
 
 // tab 是一个会话标签：一条 SSH 连接，加上其上的终端窗格和文件抽屉。
@@ -412,6 +432,10 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 		fillSaved(hh, key, hasKey, &c)
 		used[i] = c
 		configs[i] = hopConfig(hh, key, hasKey, c, a.localUser, policy)
+		who := hh
+		configs[i].Challenge = func(name, instruction string, questions []sshconn.Question) ([]string, error) {
+			return a.askChallenge(ctx, who, name, instruction, questions)
+		}
 	}
 	cfg := configs[len(route)]
 	cfg.Jumps = configs[:len(route)]
@@ -522,6 +546,8 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 			message = "保存的口令不正确，请重新输入。"
 		}
 		a.askSecret(h, who, hop, creds, true, message)
+	case errors.Is(err, errChallengeCancelled):
+		a.notice = fmt.Sprintf("已取消连接 %s：没有完成多步验证。", who.Name)
 	case errors.Is(err, sshconn.ErrNoAuthMethod):
 		a.askSecret(h, who, hop, creds, false, "")
 	case errors.Is(err, sshconn.ErrAuthFailed):
@@ -1302,6 +1328,64 @@ func (a *app) confirmHostKey(ctx context.Context, info sshconn.HostKeyInfo) bool
 		})
 		return false
 	}
+}
+
+// ErrChallengeCancelled 表示用户取消了多步验证。
+var errChallengeCancelled = errors.New("已取消多步验证")
+
+// askChallenge 在连接 goroutine 上阻塞，直到用户回答多步验证或连接被取消。
+// 询问排队显示：经跳板机时跳板机和目标主机可能先后都要验证码，后来的不能覆盖前面的。
+func (a *app) askChallenge(ctx context.Context, host hosts.Host, name, instruction string, questions []sshconn.Question) ([]string, error) {
+	ch := make(chan challengeResult, 1)
+	prompt := &challengeSheet{
+		open:        true,
+		fresh:       true,
+		host:        host,
+		name:        name,
+		instruction: instruction,
+		questions:   questions,
+		answers:     make([]string, len(questions)),
+		answerChan:  ch,
+	}
+	a.post(func() { a.challenges = append(a.challenges, prompt) })
+	select {
+	case res := <-ch:
+		return res.answers, res.err
+	case <-ctx.Done():
+		a.post(func() { a.removeChallenge(prompt) })
+		return nil, ctx.Err()
+	}
+}
+
+// currentChallenge 返回正在显示的多步验证询问。
+func (a *app) currentChallenge() *challengeSheet {
+	if len(a.challenges) == 0 {
+		return nil
+	}
+	return a.challenges[0]
+}
+
+func (a *app) removeChallenge(c *challengeSheet) {
+	a.challenges = slices.DeleteFunc(a.challenges, func(x *challengeSheet) bool { return x == c })
+}
+
+// submitChallenge 交出当前询问的回答。答案只经 channel 交给连接 goroutine，不留在界面状态里。
+func (a *app) submitChallenge() {
+	ch := a.currentChallenge()
+	if ch == nil {
+		return
+	}
+	a.removeChallenge(ch)
+	ch.answerChan <- challengeResult{answers: ch.answers}
+}
+
+func (a *app) cancelChallenge() {
+	ch := a.currentChallenge()
+	if ch == nil {
+		return
+	}
+	a.removeChallenge(ch)
+	ch.answerChan <- challengeResult{err: errChallengeCancelled}
 }
 
 // toggleFiles 打开或收起文件抽屉。SFTP 通道到需要时才打开，不用文件的会话不占这份资源。
