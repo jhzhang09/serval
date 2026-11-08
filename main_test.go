@@ -835,3 +835,105 @@ func TestDisableSessionRestore(t *testing.T) {
 		t.Fatalf("禁用恢复后不应恢复会话，实际有 %d 个标签", len(h.a.tabs))
 	}
 }
+
+func TestParseQuickConnect(t *testing.T) {
+	cases := []struct {
+		in   string
+		user string
+		addr string
+		port int
+		ok   bool
+	}{
+		{"root@10.0.0.1", "root", "10.0.0.1", 22, true},
+		{"admin@example.com:2222", "admin", "example.com", 2222, true},
+		{"tester@[::1]:22", "tester", "::1", 22, true},
+		{"a@b@host", "a@b", "host", 22, true},
+		{"user@host:invalid", "", "", 0, false},
+		{"not-a-target", "", "", 0, false},
+		{"@emptyuser", "", "", 0, false},
+		{"user@", "", "", 0, false},
+		{"user with spaces@host", "", "", 0, false},
+	}
+	for _, c := range cases {
+		u, a, p, ok := parseQuickConnect(c.in)
+		if ok != c.ok || u != c.user || a != c.addr || p != c.port {
+			t.Errorf("parseQuickConnect(%q) = (%q, %q, %d, %v), want (%q, %q, %d, %v)",
+				c.in, u, a, p, ok, c.user, c.addr, c.port, c.ok)
+		}
+	}
+}
+
+func TestQuickConnectAndSaveAsHost(t *testing.T) {
+	h := newHarness(t)
+	h.click("搜索主机和操作")
+	if !h.a.pal.open {
+		t.Fatal("命令面板没有打开")
+	}
+	quickTarget := fmt.Sprintf("tester@127.0.0.1:%d", h.server.Addr().Port)
+	h.a.pal.query = quickTarget
+	h.tt.Frame()
+	items := h.a.paletteItems(quickTarget)
+	if len(items) == 0 || items[0].title != "连接 "+quickTarget {
+		t.Fatalf("应该出现快速连接条目: %+v", items)
+	}
+
+	beforeTabs := len(h.a.tabs)
+	h.click("连接 " + quickTarget)
+	h.tt.Frame()
+
+	h.pump("密码询问", func() bool { return h.a.auth.open })
+	h.tt.Frame()
+	if h.tt.HasText("记住密码（加密保存在保险库里）") {
+		t.Fatal("临时主机没有地方保存密码，不应显示“记住密码”")
+	}
+	h.a.auth.secret = testPassword
+	h.tt.Frame()
+	h.click("连接")
+
+	h.pump("主机密钥询问", func() bool { return len(h.a.prompts) > 0 })
+	h.click("信任并连接")
+
+	h.pump("会话建立", func() bool { return len(h.a.tabs) == beforeTabs+1 })
+	tab := h.a.tabs[beforeTabs]
+	if h.a.isSavedHost(tab.host.ID) {
+		t.Fatal("快速连接的主机不应是已保存主机")
+	}
+
+	// 验证临时主机的密码没有被存进保险库
+	for _, dh := range h.onDisk() {
+		if dh.ID == tab.host.ID {
+			t.Fatalf("临时主机不应存在于磁盘保险库中: %+v", dh)
+		}
+	}
+
+	// 点击保存为主机
+	h.click("保存为主机")
+	h.tt.Frame()
+	if !h.a.form.open {
+		t.Fatal("主机表单没有打开")
+	}
+	if h.a.form.address != "127.0.0.1" || h.a.form.user != "tester" {
+		t.Fatalf("表单内容不正确: address=%s user=%s", h.a.form.address, h.a.form.user)
+	}
+
+	// 提交表单保存
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("保存主机失败: %s", h.a.form.err)
+	}
+	if !h.a.isSavedHost(tab.host.ID) {
+		t.Fatal("保存后标签关联的主机应该已被保存到保险库")
+	}
+
+	saved := false
+	for _, dh := range h.onDisk() {
+		if dh.ID == tab.host.ID {
+			saved = true
+			break
+		}
+	}
+	if !saved {
+		t.Fatal("保存后的主机未写入磁盘保险库")
+	}
+}

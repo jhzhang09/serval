@@ -303,6 +303,10 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 			}
 		})
 		if t := a.current(); t != nil {
+			if !a.isSavedHost(t.host.ID) {
+				ui.Button(c, "保存为主机").Key("saveAsHost").Height(28).Padding(0, 8).
+					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
+			}
 			iconButton(c, colors, "columns-2", fmt.Sprintf("向右拆分（%s）", shortcutText("D")), func() { a.split(t, false) })
 			iconButton(c, colors, "rows-2", "向下拆分", func() { a.split(t, true) })
 			iconButton(c, colors, "folder", fmt.Sprintf("文件（%s）", shortcutText("J")), a.toggleFiles)

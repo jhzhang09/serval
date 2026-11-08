@@ -116,7 +116,7 @@
 
 ## C 连接
 
-### C1 快速连接（S，修改中：`feat/C1-quick-connect`）
+### C1 快速连接（S，已完成：`feat/C1-quick-connect`）
 
 - **范围**：命令面板输入 `user@host[:port]` 时出现“连接 user@host”选项，直接连接临时主机（不保存）；连接成功后，标签上提供“保存为主机”。
 - **涉及**：`palette.go`、`app.go`（临时主机不在保险库里，`rememberCredentials` 已跳过非保存主机）。

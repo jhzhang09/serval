@@ -31,6 +31,8 @@ type hostForm struct {
 	editing string
 	// copyOf 是复制来源的 ID：没填新密码时，沿用来源保存的密码。
 	copyOf string
+	// tempHostID 是当前正在保存的临时主机 ID。
+	tempHostID string
 
 	name, address, port, user, group string
 	auth                             int    // authModes 的下标
@@ -83,6 +85,15 @@ func (a *app) openDuplicate(h hosts.Host) {
 	a.form = a.formFrom(h)
 	a.form.copyOf = h.ID
 	a.form.name = a.uniqueName(h.Name + " 副本")
+}
+
+// openSaveHost 从临时快速连接的主机打开添加主机表单。
+func (a *app) openSaveHost(h hosts.Host) {
+	a.form = a.formFrom(h)
+	a.form.editing = ""
+	a.form.copyOf = ""
+	a.form.tempHostID = h.ID
+	a.form.name = a.uniqueName(h.Name)
 }
 
 // uniqueName 在 name 已被占用时加上序号。跳板机按名称查找主机，名称必须唯一。
@@ -206,6 +217,13 @@ func (a *app) saveForm() {
 	if err := a.apply(changes...); err != nil {
 		f.err = err.Error()
 		return
+	}
+	if f.tempHostID != "" {
+		for _, tab := range a.tabs {
+			if tab.host.ID == f.tempHostID {
+				tab.host = h
+			}
+		}
 	}
 	verb := "已添加 "
 	if f.editing != "" {

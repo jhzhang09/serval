@@ -3,7 +3,9 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -94,6 +96,34 @@ func scoreFrom(rest, text string, position int, first rune) int {
 	return score
 }
 
+// parseQuickConnect 解析 user@host[:port] 格式的快速连接目标。
+func parseQuickConnect(s string) (user, address string, port int, ok bool) {
+	s = strings.TrimSpace(s)
+	at := strings.LastIndex(s, "@") // 用户名里也可能有 @，和 hosts.ParseJumpSpec 一致
+	if at <= 0 || at == len(s)-1 {
+		return "", "", 0, false
+	}
+	user = s[:at]
+	target := s[at+1:]
+	if user == "" || target == "" {
+		return "", "", 0, false
+	}
+	if strings.ContainsAny(user, " \t\r\n") || strings.ContainsAny(target, " \t\r\n") {
+		return "", "", 0, false
+	}
+	port = 22
+	if host, portStr, err := net.SplitHostPort(target); err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= 65535 {
+			return user, host, p, true
+		}
+		return "", "", 0, false
+	}
+	if strings.Contains(target, ":") {
+		return "", "", 0, false
+	}
+	return user, target, port, true
+}
+
 // paletteItems 返回匹配 query 的条目，主机在前，操作在后。
 func (a *app) paletteItems(query string) []paletteItem {
 	type scored struct {
@@ -101,6 +131,30 @@ func (a *app) paletteItems(query string) []paletteItem {
 		score int
 	}
 	var matched []scored
+	if user, addr, port, ok := parseQuickConnect(query); ok {
+		target := fmt.Sprintf("%s@%s", user, addr)
+		if port != 22 {
+			target = fmt.Sprintf("%s:%d", target, port)
+		}
+		tempHost := hosts.Host{
+			ID:      "temp:" + target,
+			Name:    target,
+			Address: addr,
+			Port:    port,
+			User:    user,
+		}
+		matched = append(matched, scored{
+			paletteItem: paletteItem{
+				key:      "quick:" + target,
+				title:    fmt.Sprintf("连接 %s", target),
+				subtitle: "快速连接（不保存）",
+				icon:     "terminal",
+				host:     &tempHost,
+				run:      func() { a.open(tempHost) },
+			},
+			score: 10000,
+		})
+	}
 	add := func(item paletteItem, haystack string) {
 		if s := fuzzyScore(query, haystack); s >= 0 {
 			matched = append(matched, scored{item, s})
