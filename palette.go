@@ -165,8 +165,22 @@ func (a *app) paletteItems(query string) []paletteItem {
 		add(paletteItem{key: "host:" + h.ID, title: h.Name, subtitle: h.Target(), host: h, run: func() { a.open(*h) }},
 			h.Name+" "+h.Target())
 	}
-	// 同类内按分数稳定排序，查询为空时保持原有顺序。
-	slices.SortStableFunc(matched, func(x, y scored) int { return cmp.Compare(y.score, x.score) })
+	// 同类内按分数稳定排序。查询为空时最近连接过的主机排在前面（本机记录，不同步），其余保持原有顺序。
+	recent := func(it paletteItem) int {
+		if it.host == nil {
+			return len(a.local.RecentHosts)
+		}
+		if i := slices.Index(a.local.RecentHosts, it.host.ID); i >= 0 {
+			return i
+		}
+		return len(a.local.RecentHosts)
+	}
+	slices.SortStableFunc(matched, func(x, y scored) int {
+		if c := cmp.Compare(y.score, x.score); c != 0 || query != "" {
+			return c
+		}
+		return cmp.Compare(recent(x.paletteItem), recent(y.paletteItem))
+	})
 
 	var actions []scored
 	action := func(icon, title string, run func()) {
@@ -278,10 +292,10 @@ func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item palett
 				ui.Icon(c, design.Icon(item.icon)).FontSize(15).TextColor(t.TextMuted)
 			})
 		}
-		ui.Text(c, item.title).FontWeight(500).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, item.title).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		if item.subtitle != "" {
 			ui.Spacer(c)
-			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+			ui.Text(c, item.subtitle).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().MinWidth(0).Shrink(1)
 		}
 	}).OnClick(run)
 }

@@ -271,13 +271,13 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 				coat.Opacity(coat.Keyframes("breathe", design.Breathe, design.BreatheOptions))
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, h.Name).FontWeight(500).NoWrap().Ellipsis("…")
+				ui.Text(c, h.Name).FontWeight(500).SingleLine()
 				sub := h.Target()
 				if jumps := hosts.SplitJumps(h.ProxyJump); len(jumps) > 0 {
 					// 经跳板机的主机显示途经路线：连不上时，用户第一眼就知道该先查哪一台。
 					sub = "经 " + strings.Join(jumps, " → ")
 				}
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).NoWrap().Ellipsis("…")
+				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 			if connected {
 				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label("已连接")
@@ -353,7 +353,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 		if selected {
 			color = theme.Text
 		}
-		ui.Text(c, t.title()).TextColor(color).FontWeight(500).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, t.title()).TextColor(color).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
 		if hovered || selected {
 			ui.ButtonBase(c).Key("close").Label("关闭 "+t.title()).Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
 				ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
@@ -488,11 +488,11 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		compact, tiny := cols < 70, cols < 50
 
 		design.CoatView(c, t.host.ID, t.host.Production, 14)
-		ui.Text(c, t.host.Name).FontWeight(600).FontSize(design.TextBody).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.Text(c, t.host.Name).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {
 			if dir := p.term.Dir(); dir != "" {
-				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).NoWrap().Ellipsis("…").MinWidth(0).Shrink(1)
+				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).SingleLine().MinWidth(0).Shrink(1)
 			}
 		})
 		switch {
@@ -562,7 +562,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			if t.dir == "" {
 				name = "文件"
 			}
-			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).NoWrap().Ellipsis("…").Tooltip(t.dir)
+			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
 			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "")
 			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "")
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
@@ -606,7 +606,7 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 						icon = "arrow-up"
 					}
 					ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
-					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).NoWrap().Ellipsis("…")
+					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).SingleLine()
 					if !item.done.Load() {
 						iconButton(c, colors, "x", "取消传输", func() { a.cancelTransfer(item) })
 					}
@@ -648,7 +648,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			icon, color = "folder", theme.Accent
 		}
 		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
-		ui.Text(c, entry.Name).Grow(1).MinWidth(0).NoWrap().Ellipsis("…")
+		ui.Text(c, entry.Name).Grow(1).MinWidth(0).SingleLine()
 		if !entry.IsDir {
 			ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}

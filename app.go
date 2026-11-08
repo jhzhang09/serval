@@ -256,6 +256,11 @@ func (a *app) lockVault() {
 	a.form = hostForm{}
 	a.deleting = nil
 	a.prompts, a.asking = nil, false
+	// 验证码对话框里可能有用户输了一半的答案；逐个取消，让等待的连接 goroutine 立即结束。
+	for _, ch := range a.challenges {
+		ch.answerChan <- challengeResult{err: errChallengeCancelled} // channel 有 1 个缓冲，每个询问只发送一次
+	}
+	a.challenges = nil
 	a.keyPanel = keyPanel{}
 	a.setup = setupSheet{}
 	a.settingsPanel = settingsPanel{}
@@ -622,7 +627,7 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	if _, ok := a.hostByID(h.ID); ok {
 		a.recordRecentHost(h.ID)
 	}
-	go a.watchLatency(ctx, t)
+	go a.watchLatency(ctx, t, t.client)
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
@@ -696,7 +701,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 	if _, ok := a.hostByID(h.ID); ok {
 		a.recordRecentHost(h.ID)
 	}
-	go a.watchLatency(ctx, t)
+	go a.watchLatency(ctx, t, t.client)
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
@@ -794,7 +799,7 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		Scrollback: a.terminalScrollback(),
 		Padding:    terminal.Padding{X: 10, Y: 8},
 		OnExit: func(int) {
-			a.post(func() { a.paneEnded(t, p) })
+			a.post(func() { a.paneEnded(t, p, shell) })
 		},
 		OnCopy: func(_ string, by terminal.CopySource) {
 			a.post(func() { a.copied(by) })
@@ -862,7 +867,9 @@ func (a *app) refreshTerminals() {
 //
 // 每次通知界面都会重建并重绘整个窗口，所以只在显示出来的内容真正变化时才通知：
 // 实测 2 个会话每 5 秒各通知一次，空闲 CPU 从 0.15% 涨到 1.15%，而延迟显示其实一直没变。
-func (a *app) watchLatency(ctx context.Context, t *tab) {
+//
+// client 由调用方在主线程上传入：t.client 会在重连时被主线程替换，后台不能读它。
+func (a *app) watchLatency(ctx context.Context, t *tab, client *sshconn.Client) {
 	interval := 5 * time.Second
 	if a.pingInterval > 0 {
 		interval = a.pingInterval
@@ -872,7 +879,7 @@ func (a *app) watchLatency(ctx context.Context, t *tab) {
 	shown, wasStalled, first := "", false, true
 	for {
 		pingCtx, cancel := context.WithTimeout(ctx, 2*interval)
-		rtt, err := t.client.Ping(pingCtx)
+		rtt, err := client.Ping(pingCtx)
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -885,6 +892,9 @@ func (a *app) watchLatency(ctx context.Context, t *tab) {
 		if first || stalled != wasStalled || text != shown {
 			first, shown, wasStalled = false, text, stalled
 			a.post(func() {
+				if ctx.Err() != nil {
+					return // 这路保活已被取消（会话关闭或重连换了新连接），结果作废
+				}
 				t.stalled = stalled
 				if !stalled {
 					t.latency = rtt
@@ -1218,7 +1228,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 	t.stop()
 	ctx, stop := context.WithCancel(context.Background())
 	t.stop = stop
-	go a.watchLatency(ctx, t)
+	go a.watchLatency(ctx, t, t.client)
 
 	t.root.each(func(p *pane) {
 		cols, rows := 80, 24
@@ -1534,8 +1544,11 @@ func (a *app) copied(by terminal.CopySource) {
 //
 // 用户主动关闭窗格或标签时，终端也会退出，但这时窗格已经从树里移除，不应再弹提示；
 // 只有“自己结束”的会话才提示。整个标签的窗格都结束时，提示里给出“重新连接”。
-func (a *app) paneEnded(t *tab, p *pane) {
-	if !slices.Contains(a.tabs, t) || !t.root.contains(p) {
+//
+// shell 是退出的那个终端所连的 shell。重连成功后旧终端才被关闭，它的退出事件会迟到，
+// 这时窗格里已经换成了新 shell，必须忽略，否则会把正常工作的新会话当成断线再重连一次。
+func (a *app) paneEnded(t *tab, p *pane, shell *sshconn.Shell) {
+	if !slices.Contains(a.tabs, t) || !t.root.contains(p) || p.shell != shell {
 		return
 	}
 	p.ended = true
@@ -1554,11 +1567,10 @@ func (a *app) paneEnded(t *tab, p *pane) {
 		a.startAutoReconnect(t)
 		return
 	}
-	if p.shell == nil {
+	if shell == nil {
 		a.showSessionEnded(t)
 		return
 	}
-	shell := p.shell
 	go func() {
 		exited := shell.Exited(3 * time.Second)
 		a.post(func() {

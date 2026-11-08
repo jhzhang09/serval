@@ -350,12 +350,12 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 		row.Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(18).TextColor(t.TextMuted)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, k.Name).FontWeight(500).NoWrap().Ellipsis("…")
+				ui.Text(c, k.Name).FontWeight(500).SingleLine()
 				sub := k.Label() + "  " + k.Fingerprint
 				if n := len(a.usedBy(k.ID)); n > 0 {
 					sub = fmt.Sprintf("%s  %d 台主机在用", k.Label(), n)
 				}
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).NoWrap().Ellipsis("…")
+				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 		}).OnClick(func() { a.showKey(k.ID) })
 		row.PopoverMenu(menu)
@@ -447,7 +447,7 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, design.Icon("key-round")).FontSize(20).TextColor(t.TextMuted)
-			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).NoWrap().Ellipsis("…")
+			ui.Text(c, k.Name).FontSize(design.TextHeading).FontWeight(600).Grow(1).MinWidth(0).SingleLine()
 			ui.Text(c, k.Label()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 		})
 		ui.Field(c, "名称", func() {
