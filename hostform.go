@@ -254,6 +254,7 @@ func (a *app) deleteHost(h hosts.Host) {
 		a.notice = err.Error()
 		return
 	}
+	a.removeRecentHost(h.ID)
 	a.toast(ui.Toast{Title: "已删除 " + h.Name})
 }
 

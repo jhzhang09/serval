@@ -60,12 +60,13 @@ flowchart TB
 
 | 文件 | 职责 |
 |---|---|
-| `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、创建窗口、接上 `a.post` |
+| `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
 | `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
-| `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
+| `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；重置主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
+| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
@@ -133,7 +134,7 @@ view()
         ├── tabBar                 标签放在标题栏里
         └── workspace              窗格卡片树（paneView）+ 文件抽屉，没有标签时是 emptyState
 浮层（按渲染顺序，后面的盖在上面）：
-hostKeyDialog → authDialog → hostDialog → keysDialog → setupDialog → deleteDialog → toasts → paletteDialog
+hostKeyDialog → authDialog → hostDialog → keysDialog → settingsDialog → setupDialog → deleteDialog → toasts → paletteDialog
 ```
 
 - 浮层的状态都在 `app` 上（`a.form`、`a.keyPanel`、`a.auth`、`a.setup` …），`open` 为假时渲染函数直接返回。
@@ -156,7 +157,7 @@ hostKeyDialog → authDialog → hostDialog → keysDialog → setupDialog → d
 
 **新增一种连接行为**（认证方式、协议选项）：能力放 `core/sshconn` 的 `Config` 里并写单元测试；应用层只负责从主机记录映射到 `Config`（`hopConfig`）和处理新的错误类型（`connectFailed`）。
 
-**新增设置项**：目前没有设置存储（roadmap 任务 F2）。不要临时写本机文件；先完成 F2。
+**新增设置项**：跨设备一致的偏好加进 `settings.go` 的 `settings` 结构体，通过 `a.saveSettings` 写进保险库（固定 ID `settings`）；只属于当前设备的配置加进 `deviceSettings` 结构体，通过 `a.saveLocal` 写入配置目录下的 `device.json`。
 
 ## 依赖
 

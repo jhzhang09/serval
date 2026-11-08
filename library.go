@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 
 	"serval/core/hosts"
@@ -15,8 +17,12 @@ import (
 
 // 保险库里的记录类型。
 const (
-	kindHost = "host"
-	kindKey  = "key"
+	kindHost     = "host"
+	kindKey      = "key"
+	kindSettings = "settings"
+
+	// settingsID 是随同步设置记录的固定 ID，多台设备修改后按同一条记录的 rev 合并。
+	settingsID = "settings"
 )
 
 // deviceStore 是系统安全存储（正式运行时是 mygo.Secrets，测试里是内存实现）。
@@ -29,15 +35,19 @@ type deviceStore interface {
 
 func rememberedKeyName(vaultID string) string { return "vault-key/" + vaultID }
 
-// reload 从保险库重新读出主机和私钥。保险库是唯一的数据来源，界面上的列表只是它的副本。
+// reload 从保险库重新读出主机、私钥和随同步设置。保险库是唯一的数据来源，界面上的状态只是它的副本。
 func (a *app) reload() {
-	a.hosts, a.keys, a.hostsError = nil, nil, ""
+	a.hosts, a.keys, a.settings, a.hostsError = nil, nil, settings{}, ""
 	if err := decodeAll(a.vault, kindHost, &a.hosts); err != nil {
 		a.hostsError = err.Error()
 	}
 	if err := decodeAll(a.vault, kindKey, &a.keys); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
+	if err := decodeSettings(a.vault, &a.settings); err != nil && a.hostsError == "" {
+		a.hostsError = err.Error()
+	}
+	a.refreshTerminals()
 }
 
 func decodeAll[T any](v *vault.Vault, kind string, out *[]T) error {
@@ -55,11 +65,106 @@ func decodeAll[T any](v *vault.Vault, kind string, out *[]T) error {
 	return nil
 }
 
-// hostChange、keyChange 把一条主机或私钥转成保险库的修改。用 JSONChange 写入：
+func decodeSettings(v *vault.Vault, out *settings) error {
+	r, ok, err := v.Get(settingsID)
+	if err != nil || !ok {
+		return err
+	}
+	if err := json.Unmarshal(r.Data, out); err != nil {
+		return fmt.Errorf("保险库里有一条无法读取的记录（%s）: %w", r.ID, err)
+	}
+	return nil
+}
+
+// hostChange、keyChange、settingsChange 把主机、私钥或设置转成保险库的修改。用 JSONChange 写入：
 // 只替换本版本认识的字段，其他设备上更新版本的 Serval 加的字段原样保留。
 func hostChange(h hosts.Host) vault.Change { return mustJSONChange(kindHost, h.ID, h) }
 
 func keyChange(k keys.Key) vault.Change { return mustJSONChange(kindKey, k.ID, k) }
+
+func settingsChange(s settings) vault.Change { return mustJSONChange(kindSettings, settingsID, s) }
+
+// saveSettings 把随同步的偏好设置写进保险库并刷新界面。
+func (a *app) saveSettings(s settings) error {
+	return a.apply(settingsChange(s))
+}
+
+// loadLocal 读取本机设置文件（device.json）。文件不存在时使用默认值。
+func (a *app) loadLocal() {
+	d, err := loadDeviceSettings(a.devicePath)
+	if err != nil {
+		if a.hostsError == "" {
+			a.hostsError = err.Error()
+		}
+		return
+	}
+	a.local = d
+}
+
+// saveLocal 保存只属于本机的设置到 device.json，不写进保险库。
+func (a *app) saveLocal(d deviceSettings) error {
+	if err := saveDeviceSettings(a.devicePath, d); err != nil {
+		return err
+	}
+	a.local = d
+	return nil
+}
+
+func loadDeviceSettings(path string) (deviceSettings, error) {
+	if path == "" {
+		return deviceSettings{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return deviceSettings{}, nil
+	}
+	if err != nil {
+		return deviceSettings{}, fmt.Errorf("读取本机设置失败: %w", err)
+	}
+	var d deviceSettings
+	if err := json.Unmarshal(data, &d); err != nil {
+		return deviceSettings{}, fmt.Errorf("本机设置文件已损坏（%s）: %w", path, err)
+	}
+	return d, nil
+}
+
+func saveDeviceSettings(path string, d deviceSettings) error {
+	if path == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".device-*")
+	if err != nil {
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("保存本机设置失败: %w", err)
+	}
+	return nil
+}
 
 func mustJSONChange(kind, id string, v any) vault.Change {
 	ch, err := vault.JSONChange(kind, id, v)

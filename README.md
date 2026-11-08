@@ -94,9 +94,10 @@ macOS 用 ⌘；其他平台用 Ctrl+Shift，避免和终端里常用的 Ctrl+D�
 | `design` | 视觉规范：配色、字体、图标、斑纹 |
 | `app.go` | 应用状态：连接、标签、窗格树、文件抽屉 |
 | `view.go`、`sheets.go`、`palette.go` | 界面、对话框、命令面板 |
-| `library.go` | 保险库与界面之间的数据层：读写主机和私钥、设置主密码、解锁、在本机记住 |
+| `library.go` | 保险库与界面之间的数据层：读写主机、私钥与设置，设置主密码、解锁、在本机记住 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `keyspanel.go` | 密钥面板：导入、生成、查看公钥、重命名、删除 |
+| `settings.go` | 设置面板与设置存储（随保险库同步的偏好设置与本机 `device.json`） |
 | `knownhosts.go` | 主机信任记录（存在保险库里）、重置主机密钥 |
 | `internal/devsshd`、`cmd/devsshd` | 只监听回环地址的开发用 SSH 服务器（支持转发，可当跳板机），用于测试和性能测量 |
 | `internal/devproxy` | 测试用的 SOCKS5 和 HTTP 代理，只转发到回环地址 |

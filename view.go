@@ -60,6 +60,7 @@ func (a *app) view(c *ui.Context) {
 	a.authDialog(c, colors)
 	a.hostDialog(c, colors)
 	a.keysDialog(c, colors)
+	a.settingsDialog(c, colors)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
 	a.flushToasts(c)
@@ -171,11 +172,11 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 			})
 		})
 
-		ui.Column(c).Padding(6, 10, 12, 10).Gap(8).Children(func() {
+		ui.Column(c).Padding(6, 10, 12, 10).Gap(2).Children(func() {
 			for _, message := range []string{a.hostsError, a.notice} {
 				if message != "" {
 					ui.Text(c, message).Key("notice").FontSize(design.TextSmall).TextColor(colors.Danger).
-						Padding(8, 10).Radius(design.RadiusRow).Background(colors.DangerSoft).Selectable()
+						Padding(8, 10).Margin(0, 0, 6, 0).Radius(design.RadiusRow).Background(colors.DangerSoft).Selectable()
 				}
 			}
 			// ButtonBase 默认居中，这里要和上面的主机列表左对齐。
@@ -200,6 +201,15 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openKeys)
+			settingsButton := ui.ButtonBase(c).Key("openSettings").Label("设置").Height(30).Padding(0, 10).Gap(8).
+				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+			if settingsButton.Hovered() {
+				settingsButton.Background(colors.Hover)
+			}
+			settingsButton.Children(func() {
+				ui.Icon(c, design.Icon("settings")).FontSize(14).TextColor(t.TextMuted)
+				ui.Text(c, "设置").TextColor(t.TextMuted)
+			}).OnClick(a.openSettings)
 		})
 	})
 }

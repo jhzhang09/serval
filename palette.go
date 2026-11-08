@@ -128,6 +128,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("panel-left", "显示或收起侧栏", func() { a.sidebarOpen = !a.sidebarOpen })
 	action("plus", "添加主机", func() { a.openAdd() })
 	action("key-round", "密钥", a.openKeys)
+	action("settings", "打开设置", a.openSettings)
 	action("sun-moon", "外观：跟随系统", func() { a.setAppearance(appearanceSystem) })
 	action("sun-moon", "外观：浅色", func() { a.setAppearance(appearanceLight) })
 	action("sun-moon", "外观：深色", func() { a.setAppearance(appearanceDark) })

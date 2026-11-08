@@ -54,10 +54,12 @@ func main() {
 		// 打不开时不能新建一个空保险库覆盖它，宁可不启动。
 		log.Fatalf("无法打开保险库: %v", err)
 	}
+	a.devicePath = filepath.Join(dir, "device.json")
 	a.device = mygo.Secrets
 	if !a.unlockWithRemembered() {
 		a.reload() // 未加密时直接读出；锁定时 reload 什么都读不到，界面显示解锁页面
 	}
+	a.loadLocal()
 	a.unlock.remember = true
 	a.pickFile = defaultPickFile(func(dir string) ([]string, error) {
 		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择私钥", DefaultPath: dir, ButtonLabel: "选择", ShowHiddenFiles: true})
