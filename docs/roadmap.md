@@ -51,10 +51,9 @@
 
 ## F 基础
 
-### F1 正式的应用标识符（需决策，S）
+### F1 正式的应用标识符（S，已完成：`feat/F1-app-identifier`）
 
-- **背景**：`mygo.json` 里的 `identifier` 还是占位的 `com.example.serval`。系统安全存储按它区分应用，改了以后“在这台设备上记住”会失效一次（用户要重新输入一次主密码，数据不受影响），越早定越好。
-- **需决策**：标识符（例如 `io.github.<账号>.serval`）、是否同时确定作者、版权署名。
+- **背景**：确定正式的应用标识符为 `io.github.serval-app.serval`。系统安全存储（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service）按它区分应用，隔离本应用的数据。
 - **范围**：改 `mygo.json`；README 的打包说明。
 - **验收**：打包后 `codesign -dv` 显示新标识符；“记住”失效后能用主密码解锁，并重新记住。
 
