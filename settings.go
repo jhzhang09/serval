@@ -54,6 +54,10 @@ type settingsPanel struct {
 	newPassword     string
 	confirmPassword string
 	changePwErr     string
+	// changePwBusy 表示正在后台派生密钥（两次 Argon2id），期间按钮禁用。
+	changePwBusy bool
+	// revealChangePw 让刚展开的修改主密码表单滚动到可见位置（设置项在滚动区域里，表单可能在下方）。
+	revealChangePw bool
 }
 
 // openSettings 打开设置面板。
@@ -106,26 +110,35 @@ func (a *app) removeRecentHost(id string) {
 	_ = a.saveLocal(next)
 }
 
+// submitChangePassword 在后台修改主密码：要做两次 Argon2id，不能在主线程上执行。
 func (a *app) submitChangePassword() {
 	p := &a.settingsPanel
+	if p.changePwBusy {
+		return
+	}
 	if p.newPassword != p.confirmPassword {
 		p.changePwErr = "两次输入的新主密码不一致。"
 		return
 	}
-	if err := a.vault.ChangePassword(p.currentPassword, p.newPassword); err != nil {
-		if errors.Is(err, vault.ErrWrongPassword) {
-			p.changePwErr = "当前主密码不正确。"
-			return
-		}
-		p.changePwErr = err.Error()
-		return
-	}
-	p.changePwOpen = false
-	p.currentPassword = ""
-	p.newPassword = ""
-	p.confirmPassword = ""
-	p.changePwErr = ""
-	a.toast(ui.Toast{Title: "已修改主密码"})
+	current, next := p.currentPassword, p.newPassword
+	p.changePwBusy, p.changePwErr = true, ""
+	go func() {
+		err := a.vault.ChangePassword(current, next)
+		a.post(func() {
+			p := &a.settingsPanel
+			p.changePwBusy = false
+			switch {
+			case errors.Is(err, vault.ErrWrongPassword):
+				p.changePwErr = "当前主密码不正确。"
+			case err != nil:
+				p.changePwErr = err.Error()
+			default:
+				p.changePwOpen = false
+				p.currentPassword, p.newPassword, p.confirmPassword, p.changePwErr = "", "", "", ""
+				a.toast(ui.Toast{Title: "已修改主密码"})
+			}
+		})
+	}()
 }
 
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
@@ -136,88 +149,107 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	}
 	t := c.Theme()
 	mode := max(slices.Index(appearanceModes, a.settings.Appearance), 0)
+	// 设置项越来越多，窗口矮时放不下：标题和“完成”固定，中间的设置项放进滚动区域。
+	// 220 是标题、按钮、面板内边距和面板与窗口边缘的距离之和。
+	_, windowHeight := c.Size()
 	sheet(c, colors, &p.open, &p.fresh, 560, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
 			ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600)
-			ui.Field(c, "外观", func() {
-				c.Key("settingsAppearance")
-				ui.Segmented(c, &mode, "跟随系统", "浅色", "深色").OnChange(func() {
-					p.err = ""
-					a.setAppearance(appearanceModes[mode])
-				})
-			}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
+			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-220, 120)).Children(func() {
+				ui.Column(c).Gap(14).Padding(0, 4, 0, 0).Children(func() {
+					ui.Field(c, "外观", func() {
+						c.Key("settingsAppearance")
+						ui.Segmented(c, &mode, "跟随系统", "浅色", "深色").OnChange(func() {
+							p.err = ""
+							a.setAppearance(appearanceModes[mode])
+						})
+					}).Description("外观设置保存在保险库里，之后在多台设备间同步时会一起生效。")
 
-			autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
-			if autoLockIdx < 0 {
-				autoLockIdx = 0
-			}
-			ui.Field(c, "自动锁定", func() {
-				c.Key("settingsAutoLock")
-				ui.Segmented(c, &autoLockIdx, "从不", "5分钟", "15分钟", "30分钟", "1小时").OnChange(func() {
-					next := a.local
-					next.AutoLockMinutes = autoLockChoices[autoLockIdx]
-					_ = a.saveLocal(next)
-				})
-			}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
+					autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
+					if autoLockIdx < 0 {
+						autoLockIdx = 0
+					}
+					ui.Field(c, "自动锁定", func() {
+						c.Key("settingsAutoLock")
+						ui.Segmented(c, &autoLockIdx, "从不", "5分钟", "15分钟", "30分钟", "1小时").OnChange(func() {
+							next := a.local
+							next.AutoLockMinutes = autoLockChoices[autoLockIdx]
+							if err := a.saveLocal(next); err != nil {
+								p.err = err.Error()
+							}
+						})
+					}).Description("闲置超过指定时间后自动关闭会话并锁定保险库。")
 
-			if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
-				ui.Field(c, "记住主密码", func() {
-					c.Key("settingsRemember")
-					ui.Checkbox(c, &p.rememberDevice, "在这台设备上记住主密码").OnChange(func() {
-						a.rememberOnDevice(p.rememberDevice)
-						if p.rememberDevice {
-							a.toast(ui.Toast{Title: "已在这台设备上记住主密码"})
+					if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
+						ui.Field(c, "记住主密码", func() {
+							c.Key("settingsRemember")
+							ui.Checkbox(c, &p.rememberDevice, "在这台设备上记住主密码").OnChange(func() {
+								a.rememberOnDevice(p.rememberDevice)
+								if p.rememberDevice {
+									a.toast(ui.Toast{Title: "已在这台设备上记住主密码"})
+								} else {
+									a.toast(ui.Toast{Title: "已清除在这台设备上记住的主密码"})
+								}
+							})
+						}).Description("关闭后，每次启动 Serval 都需要重新输入主密码。")
+					}
+
+					if a.vault != nil && a.vault.State() != vault.Unprotected {
+						if !p.changePwOpen {
+							ui.Row(c).Children(func() {
+								ui.Button(c, "修改主密码…").Key("settingsOpenChangePw").OnClick(func() {
+									p.changePwOpen = true
+									p.revealChangePw = true
+									p.currentPassword = ""
+									p.newPassword = ""
+									p.confirmPassword = ""
+									p.changePwErr = ""
+								})
+							})
 						} else {
-							a.toast(ui.Toast{Title: "已清除在这台设备上记住的主密码"})
-						}
-					})
-				}).Description("关闭后，每次启动 Serval 都需要重新输入主密码。")
-			}
-
-			if a.vault != nil && a.vault.State() != vault.Unprotected {
-				if !p.changePwOpen {
-					ui.Row(c).Children(func() {
-						ui.Button(c, "修改主密码…").Key("settingsOpenChangePw").OnClick(func() {
-							p.changePwOpen = true
-							p.currentPassword = ""
-							p.newPassword = ""
-							p.confirmPassword = ""
-							p.changePwErr = ""
-						})
-					})
-				} else {
-					ui.Column(c).Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover).Children(func() {
-						ui.Text(c, "修改主密码").FontWeight(600)
-						ui.Field(c, "当前主密码", func() {
-							c.Key("settingsCurrentPw")
-							ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
-						})
-						ui.Field(c, "新主密码", func() {
-							c.Key("settingsNewPw")
-							ui.TextInput(c, &p.newPassword).Password()
-						}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
-						ui.Field(c, "确认新主密码", func() {
-							c.Key("settingsConfirmPw")
-							ui.TextInput(c, &p.confirmPassword).Password()
-						})
-						if p.changePwErr != "" {
-							ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
-						}
-						ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-							ui.Button(c, "取消").Key("settingsCancelPw").OnClick(func() {
-								p.changePwOpen = false
-								p.changePwErr = ""
+							form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
+							if p.revealChangePw {
+								p.revealChangePw = false
+								form.ScrollIntoView()
+							}
+							form.Children(func() {
+								ui.Text(c, "修改主密码").FontWeight(600)
+								ui.Field(c, "当前主密码", func() {
+									c.Key("settingsCurrentPw")
+									ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
+								})
+								ui.Field(c, "新主密码", func() {
+									c.Key("settingsNewPw")
+									ui.TextInput(c, &p.newPassword).Password()
+								}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
+								ui.Field(c, "确认新主密码", func() {
+									c.Key("settingsConfirmPw")
+									ui.TextInput(c, &p.confirmPassword).Password()
+								})
+								if p.changePwErr != "" {
+									ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
+								}
+								ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+									ui.Button(c, "取消").Key("settingsCancelPw").OnClick(func() {
+										p.changePwOpen = false
+										p.changePwErr = ""
+									})
+									label := "保存新密码"
+									if p.changePwBusy {
+										label = "正在保存…"
+									}
+									ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
+										a.submitChangePassword()
+									})
+								})
 							})
-							ui.PrimaryButton(c, "保存新密码").Key("settingsSavePw").OnClick(func() {
-								a.submitChangePassword()
-							})
-						})
-					})
-				}
-			}
+						}
+					}
 
-			ui.Divider(c)
-			a.knownHostsSection(c, colors)
+					ui.Divider(c)
+					a.knownHostsSection(c, colors)
+				})
+			})
 			if p.err != "" {
 				ui.Text(c, p.err).Key("settingsError").TextColor(t.Danger)
 			}

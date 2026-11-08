@@ -275,7 +275,7 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 	h.a.settingsPanel.confirmPassword = "brand-new-password"
 	h.tt.Frame()
 	h.click("保存新密码")
-	h.tt.Frame()
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
 	if !strings.Contains(h.a.settingsPanel.changePwErr, "当前主密码不正确") {
 		t.Fatalf("应提示当前主密码不正确: %q", h.a.settingsPanel.changePwErr)
 	}
@@ -285,7 +285,7 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 	h.a.settingsPanel.confirmPassword = "mismatched-password"
 	h.tt.Frame()
 	h.click("保存新密码")
-	h.tt.Frame()
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
 	if !strings.Contains(h.a.settingsPanel.changePwErr, "不一致") {
 		t.Fatalf("应提示两次输入不一致: %q", h.a.settingsPanel.changePwErr)
 	}
@@ -294,7 +294,7 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 	h.a.settingsPanel.confirmPassword = "brand-new-password"
 	h.tt.Frame()
 	h.click("保存新密码")
-	h.tt.Frame()
+	h.pump("修改主密码结果", func() bool { return !h.a.settingsPanel.changePwBusy })
 	if h.a.settingsPanel.changePwOpen {
 		t.Fatal("修改成功后应收起修改密码表单")
 	}
@@ -313,7 +313,7 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 	h.a.unlock.password = masterPassword
 	h.tt.Frame()
 	h.click("解锁")
-	h.tt.Frame()
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
 	if h.a.vault.State() != vault.Locked || !strings.Contains(h.a.unlock.err, "不正确") {
 		t.Fatalf("旧密码解锁应失败: state=%v err=%q", h.a.vault.State(), h.a.unlock.err)
 	}
@@ -322,7 +322,7 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 	h.a.unlock.password = "brand-new-password"
 	h.tt.Frame()
 	h.click("解锁")
-	h.tt.Frame()
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
 	if h.a.vault.State() != vault.Unlocked {
 		t.Fatalf("新密码解锁失败: state=%v err=%q", h.a.vault.State(), h.a.unlock.err)
 	}
@@ -382,13 +382,11 @@ func TestManualLockWithOpenSessions(t *testing.T) {
 }
 
 // 自动锁定：在设定的闲置时间后自动关闭全部会话并锁定保险库。
-func TestAutoLockWithInjectedClock(t *testing.T) {
+func TestAutoLockFollowsSystemIdleTime(t *testing.T) {
 	h := newHarness(t)
 	h.connectDev()
-
-	now := time.Now()
-	h.a.now = func() time.Time { return now }
-	h.a.touchActive()
+	idle := time.Duration(0)
+	h.a.idleTime = func() time.Duration { return idle }
 
 	// 设置 15 分钟自动锁定
 	h.click("设置")
@@ -401,31 +399,34 @@ func TestAutoLockWithInjectedClock(t *testing.T) {
 		t.Fatalf("AutoLockMinutes=%d", h.a.local.AutoLockMinutes)
 	}
 
-	// 经过 10 分钟：未达到阈值，保持解锁
-	now = now.Add(10 * time.Minute)
-	h.a.checkAutoLock()
+	// 真实运行时，定时检查之间界面会不断重绘（终端输出、动画、定时器本身的 post）。
+	// 重绘不能算作用户活动：这里每次检查前都渲染一帧。
+	check := func(d time.Duration) {
+		idle = d
+		h.tt.Frame()
+		h.a.checkAutoLock()
+		h.tt.Frame()
+	}
+	check(10 * time.Minute)
 	if h.a.vault.State() != vault.Unlocked || len(h.a.tabs) != 1 {
-		t.Fatalf("10分钟时不应锁定: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
+		t.Fatalf("闲置 10 分钟不应锁定: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
 	}
-
-	// 用户活动：重置闲置计时
-	h.a.touchActive()
-
-	// 再经过 10 分钟：距上次活动只有 10 分钟，不应锁定
-	now = now.Add(10 * time.Minute)
-	h.a.checkAutoLock()
+	check(30 * time.Second) // 用户动了一下键盘或鼠标，系统闲置时间归零后重新累计
 	if h.a.vault.State() != vault.Unlocked {
-		t.Fatal("活动后重新计时，不应锁定")
+		t.Fatal("用户活动后不应锁定")
 	}
 
-	// 再经过 6 分钟（累计 16 分钟未活动）：触发自动锁定
-	now = now.Add(6 * time.Minute)
-	h.a.checkAutoLock()
-	if h.a.vault.State() != vault.Locked {
-		t.Fatalf("超过15分钟闲置应自动锁定: state=%v", h.a.vault.State())
+	// 锁定前留一个填了一半的密码询问，锁定后内存里不应留下。
+	h.a.auth = authSheet{open: true, secret: "half-typed"}
+	check(16 * time.Minute)
+	if h.a.vault.State() != vault.Locked || len(h.a.tabs) != 0 {
+		t.Fatalf("闲置超过 15 分钟应锁定并关闭会话: state=%v tabs=%d", h.a.vault.State(), len(h.a.tabs))
 	}
-	if len(h.a.tabs) != 0 {
-		t.Fatalf("自动锁定后会话应关闭: tabs=%d", len(h.a.tabs))
+	if h.a.auth.secret != "" || h.a.auth.open || len(h.a.hosts) != 0 {
+		t.Fatal("锁定后不应在内存里留下密码询问或主机信息")
+	}
+	if !h.tt.HasText("Serval 已锁定") {
+		t.Fatalf("应显示锁定页面: %q", h.tt.Texts())
 	}
 }
 
@@ -462,7 +463,7 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	h.a.unlock.remember = false
 	h.tt.Frame()
 	h.click("解锁")
-	h.tt.Frame()
+	h.pump("解锁结果", func() bool { return !h.a.unlock.busy })
 	if h.a.vault.State() != vault.Unlocked {
 		t.Fatalf("解锁失败: state=%v", h.a.vault.State())
 	}

@@ -71,8 +71,9 @@ type app struct {
 	unlock        unlockState
 	pal           palette
 	askingLock    bool
-	now           func() time.Time
-	lastActive    time.Time
+	// idleTime 返回用户多久没有使用键盘和鼠标（系统级，正式运行时是 mygo.Power.IdleTime）。
+	// 自动锁定按它判断：不能用“界面最后一次重绘”的时间，终端输出、动画、定时器都会触发重绘。
+	idleTime func() time.Duration
 	// pickFile 弹出文件选择框，返回选中的路径（取消时为空）。测试里替换掉。
 	pickFile func() (string, error)
 }
@@ -159,27 +160,16 @@ func newApp() *app {
 		sidebarOpen: true,
 		connecting:  map[string]context.CancelFunc{},
 		arrived:     map[int]bool{},
-		now:         time.Now,
 	}
-	a.lastActive = a.now()
 	return a
 }
 
-func (a *app) touchActive() {
-	if a.now != nil {
-		a.lastActive = a.now()
-	}
-}
-
+// checkAutoLock 在用户闲置超过设定时间后锁定保险库。由 startAutoLock 定时调用。
 func (a *app) checkAutoLock() {
-	if a.local.AutoLockMinutes <= 0 || a.vault == nil || a.vault.State() != vault.Unlocked {
+	if a.local.AutoLockMinutes <= 0 || a.idleTime == nil || a.vault == nil || a.vault.State() != vault.Unlocked {
 		return
 	}
-	now := time.Now()
-	if a.now != nil {
-		now = a.now()
-	}
-	if now.Sub(a.lastActive) >= time.Duration(a.local.AutoLockMinutes)*time.Minute {
+	if a.idleTime() >= time.Duration(a.local.AutoLockMinutes)*time.Minute {
 		a.lockVault()
 	}
 }
@@ -195,20 +185,28 @@ func (a *app) askLockVault() {
 	a.lockVault()
 }
 
+// lockVault 关闭全部会话并锁定保险库。内存里不留下任何秘密和主机信息：
+// 包括还没提交的密码询问（a.auth 里可能有用户刚输入的密码）、表单、待确认的操作。
 func (a *app) lockVault() {
+	remembered := a.isRememberedOnDevice()
 	a.closeAll()
 	if a.vault != nil {
 		a.vault.Lock()
 	}
 	a.hosts = nil
 	a.keys = nil
+	a.settings = settings{}
 	a.hostsError = ""
+	a.notice = ""
+	a.auth = authSheet{}
 	a.form = hostForm{}
+	a.deleting = nil
+	a.prompts, a.asking = nil, false
 	a.keyPanel = keyPanel{}
 	a.setup = setupSheet{}
 	a.settingsPanel = settingsPanel{}
 	a.pal = palette{}
-	a.unlock = unlockState{}
+	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.toast(ui.Toast{Title: "保险库已锁定"})
 }
