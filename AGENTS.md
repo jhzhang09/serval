@@ -48,6 +48,7 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 | `core/vault` | 加密保险库、混合逻辑时钟、按记录合并（同步核心）。不依赖 UI |
 | `core/keys` | 私钥解析、生成、指纹。不依赖 UI |
 | `core/hosts` | 主机结构、跳板机链路解析。不依赖 UI |
+| `core/zmodem` | ZMODEM 协议（rz/sz），自己按协议文档实现，不能参考 lrzsz（GPL）。不依赖 UI |
 | `design/` | 设计规范：配色、字体、图标、动效、主机斑纹 |
 | `*.go`（根目录） | 应用层（package main）：状态、视图、面板，见架构文档 |
 | `internal/devsshd`、`cmd/devsshd` | 测试用 SSH 服务器，只监听回环地址 |
@@ -146,5 +147,7 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 - **测试按文字点击点到了标题**：标题和按钮同名时会点错，按钮文字要和标题不同。
 - **AlertDialog 弹在面板上面时**：面板里的同名按钮也在树里，点击会报“不是输入目标”，按钮改名或用 Key。
 - **主密码派生**：Argon2id 很慢，`vault` 在锁外派生（`keySnapshot`）。新增需要派生的方法时照此处理，否则派生期间所有线程调用 `State()` 都会等锁。
+- **rz/sz 的互通测试需要 lrzsz**：`brew install lrzsz`（或 `apt install lrzsz`）。没有安装时 `core/zmodem` 和根目录的相关测试会跳过，交付说明里要写明是否跑过。lrzsz 只在测试时作为外部程序运行，不能链接或复制它的代码。
+- **终端的 Conn 不要在持锁时写终端**：终端读输出时会把应答（比如光标位置）写回 Conn。`zmodemConn` 用单独的 `wmu` 保证写终端的顺序，`mu` 持有期间不做阻塞的写，否则两边互相等待。
 - **长文字截断用 `SingleLine()`**：MyGo 的 `Ellipsis` 只在 `SingleLine`/`MaxLines` 截断时生效，`NoWrap().Ellipsis("…")` 不会截断，文字会画出布局框、压住旁边的元素，而布局矩形看起来完全正常。测试布局时要看像素（参考 `TestHostRowLongTextIsCutWithEllipsis`）。
 - **只在测试里注入的函数字段**：`app` 上的 `chooseKeyFile`、`chooseSavePath` 这类字段，测试里会替换，正式运行时由 `main.go` 设置。新增这类字段时同时在 `main.go` 接线，并在真机上触发一次。

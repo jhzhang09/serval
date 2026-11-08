@@ -446,6 +446,9 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if p.searchOpen {
 			a.searchBar(c, colors, t, p)
 		}
+		if p.zmodem != nil {
+			a.zmodemBar(c, colors, p)
+		}
 		// 固定的 Key：查找栏插在终端前面时，终端控件按位置识别会被当成新元素重新挂载，
 		// AutoFocus 随之再次生效，把刚交给查找框的焦点抢回去。
 		c.Key(fmt.Sprintf("terminal:%d", p.id))
@@ -462,6 +465,7 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if view.FocusWithin() && !focused {
 			t.focus = p
 		}
+		a.dropLayer(c, colors, t, p, view)
 	}).DrawOver(func(painter *ui.Painter, r ui.Rect) {
 		// 未激活的窗格蒙一层薄纱，一眼看出键盘输入会去哪里。
 		if veil > 0.001 {
@@ -743,4 +747,38 @@ func (a *app) searchBar(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	case p.searchQuery != "" && p.searchStatus.Text != p.searchQuery:
 		p.term.Search(p.searchQuery)
 	}
+}
+
+// dropLayer 让文件拖到远程终端上时用 SFTP 上传，而不是终端默认的把路径粘贴进 shell。
+//
+// 终端控件自己接收拖放，而且在最里层，外面的元素拿不到。所以只在有文件拖到窗格上方时，在终端上面
+// 铺一层透明的接收层：之后的拖动和松开都落在这一层上。平时没有这一层，终端的选择、滚动、光标都不受影响。
+// 第一次悬停的那一帧还是终端在接收，接收层要到下一帧才出现；系统的拖放总是先发几次悬停再松开，不会错过。
+func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, view ui.Element) {
+	if t.local || t.client == nil || p.ended {
+		p.fileDrag = false
+		return
+	}
+	over := view.FileDragOver()
+	if p.fileDrag {
+		theme := c.Theme()
+		layer := ui.Box(c).Key(fmt.Sprintf("dropLayer:%d", p.id)).Absolute().Top(0).Right(0).Bottom(0).Left(0).
+			Radius(design.RadiusCard).Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
+			Justify(ui.Center).AlignItems(ui.Center).Label("拖放上传")
+		if files := layer.DroppedFiles(); len(files) > 0 {
+			a.uploadDropped(t, p, files)
+		}
+		over = over || layer.FileDragOver()
+		target := "终端的当前目录"
+		if dir := p.term.Dir(); dir != "" {
+			target = shortPath(dir)
+		}
+		layer.Children(func() {
+			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
+				ui.Text(c, "松开即上传").FontWeight(600)
+				ui.Text(c, "上传到 "+target).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
+			})
+		})
+	}
+	p.fileDrag = over
 }

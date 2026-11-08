@@ -123,6 +123,8 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	h.a.chooseKeyFile = func() (string, error) { return "", errors.New("测试没有设置 chooseKeyFile") }
 	h.a.chooseSavePath = func(string) (string, error) { return "", errors.New("测试没有设置 chooseSavePath") }
 	h.a.chooseUploadFile = func() (string, error) { return "", errors.New("测试没有设置 chooseUploadFile") }
+	h.a.chooseUploadFiles = func() ([]string, error) { return nil, errors.New("测试没有设置 chooseUploadFiles") }
+	h.a.chooseFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseFolder") }
 	h.a.post = func(fn func()) {
 		h.mu.Lock()
 		h.queue = append(h.queue, fn)
@@ -1177,9 +1179,11 @@ func TestFileUploadDownloadAndCancel(t *testing.T) {
 func TestSystemDialogsAreWired(t *testing.T) {
 	a := newApp()
 	installSystemDialogs(a)
-	if a.chooseKeyFile == nil || a.chooseUploadFile == nil || a.chooseSavePath == nil {
-		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v",
-			a.chooseKeyFile != nil, a.chooseUploadFile != nil, a.chooseSavePath != nil)
+	if a.chooseKeyFile == nil || a.chooseUploadFile == nil || a.chooseSavePath == nil ||
+		a.chooseUploadFiles == nil || a.chooseFolder == nil {
+		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v uploadFiles=%v folder=%v",
+			a.chooseKeyFile != nil, a.chooseUploadFile != nil, a.chooseSavePath != nil,
+			a.chooseUploadFiles != nil, a.chooseFolder != nil)
 	}
 }
 
@@ -1201,14 +1205,14 @@ func TestUploadAsksBeforeReplacing(t *testing.T) {
 	h.a.chooseUploadFile = func() (string, error) { return local, nil }
 
 	h.click("上传文件")
-	h.pump("替换确认", func() bool { return h.a.pendingUpload != nil })
+	h.pump("替换确认", func() bool { return len(h.a.pendingUploads) > 0 })
 	h.tt.Frame()
 	if !h.tt.HasText("替换 " + name + "？") {
 		t.Fatalf("应询问是否替换: %q", h.tt.Texts())
 	}
 	h.click("取消")
 	h.tt.Frame()
-	if len(tb.transfers) != 0 || h.a.pendingUpload != nil {
+	if len(tb.transfers) != 0 || len(h.a.pendingUploads) > 0 {
 		t.Fatal("取消后不应上传")
 	}
 	if data, _ := os.ReadFile(remote); string(data) != "old" {
@@ -1216,7 +1220,7 @@ func TestUploadAsksBeforeReplacing(t *testing.T) {
 	}
 
 	h.click("上传文件")
-	h.pump("替换确认", func() bool { return h.a.pendingUpload != nil })
+	h.pump("替换确认", func() bool { return len(h.a.pendingUploads) > 0 })
 	h.tt.Frame()
 	h.click("替换")
 	h.pump("上传完成", func() bool { return len(tb.transfers) == 1 && tb.transfers[0].done.Load() })

@@ -24,11 +24,27 @@ func installSystemDialogs(a *app) {
 		}
 		return paths[0], nil
 	}
-	a.chooseSavePath = func(defaultName string) (string, error) {
-		dir := filepath.Join(home, "Downloads")
-		if _, err := os.Stat(dir); err != nil {
-			dir = home
+	a.chooseUploadFiles = func() ([]string, error) {
+		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择要通过 rz 上传的文件", DefaultPath: home, ButtonLabel: "上传", Multiple: true})
+	}
+	a.chooseFolder = func() (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "把 sz 发来的文件保存到", DefaultPath: downloadsDir(home), ButtonLabel: "保存到这里", Directory: true, CreateDirectories: true})
+		if err != nil || len(paths) == 0 {
+			return "", err
 		}
+		return paths[0], nil
+	}
+	a.chooseSavePath = func(defaultName string) (string, error) {
+		dir := downloadsDir(home)
 		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "下载到", DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: "保存", CreateDirectories: true})
 	}
+}
+
+// downloadsDir 返回“下载”文件夹，没有时用主目录。
+func downloadsDir(home string) string {
+	dir := filepath.Join(home, "Downloads")
+	if _, err := os.Stat(dir); err != nil {
+		return home
+	}
+	return dir
 }

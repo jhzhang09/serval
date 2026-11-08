@@ -76,8 +76,13 @@ func (a *app) startUpload(t *tab) {
 	if localPath == "" {
 		return
 	}
+	a.uploadTo(t, localPath, path.Join(t.dir, filepath.Base(localPath)))
+}
+
+// uploadTo 把本地文件上传到 remotePath。远端已有同名文件时先请用户确认替换；
+// 检查是否存在要走网络，放在后台。
+func (a *app) uploadTo(t *tab, localPath, remotePath string) {
 	fileName := filepath.Base(localPath)
-	remotePath := path.Join(t.dir, fileName)
 	files := t.files
 	go func() {
 		exists, err := files.Exists(remotePath)
@@ -90,7 +95,7 @@ func (a *app) startUpload(t *tab) {
 				return
 			}
 			if exists {
-				a.pendingUpload = &pendingUpload{tab: t, localPath: localPath, remotePath: remotePath, fileName: fileName}
+				a.pendingUploads = append(a.pendingUploads, &pendingUpload{tab: t, localPath: localPath, remotePath: remotePath, fileName: fileName})
 				return
 			}
 			a.runTransfer(t, transferUpload, remotePath, localPath, fileName)
@@ -100,17 +105,17 @@ func (a *app) startUpload(t *tab) {
 
 // uploadConfirmDialog 确认替换服务器上的同名文件。默认按钮是“取消”。
 func (a *app) uploadConfirmDialog(c *ui.Context) {
-	u := a.pendingUpload
-	if u == nil {
+	if len(a.pendingUploads) == 0 {
 		return
 	}
+	u := a.pendingUploads[0]
 	open := true
 	choice := ui.AlertDialog(c, &open, "替换 "+u.fileName+"？",
 		fmt.Sprintf("服务器上的 %s 里已经有同名文件，上传会替换它。", path.Dir(u.remotePath)), "替换", "取消")
 	if choice == -1 && open {
 		return
 	}
-	a.pendingUpload = nil
+	a.pendingUploads = a.pendingUploads[1:]
 	if choice == 0 && slices.Contains(a.tabs, u.tab) {
 		a.runTransfer(u.tab, transferUpload, u.remotePath, u.localPath, u.fileName)
 	}
@@ -360,4 +365,64 @@ func (a *app) confirmDeleteFile() {
 			}
 		})
 	}()
+}
+
+// uploadDropped 把拖到终端上的文件用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
+// 没拿到当前目录时（服务器的 shell 没有上报）传到主目录，并告诉用户。传输进度在文件抽屉里，所以打开它。
+func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
+	if t.local || t.client == nil {
+		return
+	}
+	var locals, folders []string
+	for _, local := range paths {
+		info, err := os.Stat(local)
+		if err != nil {
+			a.toast(ui.Toast{Title: "无法上传 " + filepath.Base(local), Description: err.Error(), Type: "error"})
+			continue
+		}
+		if info.IsDir() {
+			folders = append(folders, info.Name())
+			continue
+		}
+		locals = append(locals, local)
+	}
+	if len(folders) > 0 {
+		a.toast(ui.Toast{Title: "暂不支持上传文件夹", Description: "已跳过 " + strings.Join(folders, "、") + "。", Type: "error"})
+	}
+	if len(locals) == 0 {
+		return
+	}
+	cwd := p.term.Dir()
+	a.filesOpen = true
+	start := func() {
+		if !slices.Contains(a.tabs, t) || t.files == nil {
+			return
+		}
+		if cwd != "" {
+			for _, local := range locals {
+				a.uploadTo(t, local, path.Join(cwd, filepath.Base(local)))
+			}
+			return
+		}
+		files := t.files
+		go func() {
+			home, err := files.Home()
+			a.post(func() {
+				if err != nil {
+					a.toast(ui.Toast{Title: "无法上传", Description: transferReason(err), Type: "error"})
+					return
+				}
+				a.toast(ui.Toast{Title: "上传到了主目录", Description: "没有拿到终端的当前目录（服务器的 shell 没有上报），文件放在 " + home + "。"})
+				for _, local := range locals {
+					a.uploadTo(t, local, path.Join(home, filepath.Base(local)))
+				}
+			})
+		}()
+	}
+	if t.files != nil {
+		start()
+		return
+	}
+	t.filesWaiting = append(t.filesWaiting, start)
+	a.ensureFiles(t)
 }
