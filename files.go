@@ -178,6 +178,9 @@ func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
 					desc += fmt.Sprintf("，跳过了 %d 个符号链接或特殊文件", skipped)
 				}
 				a.toast(ui.Toast{Title: "已下载文件夹 " + name, Description: desc + "。"})
+				if a.localDir != "" {
+					a.openLocal(a.localDir)
+				}
 			}
 		})
 	}()
@@ -267,8 +270,11 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 				a.toast(ui.Toast{Title: verb + " " + fileName + " 失败", Description: tr.err, Type: "error"})
 			default:
 				a.toast(ui.Toast{Title: "已" + verb + " " + fileName})
-				if kind == transferUpload && slices.Contains(a.tabs, t) {
+				if slices.Contains(a.tabs, t) && kind == transferUpload {
 					a.openDir(t, t.dir)
+				}
+				if kind == transferDownload && a.localDir != "" {
+					a.openLocal(a.localDir)
 				}
 			}
 		})

@@ -101,6 +101,11 @@ type app struct {
 	// dragRoot 是拖到桌面之前临时下载的目录。dragCopies 按远程路径记下准备好的副本，只在主线程读写。
 	dragRoot   string
 	dragCopies map[string]*dragCopy
+	// localDir 是文件抽屉左侧列出的本机目录。localGen 用来丢掉过期的列举结果。
+	localDir     string
+	localEntries []localEntry
+	localErr     string
+	localGen     int
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
 	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。

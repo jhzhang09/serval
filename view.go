@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path"
 	"runtime"
 	"slices"
 	"strings"
@@ -567,10 +566,10 @@ func chip(c *ui.Context, text string, fg, bg ui.Color) ui.Element {
 }
 
 func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
-	theme := c.Theme()
 	a.ensureFiles(t)
 	a.followCwd(t)
-	drawer := raised(ui.Column(c).Key("drawer").Width(280).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	// 两栏并排，宽度一次定死。终端只收到一次尺寸变化，不能把宽度做成动画。
+	drawer := raised(ui.Column(c).Key("drawer").Width(560).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	// 抽屉的宽度一步到位，终端只改一次尺寸；内容从右侧滑入。
 	// 之前用 Collapse 让宽度从 0 长大，会让终端逐帧改尺寸，已改掉。
 	drawer.Transition(design.SlideIn(18)).Children(func() {
@@ -590,37 +589,11 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 				})
 			}
 		}
-		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
-			name := path.Base(t.dir)
-			if t.dir == "" {
-				name = "文件"
-			}
-			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
-			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
-			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
-			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "")
-			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
-			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
-		})
-		if t.filesError != "" {
-			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
-		}
-		if t.filesBusy {
-			ui.Text(c, "正在打开文件…").TextColor(theme.TextMuted).Padding(10, 14)
-		}
-		if t.local {
-			// 本地会话不走 SFTP，抽屉里没有内容；说清楚原因，不留一块空白。
-			ui.Text(c, "文件抽屉用于浏览远程主机的文件。本机的文件请在访达或资源管理器里查看。").
-				TextColor(theme.TextMuted).FontSize(design.TextSmall).Padding(10, 14)
-		}
-		entries := t.entries
-		ui.List(c, nil, len(entries), func(i int) {
-			a.fileRow(c, colors, t, entries[i])
-		}).Grow(1).MinHeight(0).Padding(6, 6, 8, 6).Children(func() {
-			if len(entries) == 0 && t.files != nil && t.filesError == "" {
-				ui.Text(c, "这个目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
-			}
+		a.ensureLocalList()
+		ui.Row(c).Grow(1).MinHeight(0).Children(func() {
+			a.localColumn(c, colors, t)
+			ui.Box(c).Width(1).Shrink(0).Background(colors.Hairline)
+			a.remoteColumn(c, colors, t)
 		})
 		if len(t.transfers) > 0 {
 			ui.Divider(c)
@@ -728,6 +701,23 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 	}
 	row := ui.ButtonBase(c).Key(entry.Path).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
+	// 窗口内拖动交给另一栏。拖到桌面要等副本下好：准备好之后才声明系统拖放，
+	// 否则这次手势会变成系统拖动，本机栏收不到。松手在窗口外才开始下那份副本。
+	row.Drag(paneDrag{path: entry.Path, name: entry.Name, dir: entry.IsDir})
+	if entry.IsDir {
+		if item, ok := ui.Drop[paneDrag](row); ok {
+			a.acceptPaneDrop(t, false, entry.Path, item)
+		}
+	}
+	if at, ok := row.DragMissed(); ok {
+		w, h := c.Size()
+		if at.X < 0 || at.Y < 0 || at.X > w || at.Y > h {
+			a.prepareDragOut(t, entry)
+		}
+	}
+	if _, ready := a.dragReady(entry); ready {
+		a.bindDragOut(row, t, entry)
+	}
 	if row.Hovered() {
 		row.Background(colors.Hover)
 	}
@@ -736,7 +726,6 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 	} else {
 		row.Children(content)
 	}
-	a.bindDragOut(row, t, entry)
 }
 
 // searchBar 是终端窗格顶部的查找工具条。

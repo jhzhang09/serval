@@ -103,6 +103,12 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	}
 	dir := t.TempDir()
 	h := &harness{t: t, a: newApp(), server: server, device: &memDevice{m: map[string][]byte{}}, dir: dir}
+	// 双栏的本机侧不要去列开发者的主目录，测试之间也会撞上同名文件。
+	localPane := filepath.Join(dir, "local-pane")
+	if err := os.MkdirAll(localPane, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.a.localDir = localPane
 	h.a.devicePath = filepath.Join(dir, "device.json")
 	h.a.device = h.device
 	h.a.localUser = "tester"

@@ -197,7 +197,9 @@ func dragRow(t *testing.T, h *harness, label string) {
 	x, y := box.X+box.W/2, box.Y+min(box.H/2, 8)
 	h.tt.Press(x, y)
 	h.tt.Move(x+24, y)
-	h.tt.Release(x+24, y)
+	// 松手在窗口外：窗口里的另一栏不接这次拖动，才会开始准备拖到桌面的副本。
+	h.tt.Release(-20, -20)
+	h.tt.Frame()
 	h.tt.Key(0, ui.KeyEscape)
 	h.tt.Frame()
 }

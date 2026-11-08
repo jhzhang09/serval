@@ -70,7 +70,7 @@ flowchart TB
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
-| `files.go`、`folderupload.go`、`dragout.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面；系统文件选择框接线 |
+| `files.go`、`folderupload.go`、`dragout.go`、`dualpane.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面、抽屉里的本机栏；系统文件选择框接线 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
 | `paths.go` | `~/` 展开 |
