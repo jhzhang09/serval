@@ -158,6 +158,79 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 	}
 }
 
+// fileOpDialog 是文件操作（新建目录、重命名、修改权限）的输入面板。
+func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
+	op := &a.fileOp
+	if !op.open || a.setup.open {
+		return
+	}
+	var title, label, btnText string
+	switch op.kind {
+	case fileOpNewFolder:
+		title = "新建文件夹"
+		label = "文件夹名称"
+		btnText = "创建"
+	case fileOpRename:
+		// 标题带上文件名，按钮只写动作：同一界面里可点击的文字不能和标题重复。
+		title = "重命名 " + op.name
+		label = "新名称"
+		btnText = "重命名"
+	case fileOpPermissions:
+		title = "修改 " + op.name + " 的权限"
+		label = "八进制权限（如 755）"
+		btnText = "修改权限"
+	}
+	if op.busy {
+		btnText = "正在处理…"
+	}
+
+	sheet(c, colors, &op.open, &op.fresh, 360, 22, func() {
+		ui.Column(c).Gap(14).Children(func() {
+			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
+			var input ui.Element
+			f := ui.Field(c, label, func() {
+				c.Key("fileOpInput")
+				input = ui.TextInput(c, &op.input).AutoFocus()
+			})
+			if op.err != "" {
+				f.Error(op.err)
+			}
+			submit := input.Submitted()
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				ui.Button(c, "取消").Key("fileOpCancel").Disabled(op.busy).OnClick(func() {
+					a.fileOp = fileOpState{}
+				})
+				if ui.PrimaryButton(c, btnText).Key("fileOpSubmit").Disabled(op.busy).Clicked() || (submit && !op.busy) {
+					a.submitFileOp()
+				}
+			})
+		})
+	})
+}
+
+// fileDeleteDialog 确认删除远程文件或目录。
+func (a *app) fileDeleteDialog(c *ui.Context) {
+	if a.fileDelete == nil {
+		return
+	}
+	del := *a.fileDelete
+	targetType := "文件"
+	if del.isDir {
+		targetType = "目录"
+	}
+	message := fmt.Sprintf("删除后无法恢复。确定要删除该%s吗？", targetType)
+	open := true
+	choice := ui.AlertDialog(c, &open, "删除 "+del.name+"？", message, "删除", "取消")
+	if choice == -1 && open {
+		return
+	}
+	if choice == 0 {
+		a.confirmDeleteFile()
+	} else {
+		a.fileDelete = nil
+	}
+}
+
 // lockScreen 是保险库锁定时的全窗口页面。解锁前不显示任何主机信息。
 func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 	t := c.Theme()

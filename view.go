@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"serval/core/hosts"
+	"serval/core/sshconn"
 	"serval/core/vault"
 	"serval/design"
 
@@ -65,6 +66,8 @@ func (a *app) view(c *ui.Context) {
 	a.deleteDialog(c)
 	a.uploadConfirmDialog(c)
 	a.lockConfirmDialog(c)
+	a.fileOpDialog(c, colors)
+	a.fileDeleteDialog(c)
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
 }
@@ -560,6 +563,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			}
 			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).NoWrap().Ellipsis("…").Tooltip(t.dir)
 			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "")
+			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "")
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
 		})
@@ -571,7 +575,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 		}
 		entries := t.entries
 		ui.List(c, nil, len(entries), func(i int) {
-			a.fileRow(c, colors, t, entries[i].Name, entries[i].Path, entries[i].IsDir, entries[i].Size)
+			a.fileRow(c, colors, t, entries[i])
 		}).Grow(1).MinHeight(0).Padding(6, 6, 8, 6).Children(func() {
 			if len(entries) == 0 && t.files != nil && t.filesError == "" {
 				ui.Text(c, "这个目录是空的").TextColor(theme.TextMuted).Padding(8, 8)
@@ -634,42 +638,54 @@ func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 }
 
 // fileRow 显示一项文件。
-func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, name, full string, isDir bool, size int64) {
+func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn.Entry) {
 	theme := c.Theme()
 	content := func() {
 		icon := "file"
 		color := colors.TextFaint
-		if isDir {
+		if entry.IsDir {
 			icon, color = "folder", theme.Accent
 		}
 		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
-		ui.Text(c, name).Grow(1).MinWidth(0).NoWrap().Ellipsis("…")
-		if !isDir {
-			ui.Text(c, formatSize(size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+		ui.Text(c, entry.Name).Grow(1).MinWidth(0).NoWrap().Ellipsis("…")
+		if !entry.IsDir {
+			ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}
 	}
 	menu := func(m *ui.Menu) {
-		if !isDir {
+		if entry.IsDir {
+			if m.Item("打开").Chosen() {
+				a.openDir(t, entry.Path)
+			}
+		} else {
 			if m.Item("下载").Chosen() {
-				a.startDownload(t, full, name)
+				a.startDownload(t, entry.Path, entry.Name)
 			}
 		}
-	}
-	if !isDir {
-		row := ui.ButtonBase(c).Key(full).Label(name).Height(28).Padding(0, 8).Gap(8).
-			Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
-		if row.Hovered() {
-			row.Background(colors.Hover)
+		if m.Item("重命名").Chosen() {
+			a.openRenameFile(t, entry.Path, entry.Name)
 		}
-		row.Children(content)
-		return
+		if m.Item("修改权限").Chosen() {
+			a.openPermissions(t, entry.Path, entry.Name, entry.Mode)
+		}
+		if m.Item("复制路径").Chosen() {
+			c.WriteClipboard(entry.Path)
+			a.toast(ui.Toast{Title: "已复制路径"})
+		}
+		if m.Item("删除").Chosen() {
+			a.askDeleteFile(t, entry.Path, entry.Name, entry.IsDir)
+		}
 	}
-	row := ui.ButtonBase(c).Key(full).Label(name).Height(28).Padding(0, 8).Gap(8).
+	row := ui.ButtonBase(c).Key(entry.Path).Label(entry.Name).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
 	if row.Hovered() {
 		row.Background(colors.Hover)
 	}
-	row.Children(content).OnClick(func() { a.openDir(t, full) })
+	if entry.IsDir {
+		row.Children(content).OnClick(func() { a.openDir(t, entry.Path) })
+	} else {
+		row.Children(content)
+	}
 }
 
 // searchBar 是终端窗格顶部的查找工具条。
