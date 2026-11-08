@@ -783,8 +783,8 @@ func TestCancelAutoReconnect(t *testing.T) {
 	if !tab.root.ended {
 		t.Fatal("取消后窗格未标记为已结束")
 	}
-	if !h.tt.HasText("连接已结束") {
-		t.Fatalf("界面未显示连接已结束，界面文字: %q", h.tt.Texts())
+	if !h.tt.HasText("会话已结束") {
+		t.Fatalf("界面未显示会话已结束，界面文字: %q", h.tt.Texts())
 	}
 }
 
