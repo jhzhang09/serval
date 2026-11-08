@@ -93,6 +93,8 @@ type app struct {
 	chooseSavePath    func(defaultName string) (string, error)
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
+	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。
+	pendingFolders []*folderPlan
 	// challenges 是等待用户回答的多步验证（keyboard-interactive）询问，依次显示。
 	// 经跳板机连接时，跳板机和目标主机可能先后都要求验证码。
 	challenges []*challengeSheet

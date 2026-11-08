@@ -223,7 +223,7 @@ func TestRzCancelledInChooserReturnsToShell(t *testing.T) {
 func assertShellUsable(t *testing.T, h *harness, tb *tab, dir string) {
 	t.Helper()
 	marker := filepath.Join(dir, "shell-ok")
-	h.pump("传输结束", func() bool { return tb.focus.zconn.active == nil })
+	h.pump("传输结束", func() bool { return !tb.focus.zconn.transferring() })
 	tb.focus.term.Send([]byte("touch " + shellQuote(marker) + "\r"))
 	h.pump("shell 可以继续使用", func() bool {
 		_, err := os.Stat(marker)
@@ -261,28 +261,19 @@ func TestDropFilesOnTerminalUploadsToCurrentDir(t *testing.T) {
 	data := randomData(t, 128*1024+3)
 	file := filepath.Join(local, "dropped.bin")
 	os.WriteFile(file, data, 0o644)
-	folder := filepath.Join(local, "some-folder")
-	os.Mkdir(folder, 0o755)
-
-	if !dropOnTerminal(t, h, file, folder) {
+	if !dropOnTerminal(t, h, file) {
 		t.Fatal("拖到远程终端上的文件应被接住")
 	}
 	h.pump("上传完成", func() bool {
 		got, _ := os.ReadFile(filepath.Join(remote, "dropped.bin"))
 		return bytes.Equal(got, data)
 	})
-	if !h.tt.HasText("暂不支持上传文件夹") {
-		t.Fatalf("应提示跳过文件夹: %q", h.tt.Texts())
-	}
 	if !h.a.filesOpen {
 		t.Fatal("拖放上传后应打开文件抽屉显示进度")
 	}
 	h.tt.Frame()
 	if tb.focus.fileDrag {
 		t.Fatal("松开后接收层应消失，不能挡住终端的鼠标操作")
-	}
-	if _, err := os.Stat(filepath.Join(remote, "some-folder")); err == nil {
-		t.Fatal("文件夹不应被上传")
 	}
 }
 

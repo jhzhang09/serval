@@ -191,6 +191,13 @@ func (z *zmodemConn) stream(s *zmodemSession) zmodem.Stream {
 	}
 }
 
+// transferring 报告是否有 rz/sz 会话在进行。
+func (z *zmodemConn) transferring() bool {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.active != nil
+}
+
 // setCancel 记下取消函数，键盘上的 Ctrl+C 会调用它。
 func (z *zmodemConn) setCancel(s *zmodemSession, cancel context.CancelFunc) {
 	z.mu.Lock()
