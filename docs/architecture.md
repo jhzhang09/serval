@@ -70,6 +70,7 @@ flowchart TB
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
+| `editor.go` | 远端文本编辑：读取上限、拒绝二进制、保存前核对大小和修改时间 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
 | `paths.go` | `~/` 展开 |
@@ -136,7 +137,7 @@ view()
         ├── tabBar                 标签放在标题栏里
         └── workspace              窗格卡片树（paneView）+ 文件抽屉，没有标签时是 emptyState
 浮层（按渲染顺序，后面的盖在上面）：
-hostKeyDialog → authDialog → hostDialog → keysDialog → settingsDialog → setupDialog → deleteDialog → toasts → paletteDialog
+hostKeyDialog → authDialog → challengeDialog → hostDialog → proxiesDialog → keysDialog → settingsDialog → setupDialog → deleteDialog → uploadConfirmDialog → folderConflictDialog → lockConfirmDialog → fileOpDialog → fileDeleteDialog → editorDialog → toasts → paletteDialog
 ```
 
 - 浮层的状态都在 `app` 上（`a.form`、`a.keyPanel`、`a.auth`、`a.setup` …），`open` 为假时渲染函数直接返回。

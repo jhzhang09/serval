@@ -71,6 +71,7 @@ func (a *app) view(c *ui.Context) {
 	a.lockConfirmDialog(c)
 	a.fileOpDialog(c, colors)
 	a.fileDeleteDialog(c)
+	a.editorDialog(c, colors)
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
 }
@@ -688,6 +689,9 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 				a.openDir(t, entry.Path)
 			}
 		} else {
+			if m.Item("编辑").Chosen() {
+				a.openEditor(t, entry.Path, entry.Name)
+			}
 			if m.Item("下载").Chosen() {
 				a.startDownload(t, entry.Path, entry.Name)
 			}

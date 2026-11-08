@@ -72,6 +72,8 @@ type app struct {
 
 	fileOp     fileOpState
 	fileDelete *fileDeleteState
+	// editor 是正在编辑的远端文本。锁定保险库时清空，避免内存里留下文件内容。
+	editor editorState
 
 	auth authSheet
 	form hostForm
@@ -285,6 +287,7 @@ func (a *app) lockVault() {
 	a.pal = palette{}
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
+	a.editor = editorState{}
 	a.toast(ui.Toast{Title: "保险库已锁定"})
 }
 
