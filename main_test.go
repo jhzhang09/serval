@@ -1433,3 +1433,16 @@ func TestKeyboardInteractiveChallengeFlow(t *testing.T) {
 		t.Fatalf("连接未成功建立: %+v", h.a.tabs)
 	}
 }
+
+// 在远程标签打开文件抽屉后切到本地终端：抽屉说明原因，不是一块空白。
+func TestFilesDrawerOnLocalTabExplains(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("文件列表", func() bool { return h.tt.HasText("go.mod") })
+	h.click("本地终端")
+	h.tt.Frame()
+	if !h.tt.HasText("文件抽屉用于浏览远程主机的文件") {
+		t.Fatalf("本地标签的文件抽屉应说明原因: %q", h.tt.Texts())
+	}
+}

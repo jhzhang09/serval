@@ -574,6 +574,11 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 		if t.filesBusy {
 			ui.Text(c, "正在打开文件…").TextColor(theme.TextMuted).Padding(10, 14)
 		}
+		if t.local {
+			// 本地会话不走 SFTP，抽屉里没有内容；说清楚原因，不留一块空白。
+			ui.Text(c, "文件抽屉用于浏览远程主机的文件。本机的文件请在访达或资源管理器里查看。").
+				TextColor(theme.TextMuted).FontSize(design.TextSmall).Padding(10, 14)
+		}
 		entries := t.entries
 		ui.List(c, nil, len(entries), func(i int) {
 			a.fileRow(c, colors, t, entries[i])
