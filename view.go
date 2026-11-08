@@ -574,6 +574,22 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 	// 抽屉的宽度一步到位，终端只改一次尺寸；内容从右侧滑入。
 	// 之前用 Collapse 让宽度从 0 长大，会让终端逐帧改尺寸，已改掉。
 	drawer.Transition(design.SlideIn(18)).Children(func() {
+		// 抽屉本身接收拖放，目标是当前列出的目录，不是终端的工作目录。
+		// 平时不铺接收层，避免挡住列表；有文件悬停时再盖一层提示，宽度不变，终端不会跟着改尺寸。
+		if !t.local && t.dir != "" {
+			if dropped := drawer.DroppedFiles(); len(dropped) > 0 {
+				a.uploadInto(t, t.dir, dropped)
+			}
+			if drawer.FileDragOver() {
+				theme := c.Theme()
+				ui.Box(c).Absolute().Top(0).Right(0).Bottom(0).Left(0).
+					Background(theme.Accent.Alpha(0.10)).Border(1.5, theme.Accent.Alpha(0.6)).
+					Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "上传到当前目录").FontWeight(600)
+					ui.Text(c, shortPath(t.dir)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine()
+				})
+			}
+		}
 		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 			name := path.Base(t.dir)
@@ -581,7 +597,8 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 				name = "文件"
 			}
 			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
-			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "")
+			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
+			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "")
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
@@ -687,6 +704,9 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 			if m.Item("打开").Chosen() {
 				a.openDir(t, entry.Path)
 			}
+			if m.Item("下载文件夹").Chosen() {
+				a.startDownloadFolder(t, entry.Path, entry.Name)
+			}
 		} else {
 			if m.Item("下载").Chosen() {
 				a.startDownload(t, entry.Path, entry.Name)
@@ -716,6 +736,7 @@ func (a *app) fileRow(c *ui.Context, colors design.Colors, t *tab, entry sshconn
 	} else {
 		row.Children(content)
 	}
+	a.bindDragOut(row, t, entry)
 }
 
 // searchBar 是终端窗格顶部的查找工具条。

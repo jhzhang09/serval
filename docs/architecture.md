@@ -37,7 +37,7 @@ flowchart TB
 | `proxy.go` | SOCKS5、HTTP CONNECT 代理，只用于第一跳 | `Proxy`、`ParseProxy` |
 | `hostkey.go` | 主机密钥校验：只读的 `~/.ssh/known_hosts` 加应用提供的信任存储 | `HostKeyPolicy`、`TrustedKeys`、`HostKeyChangedError` |
 | `shell.go` | 带 PTY 的交互 shell，实现 `io.ReadWriteCloser` 交给终端插件 | `Shell` |
-| `sftp.go` | 目录列表 | `Files`、`Entry` |
+| `sftp.go` | 目录列表、流式上传下载、递归下载目录 | `Files`、`Entry` |
 
 连接链路：`Config.Jumps` 依次是跳板机，最后连目标。第一跳可以走代理，后面每跳经上一跳的 `direct-tcpip` 通道。每跳独立认证、独立校验主机密钥。跳板机出错包成 `HopError{Hop: i}`，目标主机的错误原样返回，界面据此判断该向哪台机器要密码。通道连接不支持 `SetDeadline`，握手超时用 `time.AfterFunc` 实现。
 
@@ -70,6 +70,7 @@ flowchart TB
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
+| `files.go`、`folderupload.go`、`dragout.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面；系统文件选择框接线 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
 | `paths.go` | `~/` 展开 |

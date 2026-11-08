@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"serval/core/sshconn"
+
 	"github.com/egoist/mygo/ui"
 )
 
@@ -37,7 +39,7 @@ type fileTransfer struct {
 	transferred atomic.Int64
 	speed       atomic.Int64 // bytes / sec
 	done        atomic.Bool
-	// folder 表示这是一个文件夹的上传，filesDone/filesTotal 是文件数进度。
+	// folder 表示这一行是整个文件夹的上传或下载，filesDone/filesTotal 是文件数进度。
 	folder     bool
 	filesDone  atomic.Int64
 	filesTotal atomic.Int64
@@ -81,6 +83,104 @@ func (a *app) startUpload(t *tab) {
 		return
 	}
 	a.uploadTo(t, localPath, path.Join(t.dir, filepath.Base(localPath)))
+}
+
+// startUploadFolder 选一个本地文件夹，上传到抽屉当前目录。
+// 远端已有同名文件夹时的合并和确认，与拖到终端上的文件夹相同。
+func (a *app) startUploadFolder(t *tab) {
+	if t.files == nil || t.dir == "" || t.local {
+		return
+	}
+	if a.chooseUploadFolder == nil {
+		a.toast(ui.Toast{Title: "无法打开文件夹选择框", Description: "这个版本没有接上文件夹选择。", Type: "error"})
+		return
+	}
+	local, err := a.chooseUploadFolder()
+	if err != nil {
+		a.toast(ui.Toast{Title: "无法打开文件夹选择框", Description: err.Error(), Type: "error"})
+		return
+	}
+	if local == "" {
+		return
+	}
+	info, err := os.Stat(local)
+	if err != nil || !info.IsDir() {
+		a.toast(ui.Toast{Title: "请选择一个文件夹", Type: "error"})
+		return
+	}
+	a.planFolderUpload(t, local, t.dir)
+}
+
+// startDownloadFolder 把远程文件夹下载到用户选的目录里，保存为同名文件夹。
+func (a *app) startDownloadFolder(t *tab, remotePath, name string) {
+	if t.files == nil || t.local {
+		return
+	}
+	if err := validateFileName(name); err != nil {
+		a.toast(ui.Toast{Title: "无法下载这个文件夹", Description: err.Error(), Type: "error"})
+		return
+	}
+	if a.chooseDownloadFolder == nil {
+		a.toast(ui.Toast{Title: "无法打开文件夹选择框", Description: "这个版本没有接上文件夹选择。", Type: "error"})
+		return
+	}
+	parent, err := a.chooseDownloadFolder()
+	if err != nil {
+		a.toast(ui.Toast{Title: "无法打开文件夹选择框", Description: err.Error(), Type: "error"})
+		return
+	}
+	if parent == "" {
+		return
+	}
+	a.runFolderDownload(t, remotePath, filepath.Join(parent, name), name)
+}
+
+// runFolderDownload 在后台递归下载文件夹。取消时保留已经下完的文件。
+func (a *app) runFolderDownload(t *tab, remoteRoot, localRoot, name string) {
+	if t.files == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.nextID++
+	tr := &fileTransfer{id: a.nextID, kind: transferDownload, remotePath: remoteRoot, localPath: localRoot,
+		fileName: name, folder: true, cancel: cancel}
+	t.transfers = append(t.transfers, tr)
+	files := t.files
+	go func() {
+		lastBytes, lastTime := int64(0), time.Now()
+		skipped, err := files.DownloadTree(ctx, remoteRoot, localRoot, func(doneFiles, totalFiles, doneBytes, totalBytes int64) {
+			tr.filesDone.Store(doneFiles)
+			tr.filesTotal.Store(totalFiles)
+			tr.transferred.Store(doneBytes)
+			tr.total.Store(totalBytes)
+			if dur := time.Since(lastTime); dur >= 500*time.Millisecond {
+				tr.speed.Store((doneBytes - lastBytes) * int64(time.Second) / int64(dur))
+				lastBytes, lastTime = doneBytes, time.Now()
+			}
+		})
+		a.post(func() {
+			defer cancel()
+			tr.done.Store(true)
+			done := tr.filesDone.Load()
+			switch {
+			case ctx.Err() != nil:
+				tr.err = "已取消"
+				a.toast(ui.Toast{Title: "已取消下载文件夹 " + name, Description: fmt.Sprintf("已下完的 %d 个文件留在本地。", done)})
+			case errors.Is(err, sshconn.ErrLocalExists):
+				tr.err = "本地已经有同名的文件或文件夹"
+				a.toast(ui.Toast{Title: "没有下载文件夹 " + name, Description: "本地已经有同名的文件或文件夹，请换一个位置，或先把原来的移走。", Type: "error"})
+			case err != nil:
+				tr.err = transferReason(err)
+				a.toast(ui.Toast{Title: "下载文件夹 " + name + " 失败", Description: tr.err, Type: "error"})
+			default:
+				desc := fmt.Sprintf("%d 个文件", done)
+				if skipped > 0 {
+					desc += fmt.Sprintf("，跳过了 %d 个符号链接或特殊文件", skipped)
+				}
+				a.toast(ui.Toast{Title: "已下载文件夹 " + name, Description: desc + "。"})
+			}
+		})
+	}()
 }
 
 // uploadTo 把本地文件上传到 remotePath。远端已有同名文件时先请用户确认替换；
@@ -371,14 +471,8 @@ func (a *app) confirmDeleteFile() {
 	}()
 }
 
-// uploadDropped 把拖到终端上的文件和文件夹用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
-// 没拿到当前目录时（服务器的 shell 没有上报）传到主目录，并告诉用户。传输进度在文件抽屉里，所以打开它。
-// 文件夹见 planFolderUpload：远端已有同名文件夹时合并，有同名文件时问一次。
-func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
-	if t.local || t.client == nil {
-		return
-	}
-	var locals, folders []string
+// classifyDrop 把拖进来的路径分成普通文件和文件夹。读不到的路径当场说明，不中断其余文件。
+func (a *app) classifyDrop(paths []string) (files, folders []string) {
 	for _, local := range paths {
 		info, err := os.Stat(local)
 		if err != nil {
@@ -389,39 +483,67 @@ func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
 			folders = append(folders, local)
 			continue
 		}
-		locals = append(locals, local)
+		files = append(files, local)
 	}
-	if len(locals) == 0 && len(folders) == 0 {
+	return files, folders
+}
+
+// uploadPaths 把已经分好类的本地路径上传到远程 dir。
+func (a *app) uploadPaths(t *tab, dir string, files, folders []string) {
+	if !slices.Contains(a.tabs, t) || t.files == nil || dir == "" {
 		return
 	}
-	cwd := p.term.Dir()
+	for _, local := range files {
+		a.uploadTo(t, local, path.Join(dir, filepath.Base(local)))
+	}
+	for _, folder := range folders {
+		a.planFolderUpload(t, folder, dir)
+	}
+}
+
+// uploadInto 把拖进来的文件和文件夹上传到远程 dir（文件抽屉的当前目录）。
+func (a *app) uploadInto(t *tab, dir string, paths []string) {
+	files, folders := a.classifyDrop(paths)
+	if len(files) == 0 && len(folders) == 0 {
+		return
+	}
+	a.uploadPaths(t, dir, files, folders)
+}
+
+// uploadDropped 把拖到终端上的文件和文件夹用 SFTP 传到终端的当前目录（shell 通过 OSC 7 上报的目录）。
+// 没拿到当前目录时（服务器的 shell 没有上报）传到主目录，并告诉用户。传输进度在文件抽屉里，所以打开它。
+// 文件夹见 planFolderUpload：远端已有同名文件夹时合并，有同名文件时问一次。
+func (a *app) uploadDropped(t *tab, p *pane, paths []string) {
+	if t.local || t.client == nil {
+		return
+	}
+	files, folders := a.classifyDrop(paths)
+	if len(files) == 0 && len(folders) == 0 {
+		return
+	}
+	cwd := ""
+	if p != nil && p.term != nil {
+		cwd = p.term.Dir()
+	}
 	a.filesOpen = true
 	start := func() {
 		if !slices.Contains(a.tabs, t) || t.files == nil {
 			return
 		}
-		upload := func(dir string) {
-			for _, local := range locals {
-				a.uploadTo(t, local, path.Join(dir, filepath.Base(local)))
-			}
-			for _, folder := range folders {
-				a.planFolderUpload(t, folder, dir)
-			}
-		}
 		if cwd != "" {
-			upload(cwd)
+			a.uploadPaths(t, cwd, files, folders)
 			return
 		}
-		files := t.files
+		remote := t.files
 		go func() {
-			home, err := files.Home()
+			home, err := remote.Home()
 			a.post(func() {
 				if err != nil {
 					a.toast(ui.Toast{Title: "无法上传", Description: transferReason(err), Type: "error"})
 					return
 				}
 				a.toast(ui.Toast{Title: "上传到了主目录", Description: "没有拿到终端的当前目录（服务器的 shell 没有上报），文件放在 " + home + "。"})
-				upload(home)
+				a.uploadPaths(t, home, files, folders)
 			})
 		}()
 	}

@@ -94,7 +94,13 @@ type app struct {
 	// chooseUploadFiles 选要用 rz 上传的文件（可多选）；chooseFolder 选 sz 收到的文件存放的文件夹。
 	chooseUploadFiles func() ([]string, error)
 	chooseFolder      func() (string, error)
-	chooseSavePath    func(defaultName string) (string, error)
+	// chooseUploadFolder 选要上传的本地文件夹；chooseDownloadFolder 选文件夹下载到哪里。
+	chooseUploadFolder   func() (string, error)
+	chooseDownloadFolder func() (string, error)
+	chooseSavePath       func(defaultName string) (string, error)
+	// dragRoot 是拖到桌面之前临时下载的目录。dragCopies 按远程路径记下准备好的副本，只在主线程读写。
+	dragRoot   string
+	dragCopies map[string]*dragCopy
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
 	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。
@@ -1128,6 +1134,7 @@ func (t *tab) close() {
 
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
 func (a *app) closeAll() {
+	a.clearDragOut()
 	a.saveSessionLayout()
 	for _, cancel := range a.connecting {
 		cancel()

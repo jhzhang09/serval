@@ -226,3 +226,158 @@ func (f *Files) RemoveDirectory(remotePath string) error {
 func (f *Files) Chmod(remotePath string, mode fs.FileMode) error {
 	return f.client.Chmod(remotePath, mode)
 }
+
+// ErrLocalExists 表示要把远程目录下载到的本地路径已经存在。调用方应换位置，而不是覆盖。
+var ErrLocalExists = errors.New("本地已经有同名的文件或文件夹")
+
+// DownloadTree 把远程目录递归下载到 localRoot。localRoot 必须还不存在，函数会创建它。
+//
+// 不跟随符号链接，也不下载设备、管道这类特殊文件，它们计入 skipped。
+// 中途失败或取消时保留已经下完的文件，不删除 localRoot；正在写的那个文件由 Download 删掉半截临时文件。
+// progress 在调用 DownloadTree 的 goroutine 里执行，可以是 nil。不要在里面做界面操作。
+func (f *Files) DownloadTree(ctx context.Context, remoteRoot, localRoot string, progress func(doneFiles, totalFiles, doneBytes, totalBytes int64)) (skipped int, err error) {
+	if err = ctx.Err(); err != nil {
+		return 0, err
+	}
+	dirs, treeFiles, skippedPaths, err := f.readTree(remoteRoot)
+	if err != nil {
+		return 0, err
+	}
+	if _, err = os.Lstat(localRoot); err == nil {
+		return 0, ErrLocalExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, fmt.Errorf("检查本地文件夹失败: %w", err)
+	}
+	if err = os.MkdirAll(localRoot, 0o755); err != nil {
+		return 0, fmt.Errorf("创建本地文件夹失败: %w", err)
+	}
+	var totalBytes int64
+	for _, file := range treeFiles {
+		totalBytes += file.size
+	}
+	totalFiles := int64(len(treeFiles))
+	if progress != nil {
+		progress(0, totalFiles, 0, totalBytes)
+	}
+	for _, dir := range dirs {
+		if err = ctx.Err(); err != nil {
+			return len(skippedPaths), err
+		}
+		dest, destErr := localChild(localRoot, dir)
+		if destErr != nil {
+			return len(skippedPaths), destErr
+		}
+		if err = os.MkdirAll(dest, 0o755); err != nil {
+			return len(skippedPaths), fmt.Errorf("创建本地文件夹失败: %w", err)
+		}
+	}
+	var doneBytes, doneFiles int64
+	for _, file := range treeFiles {
+		if err = ctx.Err(); err != nil {
+			return len(skippedPaths), err
+		}
+		dest, destErr := localChild(localRoot, file.rel)
+		if destErr != nil {
+			return len(skippedPaths), destErr
+		}
+		remoteFile := path.Join(remoteRoot, file.rel)
+		err = f.Download(ctx, remoteFile, dest, func(transferred, _ int64) {
+			if progress != nil {
+				progress(doneFiles, totalFiles, doneBytes+transferred, totalBytes)
+			}
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return len(skippedPaths), ctx.Err()
+			}
+			return len(skippedPaths), fmt.Errorf("%s: %w", file.rel, err)
+		}
+		doneBytes += file.size
+		doneFiles++
+		if progress != nil {
+			progress(doneFiles, totalFiles, doneBytes, totalBytes)
+		}
+	}
+	return len(skippedPaths), nil
+}
+
+type treeFile struct {
+	rel  string
+	size int64
+}
+
+// readTree 列出远程目录里的子目录和普通文件。符号链接和特殊文件放进 skipped，不跟随。
+func (f *Files) readTree(remoteRoot string) (dirs []string, files []treeFile, skipped []string, err error) {
+	info, err := f.client.Lstat(remoteRoot)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("读取 %s 失败: %w", remoteRoot, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil, nil, nil, errors.New("这是符号链接，没有下载")
+	}
+	if !info.IsDir() {
+		return nil, nil, nil, fmt.Errorf("%s 不是文件夹", remoteRoot)
+	}
+	var walk func(rel string) error
+	walk = func(rel string) error {
+		full := remoteRoot
+		if rel != "" {
+			full = path.Join(remoteRoot, rel)
+		}
+		infos, err := f.client.ReadDir(full)
+		if err != nil {
+			return fmt.Errorf("读取目录 %s 失败: %w", full, err)
+		}
+		for _, info := range infos {
+			name := info.Name()
+			if err := checkRemoteName(name); err != nil {
+				return err
+			}
+			child := name
+			if rel != "" {
+				child = path.Join(rel, name)
+			}
+			mode := info.Mode()
+			switch {
+			case mode&fs.ModeSymlink != 0:
+				skipped = append(skipped, child)
+			case mode.IsDir():
+				dirs = append(dirs, child)
+				if err := walk(child); err != nil {
+					return err
+				}
+			case mode.IsRegular():
+				files = append(files, treeFile{rel: child, size: info.Size()})
+			default:
+				skipped = append(skipped, child)
+			}
+		}
+		return nil
+	}
+	if err = walk(""); err != nil {
+		return nil, nil, nil, err
+	}
+	return dirs, files, skipped, nil
+}
+
+// checkRemoteName 拒绝会逃出目标目录的文件名。名字来自服务器，不能当成本地路径的一段来信任。
+func checkRemoteName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return errors.New("远程文件名不安全，没有下载")
+	}
+	return nil
+}
+
+// localChild 把远程相对路径映射到 localRoot 里面。相对路径里就算混进了 .. 也不许出去。
+func localChild(localRoot, rel string) (string, error) {
+	cleaned := path.Clean(rel)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || path.IsAbs(cleaned) {
+		return "", errors.New("远程文件名不安全，没有下载")
+	}
+	target := filepath.Join(localRoot, filepath.FromSlash(cleaned))
+	relLocal, err := filepath.Rel(localRoot, target)
+	if err != nil || relLocal == ".." || strings.HasPrefix(relLocal, ".."+string(filepath.Separator)) {
+		return "", errors.New("远程文件名不安全，没有下载")
+	}
+	return target, nil
+}
