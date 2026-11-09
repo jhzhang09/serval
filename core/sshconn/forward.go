@@ -236,12 +236,26 @@ func targetAddr(host string, port int) (string, error) {
 func listenTCP(addr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
+		if isAddrInUse(err) {
 			return nil, ErrForwardInUse
 		}
 		return nil, fmt.Errorf("sshconn: 监听失败: %w", err)
 	}
 	return ln, nil
+}
+
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	// Windows 下 net.Listen 返回 WSAEADDRINUSE（10048），与 syscall.EADDRINUSE 值不同。
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == 10048 {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "Only one usage of each socket address")
 }
 
 func (t *Tunnel) accept(ln net.Listener, handle func(net.Conn)) {

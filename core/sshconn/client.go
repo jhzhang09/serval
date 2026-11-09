@@ -285,7 +285,12 @@ func (c *Client) Ping(ctx context.Context) (time.Duration, error) {
 	}()
 	select {
 	case err := <-done:
-		return time.Since(start), err
+		if err != nil {
+			return 0, err
+		}
+		// Windows 时钟粒度较粗，本机回环往返可能落在同一个时钟滴答内（0s），
+		// 至少返回 1ns 以区分“尚未测过（0）”与“已完成测速（<1 ms）”。
+		return max(time.Nanosecond, time.Since(start)), nil
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
