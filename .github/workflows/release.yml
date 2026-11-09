@@ -1,0 +1,136 @@
+name: Release
+
+# 推送 v1.2.3 形式的标签时构建全部平台并发布 GitHub Release；
+# 手动运行只构建产物（版本号为 0.0.0-dev），用来在打标签前检查流水线。
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go tool mygo vet .
+      - run: go test -timeout 10m ./core/... ./design/... ./internal/...
+
+  app:
+    name: App (${{ matrix.name }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            platforms: darwin/universal
+          - name: Linux
+            os: ubuntu-latest
+            platforms: linux/amd64,linux/arm64
+          - name: Windows
+            os: windows-latest
+            platforms: windows/amd64,windows/arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="$GITHUB_REF_NAME"; else tag="v0.0.0-dev"; fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+      - name: Stamp version
+        run: |
+          sed -i.bak -E "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" mygo.json
+          rm mygo.json.bak
+          grep '"version"' mygo.json
+          base_ver="${VERSION%%-*}"
+          IFS='.' read -r v1 v2 v3 v4 <<< "${base_ver}.0.0.0"
+          vi_ver="${v1:-0}.${v2:-0}.${v3:-0}.${v4:-0}"
+          sed -i.bak -E "s/VIProductVersion \"[^\"]*\"/VIProductVersion \"$vi_ver\"/; s/\"(File|Product)Version\" \"[^\"]*\"/\"\1Version\" \"$VERSION\"/" resources/installer.nsh
+          rm resources/installer.nsh.bak
+          cat resources/installer.nsh
+      - name: Build
+        run: go tool mygo build -platform "${{ matrix.platforms }}" -o dist
+      - name: Collect installers
+        run: |
+          mkdir -p assets
+          find dist -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.tar.gz' -o -name '*-setup-*.exe' \) -exec cp {} assets/ \;
+      - name: Collect portable builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($arch in 'amd64', 'arm64') {
+            Compress-Archive -Path "dist/windows-$arch/Serval.exe" -DestinationPath "assets/serval-$env:VERSION-windows-$arch-portable.zip"
+          }
+      - run: ls -l assets
+      - uses: actions/upload-artifact@v7
+        with:
+          name: app-${{ matrix.name }}
+          path: assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [app]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: assets
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: assets/*
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --verify-tag \
+            --title "Serval $GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md \
+            --generate-notes \
+            $prerelease
+      - name: Update Homebrew tap
+        if: env.HAS_TAP_TOKEN == 'true' && !contains(github.ref_name, '-')
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: scripts/update-homebrew-tap.sh "$GITHUB_REF_NAME" assets/SHA256SUMS.txt

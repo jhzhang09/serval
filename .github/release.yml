@@ -1,0 +1,16 @@
+# 自动生成 Release 说明时按 PR 标签分组。
+changelog:
+  exclude:
+    labels: [skip-changelog]
+    authors: [dependabot]
+  categories:
+    - title: "⚠️ Breaking changes"
+      labels: [breaking]
+    - title: "✨ Features"
+      labels: [feature, enhancement]
+    - title: "🐛 Bug fixes"
+      labels: [bug, fix]
+    - title: "📝 Documentation"
+      labels: [documentation]
+    - title: "🔧 Other changes"
+      labels: ["*"]
