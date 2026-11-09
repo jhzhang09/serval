@@ -711,7 +711,7 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			}
 		}
 		a.ensureLocalList()
-		ui.Row(c).Grow(1).MinHeight(0).Children(func() {
+		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			a.localColumn(c, colors, t)
 			ui.Box(c).Width(1).Shrink(0).Background(colors.Hairline)
 			a.remoteColumn(c, colors, t)

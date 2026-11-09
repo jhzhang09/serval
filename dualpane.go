@@ -143,7 +143,7 @@ func (a *app) acceptPaneDrop(t *tab, destLocal bool, destDir string, item paneDr
 
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	col := ui.Column(c).Key("localPane").Grow(1).MinWidth(0)
+	col := ui.Column(c).Key("localPane").Basis(0).Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, true, a.localDir, item)
 	}
@@ -152,7 +152,8 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	}
 	col.Children(func() {
 		ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Padding(8, 14, 0, 14)
-		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
 			name := filepath.Base(a.localDir)
 			if a.localDir == "" || name == "." {
 				name = "本机"
@@ -210,7 +211,7 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 
 func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	col := ui.Column(c).Key("remotePane").Grow(1).MinWidth(0)
+	col := ui.Column(c).Key("remotePane").Basis(0).Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, false, t.dir, item)
 	}
