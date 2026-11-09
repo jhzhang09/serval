@@ -500,7 +500,8 @@ func hopConfig(h hosts.Host, key keys.Key, hasKey bool, c credential, localUser 
 		user = localUser
 	}
 	cfg := sshconn.Config{Host: h.Address, Port: h.Port, User: user, UseAgent: true,
-		HostKeys: policy, Password: c.password, KeyPassphrase: c.passphrase}
+		ForwardAgent: h.ForwardAgent,
+		HostKeys:     policy, Password: c.password, KeyPassphrase: c.passphrase}
 	if hasKey && h.Auth != hosts.AuthPassword {
 		cfg.KeyPEM = []byte(key.PrivateKey)
 	}
@@ -600,6 +601,10 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 		a.notice = fmt.Sprintf("已取消连接 %s：没有完成多步验证。", who.Name)
 	case errors.Is(err, sshconn.ErrNoAuthMethod):
 		a.askSecret(h, who, hop, creds, false, "")
+	case errors.Is(err, sshconn.ErrAgentUnavailable):
+		a.notice = fmt.Sprintf("没有连接 %s：这台主机开启了转发 ssh-agent，但本机没有可用的 ssh-agent。先启动 ssh-agent，或编辑这台主机关掉转发。", who.Name)
+	case errors.Is(err, sshconn.ErrAgentForwardDenied):
+		a.notice = fmt.Sprintf("%s 拒绝转发 ssh-agent。请在主机设置里关掉“转发 ssh-agent”，或换一台允许转发的服务器。", who.Name)
 	case errors.Is(err, sshconn.ErrAuthFailed):
 		// 这次带了密码还失败，说明是密码本身不对；否则只是还没输入过。
 		message := ""

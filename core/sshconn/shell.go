@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // Shell 是一个远程交互终端。它实现 io.ReadWriteCloser 和 Resize，
@@ -47,6 +48,13 @@ func (c *Client) OpenShell(cols, rows int) (*Shell, error) {
 	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		session.Close()
 		return nil, fmt.Errorf("申请 PTY 失败: %w", err)
+	}
+	// 在启动 shell 之前申请：服务器要靠这次请求给 shell 设置 SSH_AUTH_SOCK。
+	if c.forwardAgent {
+		if err := agent.RequestAgentForwarding(session); err != nil {
+			session.Close()
+			return nil, ErrAgentForwardDenied
+		}
 	}
 	if err := session.Shell(); err != nil {
 		session.Close()

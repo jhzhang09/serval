@@ -37,6 +37,10 @@ var (
 	ErrKeyEncrypted = errors.New("私钥已加密，请输入私钥口令")
 	// ErrBadPassphrase 表示私钥口令不正确。
 	ErrBadPassphrase = errors.New("私钥口令不正确")
+	// ErrAgentUnavailable 表示主机要求转发 ssh-agent，但本机没有可用的 agent。
+	ErrAgentUnavailable = errors.New("没有可用的 ssh-agent")
+	// ErrAgentForwardDenied 表示服务器拒绝了转发 ssh-agent 的请求。
+	ErrAgentForwardDenied = errors.New("服务器拒绝转发 ssh-agent")
 )
 
 // Question 描述多步验证（keyboard-interactive）里的一个问题。
@@ -61,6 +65,9 @@ type Config struct {
 	KeyPassphrase string
 	// UseAgent 为 true 时尝试使用 SSH_AUTH_SOCK 指向的 ssh-agent。
 	UseAgent bool
+	// ForwardAgent 为 true 时，连接建立后把本机 ssh-agent 转发给这台机器。
+	// 没有 SSH_AUTH_SOCK 或连不上 agent 时，整次连接失败，而不是悄悄不转发。
+	ForwardAgent bool
 	// Challenge 在服务器要求多步验证（OTP 等）时被调用。
 	Challenge ChallengeFunc
 
@@ -103,6 +110,8 @@ type Client struct {
 	// chain 是经过的跳板机连接，按连接顺序排列；关闭时倒序关闭。
 	chain  []*ssh.Client
 	agents []net.Conn
+	// forwardAgent 表示目标主机要求转发 ssh-agent，打开 shell 时再向服务器申请。
+	forwardAgent bool
 }
 
 // Dial 建立连接并完成认证，有跳板机时逐跳建立。取消 ctx 会中断尚未完成的连接，
@@ -138,6 +147,17 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 			var client *ssh.Client
 			var agentConn net.Conn
 			client, agentConn, err = handshake(ctx, raw, hop, timeout)
+			if err == nil && hop.ForwardAgent {
+				// 先登记通道处理，再打开 shell。服务器要到 shell 里的程序连接
+				// SSH_AUTH_SOCK 时才会打开通道，那时处理函数必须已经在。
+				if ferr := setupAgentForward(client); ferr != nil {
+					client.Close()
+					if agentConn != nil {
+						agentConn.Close()
+					}
+					err = ferr
+				}
+			}
 			if err == nil {
 				if agentConn != nil {
 					c.agents = append(c.agents, agentConn)
@@ -146,6 +166,7 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 					c.chain = append(c.chain, client)
 				} else {
 					c.conn = client
+					c.forwardAgent = hop.ForwardAgent
 				}
 				continue
 			}
@@ -292,6 +313,22 @@ func (c *Client) closeChain() {
 	for _, a := range c.agents {
 		a.Close()
 	}
+}
+
+// setupAgentForward 让这台连接上的 auth-agent 通道转到本机 ssh-agent。
+// 套接字不存在或连不上时返回 ErrAgentUnavailable，不把套接字路径写进错误。
+func setupAgentForward(client *ssh.Client) error {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return ErrAgentUnavailable
+	}
+	if err := agent.ForwardToRemote(client, sock); err != nil {
+		if strings.Contains(err.Error(), "already have handler") {
+			return fmt.Errorf("转发 ssh-agent 失败: %w", err)
+		}
+		return ErrAgentUnavailable
+	}
+	return nil
 }
 
 // authMethods 按私钥、agent、密码的顺序组装认证方式。
