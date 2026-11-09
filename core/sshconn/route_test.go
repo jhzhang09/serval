@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -47,14 +48,16 @@ func TestTwoHopJump(t *testing.T) {
 		t.Fatalf("应经过 2 台跳板机，实际 %d", len(client.chain))
 	}
 
-	shell, err := client.OpenShell(80, 24)
-	if err != nil {
-		t.Fatal(err)
+	if runtime.GOOS != "windows" {
+		shell, err := client.OpenShell(80, 24)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer shell.Close()
+		out := collect(shell)
+		fmt.Fprintf(shell, "echo hop-$((1+1))\n")
+		out.waitFor(t, "hop-2")
 	}
-	defer shell.Close()
-	out := collect(shell)
-	fmt.Fprintf(shell, "echo hop-$((1+1))\n")
-	out.waitFor(t, "hop-2")
 	if _, err := client.Ping(context.Background()); err != nil {
 		t.Fatalf("经过跳板机的连接应能保活: %v", err)
 	}
@@ -158,12 +161,16 @@ func TestHTTPProxy(t *testing.T) {
 	cfg := dialConfig(target, acceptAll(t))
 	cfg.Proxy = &Proxy{Kind: "http", Addr: proxy.Addr(), User: "u", Password: "p"}
 	client := mustDial(t, cfg)
-	// 能开 shell 说明 CONNECT 响应之后的数据（SSH 版本标识）没有被缓冲区吞掉。
-	shell, err := client.OpenShell(80, 24)
-	if err != nil {
+	// 能开 shell 或 Ping 说明 CONNECT 响应之后的数据（SSH 版本标识）没有被缓冲区吞掉。
+	if runtime.GOOS != "windows" {
+		shell, err := client.OpenShell(80, 24)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shell.Close()
+	} else if _, err := client.Ping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	shell.Close()
 
 	cfg.Proxy.Password = "wrong"
 	if _, err := Dial(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "认证") {

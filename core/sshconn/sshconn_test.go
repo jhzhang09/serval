@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -358,6 +357,7 @@ func (r *reader) waitForPattern(t *testing.T, pattern string) {
 }
 
 func TestShellRoundTripAndResize(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 	shell, err := client.OpenShell(80, 24)
@@ -380,6 +380,7 @@ func TestShellRoundTripAndResize(t *testing.T) {
 }
 
 func TestShellEOFOnExitAndDoubleClose(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 	shell, err := client.OpenShell(80, 24)
@@ -411,6 +412,7 @@ func TestShellEOFOnExitAndDoubleClose(t *testing.T) {
 
 // 回归：关闭会话后远端 shell 必须结束，开发服务器不能留下孤儿进程。
 func TestClosingShellEndsRemoteProcess(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 	shell, err := client.OpenShell(80, 24)
@@ -435,19 +437,12 @@ func TestClosingShellEndsRemoteProcess(t *testing.T) {
 	if err := shell.Close(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
-			return // 进程已退出
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	syscall.Kill(pid, syscall.SIGKILL)
-	t.Fatalf("关闭会话后 shell 进程 %d 仍在运行", pid)
+	waitProcessGone(t, pid)
 }
 
 // 一条连接上要能同时开多个终端和 SFTP，互不影响。
 func TestConcurrentShellsAndFiles(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 	files, err := client.OpenFiles()
@@ -541,6 +536,7 @@ func TestDevServerRefusesNonLoopback(t *testing.T) {
 
 // Exited 区分“远端 shell 自己退出”和“连接中断”。
 func TestShellExitedDistinguishesExitFromDisconnect(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{Password: testPassword})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 

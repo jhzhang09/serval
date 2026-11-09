@@ -34,6 +34,7 @@ func TestForwardAgentRequiresLocalAgent(t *testing.T) {
 // 经跳板机连上目标后，目标机上的 ssh-add -l 能看到本机 agent 里的钥匙。
 // 不转发时同一条命令联系不上 agent，证明结果不是开发服务器继承了测试进程的套接字。
 func TestAgentForwardingVisibleThroughJump(t *testing.T) {
+	requireDevShell(t)
 	if _, err := exec.LookPath("ssh-add"); err != nil {
 		t.Skip("本机没有 ssh-add，跳过转发互通测试")
 	}

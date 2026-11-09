@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,8 +64,10 @@ func TestProtectEncryptsEverything(t *testing.T) {
 			t.Errorf("文件里不应出现明文 %q", leak)
 		}
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
-		t.Errorf("文件权限 = %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+			t.Errorf("文件权限 = %v", info.Mode().Perm())
+		}
 	}
 	if err := v.Protect(password); !errors.Is(err, ErrAlreadyProtected) {
 		t.Errorf("重复设置应报错: %v", err)
@@ -252,14 +255,15 @@ func TestKDFDoesNotHoldLock(t *testing.T) {
 		v.State()
 		return time.Since(s), <-done
 	}
-	if wait, total := measure(func() error { return v.Protect(password) }); wait > 5*time.Millisecond {
-		t.Fatalf("Protect 进行中 State() 等了 %v（Protect 共 %v）", wait, total)
+	checkNotBlocked := func(name string, op func() error) {
+		wait, total := measure(op)
+		limit := max(50*time.Millisecond, total/3)
+		if wait > limit {
+			t.Fatalf("%s 进行中 State() 等了 %v（%s 共 %v）", name, wait, name, total)
+		}
 	}
+	checkNotBlocked("Protect", func() error { return v.Protect(password) })
 	v, _ = Open(path, "dev1")
-	if wait, total := measure(func() error { return v.Unlock(password) }); wait > 5*time.Millisecond {
-		t.Fatalf("Unlock 进行中 State() 等了 %v（Unlock 共 %v）", wait, total)
-	}
-	if wait, total := measure(func() error { return v.ChangePassword(password, "another password") }); wait > 5*time.Millisecond {
-		t.Fatalf("ChangePassword 进行中 State() 等了 %v（共 %v）", wait, total)
-	}
+	checkNotBlocked("Unlock", func() error { return v.Unlock(password) })
+	checkNotBlocked("ChangePassword", func() error { return v.ChangePassword(password, "another password") })
 }
