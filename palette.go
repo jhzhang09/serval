@@ -124,7 +124,7 @@ func parseQuickConnect(s string) (user, address string, port int, ok bool) {
 	return user, target, port, true
 }
 
-// paletteItems 返回匹配 query 的条目，主机在前，操作在后。
+// paletteItems 返回匹配 query 的条目，主机在前，代码片段其次，操作在后。
 func (a *app) paletteItems(query string) []paletteItem {
 	type scored struct {
 		paletteItem
@@ -200,6 +200,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("plus", "添加主机", func() { a.openAdd() })
 	action("key-round", "密钥", a.openKeys)
 	action("globe", "代理", a.openProxies)
+	action("code", "代码片段", a.openSnippets)
 	action("settings", "打开设置", a.openSettings)
 	action("server", "已知主机", a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {
@@ -210,8 +211,28 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("sun-moon", "外观：深色", func() { a.setAppearance(appearanceDark) })
 	slices.SortStableFunc(actions, func(x, y scored) int { return cmp.Compare(y.score, x.score) })
 
-	items := make([]paletteItem, 0, len(matched)+len(actions))
+	// 片段按名称排好再按分数稳定排序：查询为空时按名称，有查询时匹配高的在前，同分仍按名称。
+	ordered := a.sortedSnippets()
+	snippetHits := make([]scored, 0, len(ordered))
+	for i := range ordered {
+		s := ordered[i]
+		if sc := fuzzyScore(query, s.Name+" "+s.Body); sc >= 0 {
+			snippetHits = append(snippetHits, scored{paletteItem{
+				key:      "snippet:" + s.ID,
+				title:    s.Name,
+				subtitle: snippetSubtitle(s.Body),
+				icon:     "code",
+				run:      func() { a.sendSnippet(s) },
+			}, sc})
+		}
+	}
+	slices.SortStableFunc(snippetHits, func(x, y scored) int { return cmp.Compare(y.score, x.score) })
+
+	items := make([]paletteItem, 0, len(matched)+len(snippetHits)+len(actions))
 	for _, m := range matched {
+		items = append(items, m.paletteItem)
+	}
+	for _, m := range snippetHits {
 		items = append(items, m.paletteItem)
 	}
 	for _, m := range actions {
