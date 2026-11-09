@@ -16,6 +16,7 @@ import (
 	"serval/core/hosts"
 	"serval/core/keys"
 	"serval/core/sshconn"
+	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
 
@@ -1401,6 +1402,10 @@ var errChallengeCancelled = errors.New("已取消多步验证")
 // askChallenge 在连接 goroutine 上阻塞，直到用户回答多步验证或连接被取消。
 // 询问排队显示：经跳板机时跳板机和目标主机可能先后都要验证码，后来的不能覆盖前面的。
 func (a *app) askChallenge(ctx context.Context, host hosts.Host, name, instruction string, questions []sshconn.Question) ([]string, error) {
+	// 验证码能全部算出来时不弹面板：连接 goroutine 上就能回答，不必回到主线程。
+	if answers, ok := autoTOTP(host, questions, time.Now()); ok {
+		return answers, nil
+	}
 	ch := make(chan challengeResult, 1)
 	prompt := &challengeSheet{
 		open:        true,
@@ -1420,6 +1425,46 @@ func (a *app) askChallenge(ctx context.Context, host hosts.Host, name, instructi
 		a.post(func() { a.removeChallenge(prompt) })
 		return nil, ctx.Err()
 	}
+}
+
+// autoTOTP 在每个问题都像验证码、并且主机保存了密钥时，算出全部答案。
+// 有一题不像验证码，或者密钥无效，就交给用户，避免把验证码填进不相干的问题。
+func autoTOTP(host hosts.Host, questions []sshconn.Question, now time.Time) ([]string, bool) {
+	if host.TOTPSecret == "" || len(questions) == 0 {
+		return nil, false
+	}
+	answers := make([]string, len(questions))
+	for i, q := range questions {
+		if !looksLikeOTP(q.Text) {
+			return nil, false
+		}
+		code, err := totp.Code(totp.Params{
+			Secret: host.TOTPSecret, Digits: host.TOTPDigits,
+			Period: host.TOTPPeriod, Algorithm: host.TOTPAlgorithm,
+		}, now)
+		if err != nil {
+			return nil, false
+		}
+		answers[i] = code
+	}
+	return answers, true
+}
+
+// looksLikeOTP 判断多步验证的问题是不是在要一次性验证码。
+func looksLikeOTP(q string) bool {
+	q = strings.ToLower(q)
+	if strings.Contains(q, "password") || strings.Contains(q, "密码") {
+		return false
+	}
+	for _, hint := range []string{
+		"otp", "totp", "验证码", "动态口令", "one-time", "one time",
+		"authenticator", "verification code", "2fa", "two-factor", "two factor",
+	} {
+		if strings.Contains(q, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 // currentChallenge 返回正在显示的多步验证询问。

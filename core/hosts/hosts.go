@@ -33,6 +33,11 @@ type Host struct {
 	// ForwardAgent 为 true 时，连接这台主机后把本机 ssh-agent 转发给它。
 	// 默认关闭：转发后，这台机器上的程序可以用本机钥匙再登录其他服务器。
 	ForwardAgent bool `json:"forwardAgent,omitempty"`
+	// TOTPSecret 是验证码密钥（Base32）。Digits、Period、Algorithm 为零值时用 6 位、30 秒、SHA1。
+	TOTPSecret    string `json:"totpSecret,omitempty"`
+	TOTPDigits    int    `json:"totpDigits,omitempty"`
+	TOTPPeriod    int    `json:"totpPeriod,omitempty"`
+	TOTPAlgorithm string `json:"totpAlgorithm,omitempty"`
 }
 
 // Proxy 是一条独立管理的代理配置，供多台主机复用，整条记录（包括密码）加密存进保险库。

@@ -16,7 +16,7 @@
 
 ## 当前进度（2026-11-08 第一批验收后）
 
-第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。F7 的过滤、折叠和按名称排序在 `feat/F7-host-search`（拖动排序仍待决定）；C6 在 `feat/C6-agent-forward`。
+第一批 14 项（F1–F6、C1、C2、C4、C5、T1、T2、P1、P2）全部修复并合并到 main，验收问题和修复记录见 [第一批验收报告](reviews/2026-11-08-batch1.md)。F7 的过滤、折叠和按名称排序在 `feat/F7-host-search`（拖动排序仍待决定）；C6 在 `feat/C6-agent-forward`；C3 在 `feat/C3-totp`。
 
 ## 已完成（0.1.0）
 
@@ -136,10 +136,11 @@
 - **验收**：sshconn 单元测试覆盖多问题、取消、超时；界面测试覆盖回答 OTP 后连接成功。
 - **依赖**：无。
 
-### C3 TOTP 自动填充（M）
+### C3 TOTP 自动填充（M，feat/C3-totp）
 
 - **范围**：主机记录增加 TOTP 密钥（属于秘密，`requireProtection`）；多步验证遇到验证码问题时自动填写；主机表单里可粘贴 `otpauth://` 链接。实现 RFC 6238（标准库 `crypto/hmac` 即可）。
 - **验收**：RFC 6238 测试向量通过；界面测试覆盖自动填写。
+- **实现**：`core/totp` 支持 SHA1、SHA256、SHA512，以及 6/8 位和自定义周期。问题文本不像验证码时仍交给用户。不支持 HOTP。
 - **依赖**：C2。
 
 ### C4 自动重连与会话恢复（M，已完成：`feat/C4-auto-reconnect`）

@@ -48,6 +48,7 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 | `core/vault` | 加密保险库、混合逻辑时钟、按记录合并（同步核心）。不依赖 UI |
 | `core/keys` | 私钥解析、生成、指纹。不依赖 UI |
 | `core/hosts` | 主机结构、跳板机链路解析。不依赖 UI |
+| `core/totp` | RFC 6238 验证码。不依赖 UI |
 | `core/zmodem` | ZMODEM 协议（rz/sz），自己按协议文档实现，不能参考 lrzsz（GPL）。不依赖 UI |
 | `design/` | 设计规范：配色、字体、图标、动效、主机斑纹 |
 | `*.go`（根目录） | 应用层（package main）：状态、视图、面板，见架构文档 |
