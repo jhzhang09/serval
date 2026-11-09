@@ -22,6 +22,7 @@ const (
 	kindSettings = "settings"
 	kindProxy    = "proxy"
 	kindSnippet  = "snippet"
+	kindForward  = "forward"
 
 	// settingsID 是随同步设置记录的固定 ID，多台设备修改后按同一条记录的 rev 合并。
 	settingsID = "settings"
@@ -39,11 +40,14 @@ func rememberedKeyName(vaultID string) string { return "vault-key/" + vaultID }
 
 // reload 从保险库重新读出主机、私钥、代码片段和随同步设置。保险库是唯一的数据来源，界面上的状态只是它的副本。
 func (a *app) reload() {
-	a.hosts, a.keys, a.proxies, a.snippets, a.settings, a.hostsError = nil, nil, nil, nil, settings{}, ""
+	a.hosts, a.keys, a.proxies, a.snippets, a.forwards, a.settings, a.hostsError = nil, nil, nil, nil, nil, settings{}, ""
 	if err := decodeAll(a.vault, kindHost, &a.hosts); err != nil {
 		a.hostsError = err.Error()
 	}
 	if err := decodeAll(a.vault, kindProxy, &a.proxies); err != nil && a.hostsError == "" {
+		a.hostsError = err.Error()
+	}
+	if err := decodeAll(a.vault, kindForward, &a.forwards); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
 	if err := decodeAll(a.vault, kindKey, &a.keys); err != nil && a.hostsError == "" {
@@ -55,6 +59,7 @@ func (a *app) reload() {
 	if err := decodeSettings(a.vault, &a.settings); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
+	a.dropStaleTunnels()
 	a.refreshTerminals()
 }
 
@@ -95,6 +100,8 @@ func settingsChange(s settings) vault.Change { return mustJSONChange(kindSetting
 func proxyChange(p hosts.Proxy) vault.Change { return mustJSONChange(kindProxy, p.ID, p) }
 
 func snippetChange(s snippet) vault.Change { return mustJSONChange(kindSnippet, s.ID, s) }
+
+func forwardChange(f hosts.Forward) vault.Change { return mustJSONChange(kindForward, f.ID, f) }
 
 func (a *app) proxyByID(id string) (hosts.Proxy, bool) {
 	i := slices.IndexFunc(a.proxies, func(p hosts.Proxy) bool { return p.ID == id })

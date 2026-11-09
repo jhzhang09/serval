@@ -39,6 +39,7 @@ flowchart TB
 | `hostkey.go` | 主机密钥校验：只读的 `~/.ssh/known_hosts` 加应用提供的信任存储 | `HostKeyPolicy`、`TrustedKeys`、`HostKeyChangedError` |
 | `shell.go` | 带 PTY 的交互 shell，实现 `io.ReadWriteCloser` 交给终端插件 | `Shell` |
 | `sftp.go` | 目录列表 | `Files`、`Entry` |
+| `forward.go` | 本地转发、远程转发、动态转发（SOCKS5 CONNECT） | `Tunnel`、`ErrForwardDenied`、`ErrForwardInUse` |
 
 连接链路：`Config.Jumps` 依次是跳板机，最后连目标。第一跳可以走代理，后面每跳经上一跳的 `direct-tcpip` 通道。每跳独立认证、独立校验主机密钥。跳板机出错包成 `HopError{Hop: i}`，目标主机的错误原样返回，界面据此判断该向哪台机器要密码。通道连接不支持 `SetDeadline`，握手超时用 `time.AfterFunc` 实现。
 
@@ -60,6 +61,7 @@ flowchart TB
 
 - `keys.Key`：名称、类型、PEM 私钥、公钥、指纹、可选口令。`Parse` 导入时就校验口令；`Generate` 生成 Ed25519 或 RSA 4096。
 - `hosts.Host`：主机记录（包括密码）。`ResolveRoute` 把 `ProxyJump` 展开成跳板机链路，处理名称引用、`[user@]host[:port]` 写法、环路和级数上限。
+- `hosts.Forward`：端口转发规则。监听地址空着时只使用 127.0.0.1。
 
 ### 应用层（package main）
 
@@ -72,6 +74,7 @@ flowchart TB
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |
 | `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
+| `forwardpanel.go` | 端口转发面板：规则的增删改、手动启停；绑定主机的规则随连接自动开启 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
 | `sessionlog.go` | 远程终端输出的纯文本会话日志；开关和目录在本机 `device.json`，默认关闭 |

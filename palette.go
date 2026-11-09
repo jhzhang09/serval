@@ -206,6 +206,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("key-round", "密钥", a.openKeys)
 	action("globe", "代理", a.openProxies)
 	action("code", "代码片段", a.openSnippets)
+	action("arrow-left-right", "端口转发", a.openForwards)
 	action("settings", "打开设置", a.openSettings)
 	action("server", "已知主机", a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {

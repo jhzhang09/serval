@@ -62,6 +62,7 @@ func (a *app) view(c *ui.Context) {
 	a.challengeDialog(c, colors)
 	a.hostDialog(c, colors)
 	a.proxiesDialog(c, colors)
+	a.forwardsDialog(c, colors)
 	a.keysDialog(c, colors)
 	a.snippetsDialog(c, colors)
 	a.settingsDialog(c, colors)
@@ -272,6 +273,18 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openProxies)
+			forwardsButton := ui.ButtonBase(c).Key("openForwards").Label("端口转发").Height(30).Padding(0, 10).Gap(8).
+				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+			if forwardsButton.Hovered() {
+				forwardsButton.Background(colors.Hover)
+			}
+			forwardsButton.Children(func() {
+				ui.Icon(c, design.Icon("arrow-left-right")).FontSize(14).TextColor(t.TextMuted)
+				ui.Text(c, "端口转发").TextColor(t.TextMuted).Grow(1)
+				if n := len(a.forwards); n > 0 {
+					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+				}
+			}).OnClick(a.openForwards)
 			settingsButton := ui.ButtonBase(c).Key("openSettings").Label("设置").Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if settingsButton.Hovered() {
