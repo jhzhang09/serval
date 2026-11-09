@@ -117,13 +117,25 @@ type app struct {
 	// chooseUploadFiles 选要用 rz 上传的文件（可多选）；chooseFolder 选 sz 收到的文件存放的文件夹。
 	chooseUploadFiles func() ([]string, error)
 	chooseFolder      func() (string, error)
-	chooseSavePath    func(defaultName string) (string, error)
+	// chooseUploadFolder 选要上传的本地文件夹；chooseDownloadFolder 选文件夹下载到哪里。
+	chooseUploadFolder   func() (string, error)
+	chooseDownloadFolder func() (string, error)
+	chooseSavePath       func(defaultName string) (string, error)
 	// chooseLogDir 选会话日志存放的文件夹。和 sz 的选择框分开，标题不能混用。
 	chooseLogDir func() (string, error)
 	// sessionLogNoted 避免每个输出包都弹出同一次写入失败。
 	sessionLogNoted bool
 	// sessionLogPicking 表示文件夹选择框还开着，忽略重复点击。
 	sessionLogPicking bool
+	// dragRoot 是拖到桌面之前临时下载的目录。dragCopies 按标签和远程路径记下准备好的副本：
+	// 同一路径在不同主机上是不同的文件。只在主线程读写。
+	dragRoot   string
+	dragCopies map[dragKey]*dragCopy
+	// localDir 是文件抽屉左侧列出的本机目录。localGen 用来丢掉过期的列举结果。
+	localDir     string
+	localEntries []localEntry
+	localErr     string
+	localGen     int
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
 	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。
@@ -1234,6 +1246,7 @@ func (t *tab) close() {
 
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
 func (a *app) closeAll() {
+	a.clearDragOut()
 	a.saveSessionLayout()
 	byTab := map[int][]*liveTunnel{}
 	tabIDs := map[int]bool{}

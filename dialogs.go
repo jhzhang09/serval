@@ -41,6 +41,20 @@ func installSystemDialogs(a *app) {
 		}
 		return paths[0], nil
 	}
+	a.chooseUploadFolder = func() (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择要上传的文件夹", DefaultPath: home, ButtonLabel: "上传", Directory: true})
+		if err != nil || len(paths) == 0 {
+			return "", err
+		}
+		return paths[0], nil
+	}
+	a.chooseDownloadFolder = func() (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "把文件夹下载到", DefaultPath: downloadsDir(home), ButtonLabel: "下载到这里", Directory: true, CreateDirectories: true})
+		if err != nil || len(paths) == 0 {
+			return "", err
+		}
+		return paths[0], nil
+	}
 	a.chooseSavePath = func(defaultName string) (string, error) {
 		dir := downloadsDir(home)
 		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "下载到", DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: "保存", CreateDirectories: true})

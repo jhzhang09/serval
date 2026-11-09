@@ -103,6 +103,12 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	}
 	dir := t.TempDir()
 	h := &harness{t: t, a: newApp(), server: server, device: &memDevice{m: map[string][]byte{}}, dir: dir}
+	// 双栏的本机侧不要去列开发者的主目录，测试之间也会撞上同名文件。
+	localPane := filepath.Join(dir, "local-pane")
+	if err := os.MkdirAll(localPane, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.a.localDir = localPane
 	h.a.devicePath = filepath.Join(dir, "device.json")
 	h.a.device = h.device
 	h.a.localUser = "tester"
@@ -128,6 +134,8 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	h.a.chooseUploadFiles = func() ([]string, error) { return nil, errors.New("测试没有设置 chooseUploadFiles") }
 	h.a.chooseFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseFolder") }
 	h.a.chooseLogDir = func() (string, error) { return "", errors.New("测试没有设置 chooseLogDir") }
+	h.a.chooseUploadFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseUploadFolder") }
+	h.a.chooseDownloadFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseDownloadFolder") }
 	h.a.post = func(fn func()) {
 		h.mu.Lock()
 		h.queue = append(h.queue, fn)
@@ -1310,10 +1318,12 @@ func TestSystemDialogsAreWired(t *testing.T) {
 	a := newApp()
 	installSystemDialogs(a)
 	if a.chooseKeyFile == nil || a.chooseUploadFile == nil || a.chooseSavePath == nil ||
-		a.chooseUploadFiles == nil || a.chooseFolder == nil || a.chooseLogDir == nil {
-		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v uploadFiles=%v folder=%v log=%v",
+		a.chooseUploadFiles == nil || a.chooseFolder == nil || a.chooseLogDir == nil ||
+		a.chooseUploadFolder == nil || a.chooseDownloadFolder == nil {
+		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v uploadFiles=%v folder=%v log=%v uploadFolder=%v downloadFolder=%v",
 			a.chooseKeyFile != nil, a.chooseUploadFile != nil, a.chooseSavePath != nil,
-			a.chooseUploadFiles != nil, a.chooseFolder != nil, a.chooseLogDir != nil)
+			a.chooseUploadFiles != nil, a.chooseFolder != nil, a.chooseLogDir != nil,
+			a.chooseUploadFolder != nil, a.chooseDownloadFolder != nil)
 	}
 }
 
