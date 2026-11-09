@@ -51,6 +51,8 @@ type app struct {
 
 	sidebarOpen bool
 	filesOpen   bool
+	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
+	hostFilter string
 
 	tabs   []*tab
 	active int
@@ -1538,6 +1540,53 @@ func (a *app) groups() []string {
 		}
 	}
 	return names
+}
+
+// groupCollapsed 报告这个分组在本机侧栏里是否折叠。正在过滤时不折叠，否则匹配的主机会被藏起来。
+func (a *app) groupCollapsed(name string) bool {
+	return strings.TrimSpace(a.hostFilter) == "" && slices.Contains(a.local.CollapsedGroups, name)
+}
+
+// toggleGroup 折叠或展开一个分组，并把结果写入本机设置。
+func (a *app) toggleGroup(name string) {
+	next := a.local
+	if slices.Contains(a.local.CollapsedGroups, name) {
+		next.CollapsedGroups = slices.DeleteFunc(slices.Clone(a.local.CollapsedGroups), func(g string) bool { return g == name })
+	} else {
+		next.CollapsedGroups = append(slices.Clone(a.local.CollapsedGroups), name)
+	}
+	if err := a.saveLocal(next); err != nil {
+		a.notice = "保存分组折叠状态失败：" + err.Error()
+	}
+}
+
+// hostVisible 判断主机是否匹配侧栏过滤。空过滤匹配全部。名称、用户、地址和分组都参与，不区分大小写。
+func hostVisible(h hosts.Host, query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return true
+	}
+	for _, field := range []string{h.Name, h.User, h.Address, h.Group, h.Target()} {
+		if strings.Contains(strings.ToLower(field), query) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostsInGroup 返回这个分组里通过过滤的主机，按名称排序（不区分大小写）。
+// 同名时保持保险库里的相对顺序。手动拖动排序仍待决定，这里不做。
+func (a *app) hostsInGroup(group string) []hosts.Host {
+	var list []hosts.Host
+	for _, h := range a.hosts {
+		if h.Group == group && hostVisible(h, a.hostFilter) {
+			list = append(list, h)
+		}
+	}
+	slices.SortStableFunc(list, func(x, y hosts.Host) int {
+		return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name))
+	})
+	return list
 }
 
 func (t *tab) title() string { return t.host.Name }
