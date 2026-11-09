@@ -397,8 +397,8 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					p.tab = settingsTab(tabIdx)
 				})
 			})
-			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-220, 120)).Children(func() {
-				ui.Column(c).Gap(14).Padding(0, 4, 0, 0).Children(func() {
+			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-165, 120)).Children(func() {
+				ui.Column(c).Gap(11).Padding(0, 4, 0, 0).Children(func() {
 					if p.tab == settingsTabGeneral {
 						ui.Field(c, locales.SetAppearance(), func() {
 							c.Key("settingsAppearance")
@@ -440,11 +440,11 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						}).Description(locales.SetRestoreHint())
 
 						ui.Field(c, "会话日志", func() {
-							c.Key("settingsSessionLog")
-							ui.Checkbox(c, &p.sessionLog, "记录终端输出").OnChange(func() {
-								a.setSessionLog(p.sessionLog)
-							})
 							ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+								c.Key("settingsSessionLog")
+								ui.Checkbox(c, &p.sessionLog, "记录终端输出").OnChange(func() {
+									a.setSessionLog(p.sessionLog)
+								})
 								ui.Button(c, "选择日志文件夹").Key("settingsLogDir").OnClick(func() {
 									a.pickSessionLogDir(false)
 								})

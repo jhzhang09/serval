@@ -16,6 +16,9 @@ import (
 // 和 noKey 一样，文字本身就是尚未选择的哨兵值。
 func pickHost() string { return locales.RoutePickHost() }
 
+// pickProxy 是引用的代理已删除、等待用户重新选择时下拉框显示的占位文字。
+const pickProxy = "选择代理…"
+
 // legacyProxyLabel 是旧记录里直接填写的代理地址在下拉框里的显示文字。
 // 旧版本允许手填代理，这里原样保留，用户改选独立管理的代理后才替换。
 func legacyProxyLabel(spec string) string { return locales.RouteLegacyProxy(spec) }
@@ -54,6 +57,9 @@ func (a *app) formProxy(f *hostForm) (proxyID, legacy string, err error) {
 // proxyOptions 返回代理下拉框的选项。
 func (a *app) proxyOptions(f *hostForm) []string {
 	var options []string
+	if f.proxyName == pickProxy {
+		options = append(options, pickProxy)
+	}
 	for _, p := range a.proxies {
 		options = append(options, p.Name)
 	}

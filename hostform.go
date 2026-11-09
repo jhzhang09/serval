@@ -88,7 +88,7 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 	if p, ok := a.proxyByID(h.ProxyID); ok {
 		f.proxyName, f.showProxy = p.Name, true
 	} else if h.ProxyID != "" {
-		f.showProxy = true // 引用的代理已删除：展开让用户重新选择
+		f.proxyName, f.showProxy = pickProxy, true // 引用的代理已删除：展开让用户重新选择
 	} else if h.Proxy != "" {
 		f.legacyProxy, f.showProxy = h.Proxy, true
 		f.proxyName = legacyProxyLabel(h.Proxy)
@@ -383,70 +383,75 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 		title = locales.HostDuplicateTitle()
 	}
 	half := func(fn func()) { ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(fn) }
+	_, windowHeight := c.Size()
 	sheet(c, colors, &f.open, &f.fresh, 440, 22, func() {
 		ui.Column(c).Gap(12).Children(func() {
 			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
-			ui.Row(c).Gap(10).Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-					ui.Field(c, locales.Address(), func() {
-						c.Key("addAddress")
-						ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
+			ui.Scroll(c).Key("hostFormScroll").MaxHeight(max(windowHeight-180, 120)).Children(func() {
+				ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
+					ui.Row(c).Gap(10).Children(func() {
+						ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+							ui.Field(c, locales.Address(), func() {
+								c.Key("addAddress")
+								ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
+							})
+						})
+						ui.Column(c).Width(76).Children(func() {
+							ui.Field(c, locales.Port(), func() {
+								c.Key("addPort")
+								ui.TextInput(c, &f.port).Placeholder("22")
+							})
+						})
 					})
-				})
-				ui.Column(c).Width(76).Children(func() {
-					ui.Field(c, locales.Port(), func() {
-						c.Key("addPort")
-						ui.TextInput(c, &f.port).Placeholder("22")
+					ui.Field(c, locales.HostUsername(), func() {
+						c.Key("addUser")
+						ui.TextInput(c, &f.user).Placeholder("deploy")
 					})
-				})
-			})
-			ui.Field(c, locales.HostUsername(), func() {
-				c.Key("addUser")
-				ui.TextInput(c, &f.user).Placeholder("deploy")
-			})
-			ui.Row(c).Gap(10).Children(func() {
-				half(func() {
-					nameField := ui.Field(c, locales.Name(), func() {
-						c.Key("addName")
-						ui.TextInput(c, &f.name).Placeholder(locales.HostNamePlaceholder())
+					ui.Row(c).Gap(10).Children(func() {
+						half(func() {
+							nameField := ui.Field(c, locales.Name(), func() {
+								c.Key("addName")
+								ui.TextInput(c, &f.name).Placeholder(locales.HostNamePlaceholder())
+							})
+							if n := a.renamingJumpCount(f); n > 0 {
+								nameField.Description(locales.HostRenameJumps(n))
+							}
+						})
+						half(func() {
+							ui.Field(c, locales.HostGroup(), func() {
+								c.Key("addGroup")
+								ui.TextInput(c, &f.group).Placeholder(defaultGroup)
+							})
+						})
 					})
-					if n := a.renamingJumpCount(f); n > 0 {
-						nameField.Description(locales.HostRenameJumps(n))
+
+					descriptions := []string{
+						locales.HostAuthAutoHint(),
+						locales.HostAuthPasswordHint(),
+						locales.HostAuthKeyHint(),
+					}
+					ui.Field(c, locales.HostAuth(), func() {
+						c.Key("addAuth")
+						ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
+					}).Description(descriptions[f.auth])
+					if f.auth == 1 {
+						a.passwordField(c, f)
+					} else {
+						a.keyField(c, f)
+					}
+
+					a.routeFields(c, colors, f)
+					a.totpField(c, f)
+					c.Key("addProduction")
+					ui.Checkbox(c, &f.production, locales.HostProduction())
+					c.Key("addForwardAgent")
+					ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
+					if f.forwardAgent {
+						ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
+							FontSize(design.TextSmall).TextColor(colors.Danger)
 					}
 				})
-				half(func() {
-					ui.Field(c, locales.HostGroup(), func() {
-						c.Key("addGroup")
-						ui.TextInput(c, &f.group).Placeholder(defaultGroup)
-					})
-				})
 			})
-
-			descriptions := []string{
-				locales.HostAuthAutoHint(),
-				locales.HostAuthPasswordHint(),
-				locales.HostAuthKeyHint(),
-			}
-			ui.Field(c, locales.HostAuth(), func() {
-				c.Key("addAuth")
-				ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
-			}).Description(descriptions[f.auth])
-			if f.auth == 1 {
-				a.passwordField(c, f)
-			} else {
-				a.keyField(c, f)
-			}
-
-			a.routeFields(c, colors, f)
-			a.totpField(c, f)
-			c.Key("addProduction")
-			ui.Checkbox(c, &f.production, locales.HostProduction())
-			c.Key("addForwardAgent")
-			ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
-			if f.forwardAgent {
-				ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
-					FontSize(design.TextSmall).TextColor(colors.Danger)
-			}
 			if f.err != "" {
 				ui.Text(c, f.err).Key("addError").TextColor(t.Danger)
 			}

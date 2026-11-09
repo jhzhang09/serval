@@ -147,7 +147,8 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 			var client *ssh.Client
 			var agentConn net.Conn
 			client, agentConn, err = handshake(ctx, raw, hop, timeout)
-			if err == nil && hop.ForwardAgent {
+			if err == nil && i == len(cfg.Jumps) && hop.ForwardAgent {
+				// 只在最终目标主机上开启 agent 转发，跳板机只用来建隧道，不能给跳板机暴露本机钥匙。
 				// 先登记通道处理，再打开 shell。服务器要到 shell 里的程序连接
 				// SSH_AUTH_SOCK 时才会打开通道，那时处理函数必须已经在。
 				if ferr := setupAgentForward(client); ferr != nil {

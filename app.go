@@ -110,8 +110,8 @@ type app struct {
 	snippetPanel snippetPanel
 	forwardPanel forwardPanel
 	// tunnels 是正在监听的转发，键是规则 ID。forwardErr 是最近一次启动失败的说明。
-	tunnels      map[string]*liveTunnel
-	forwardErr   map[string]string
+	tunnels       map[string]*liveTunnel
+	forwardErr    map[string]string
 	settingsPanel settingsPanel
 	restore       restorePanel
 	setup         setupSheet
@@ -532,6 +532,9 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 		fillSaved(hh, key, hasKey, &c)
 		used[i] = c
 		configs[i] = hopConfig(hh, key, hasKey, c, a.localUser, policy)
+		if i < len(route) {
+			configs[i].ForwardAgent = false
+		}
 		who := hh
 		configs[i].Challenge = func(name, instruction string, questions []sshconn.Question) ([]string, error) {
 			return a.askChallenge(ctx, who, name, instruction, questions)
