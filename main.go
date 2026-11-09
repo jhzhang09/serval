@@ -9,6 +9,7 @@ import (
 
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -48,11 +49,11 @@ func main() {
 	// 全部用户数据在保险库里（见 docs/storage.md）。系统安全存储只用来“在这台设备上记住”保险库密钥。
 	device, err := vault.DeviceID(filepath.Join(dir, "device-id"))
 	if err != nil {
-		log.Fatalf("无法创建设备 ID: %v", err)
+		log.Fatal(locales.MainCreateDeviceIDFailed(err.Error()))
 	}
 	if a.vault, err = vault.Open(filepath.Join(dir, "vault.json"), device); err != nil {
 		// 打不开时不能新建一个空保险库覆盖它，宁可不启动。
-		log.Fatalf("无法打开保险库: %v", err)
+		log.Fatal(locales.MainOpenVaultFailed(err.Error()))
 	}
 	a.devicePath = filepath.Join(dir, "device.json")
 	a.device = mygo.Secrets

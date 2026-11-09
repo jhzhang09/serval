@@ -11,6 +11,7 @@ import (
 	"serval/core/hosts"
 	"serval/core/keys"
 	"serval/core/vault"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -71,7 +72,7 @@ func decodeAll[T any](v *vault.Vault, kind string, out *[]T) error {
 	for _, r := range records {
 		var item T
 		if err := json.Unmarshal(r.Data, &item); err != nil {
-			return fmt.Errorf("保险库里有一条无法读取的记录（%s）: %w", r.ID, err)
+			return fmt.Errorf("%s%w", locales.LibRecordUnreadable(r.ID), err)
 		}
 		*out = append(*out, item)
 	}
@@ -84,7 +85,7 @@ func decodeSettings(v *vault.Vault, out *settings) error {
 		return err
 	}
 	if err := json.Unmarshal(r.Data, out); err != nil {
-		return fmt.Errorf("保险库里有一条无法读取的记录（%s）: %w", r.ID, err)
+		return fmt.Errorf("%s%w", locales.LibRecordUnreadable(r.ID), err)
 	}
 	return nil
 }
@@ -146,11 +147,11 @@ func loadDeviceSettings(path string) (deviceSettings, error) {
 		return deviceSettings{}, nil
 	}
 	if err != nil {
-		return deviceSettings{}, fmt.Errorf("读取本机设置失败: %w", err)
+		return deviceSettings{}, fmt.Errorf("%s%w", locales.LibReadDeviceSettingsFailed(), err)
 	}
 	var d deviceSettings
 	if err := json.Unmarshal(data, &d); err != nil {
-		return deviceSettings{}, fmt.Errorf("本机设置文件已损坏（%s）: %w", path, err)
+		return deviceSettings{}, fmt.Errorf("%s%w", locales.LibDeviceSettingsCorrupt(path), err)
 	}
 	return d, nil
 }
@@ -165,30 +166,30 @@ func saveDeviceSettings(path string, d deviceSettings) error {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	tmp, err := os.CreateTemp(dir, ".device-*")
 	if err != nil {
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("保存本机设置失败: %w", err)
+		return fmt.Errorf("%s%w", locales.LibSaveDeviceSettingsFailed(), err)
 	}
 	return nil
 }
@@ -261,7 +262,7 @@ func (a *app) submitSetup() {
 		return
 	}
 	if s.password != s.confirm {
-		s.err = "两次输入的主密码不一致。"
+		s.err = locales.LibMasterPasswordMismatch()
 		return
 	}
 	password := s.password
@@ -282,7 +283,7 @@ func (a *app) submitSetup() {
 			then := s.then
 			a.setup = setupSheet{}
 			a.noteVaultChanged()
-			a.toast(ui.Toast{Title: "已设置主密码"})
+			a.toast(ui.Toast{Title: locales.LibMasterPasswordSet()})
 			if then != nil {
 				then()
 			}
@@ -301,7 +302,7 @@ func (a *app) rememberOnDevice(remember bool) {
 		return
 	}
 	if err := a.device.Set(name, a.vault.Key()); err != nil {
-		a.toast(ui.Toast{Title: "没能在这台设备上记住主密码", Description: err.Error(), Type: "error"})
+		a.toast(ui.Toast{Title: locales.LibRememberMasterFailed(), Description: err.Error(), Type: "error"})
 	}
 }
 
@@ -356,7 +357,7 @@ func (a *app) submitUnlock() {
 			u := &a.unlock
 			u.busy = false
 			if errors.Is(err, vault.ErrWrongPassword) {
-				u.err = "主密码不正确。"
+				u.err = locales.LibMasterPasswordWrong()
 				return
 			}
 			if err != nil {

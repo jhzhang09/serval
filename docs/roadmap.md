@@ -341,9 +341,13 @@
 - **范围**：用 MyGo 的 updater 插件；更新包签名（`mygo keygen`）；设置里可关闭。
 - **依赖**：R3。
 
-### R5 英文界面（M）
+### R5 英文界面（M，实现见 `feat/R5-english`，尚未合并）
 
-- **范围**：抽出全部界面文字，提供简体中文和英文（MyGo 有 i18n 支持）；默认跟随系统语言。
+- **范围**：界面文字放在 `locales/zh-Hans.json`（源语言）和 `locales/en.json`。`go tool mygo generate` 写出 `locales/catalog_gen.go`，必须一并提交，`go test` 才不必再跑生成器。改文案后重新生成。
+- **语言**：不在应用里写死。MyGo 在这两种语言里选系统偏好最匹配的一种，没有匹配时用简体中文。macOS 系统设置里指定本应用的语言也会在下次启动生效（MyGo 读该应用的 `AppleLanguages`）。没有单独的语言菜单。
+- **不翻译的数据**：「我的主机」是没填分组时写进保险库的分组名。复制主机生成的「副本」、未命名私钥的默认名按保存时的界面语言写进记录，之后不再重译。打开中的错误提示也停在出现时的语言。
+- **测试**：`main_test.go` 把目录语言钉在 `zh-Hans`，现有点击测试仍按中文。`TestEnglishCatalogRenders` 临时切到英文，确认空状态和侧栏按钮。真机冒烟由 `tools/e2e/run.sh` 设置 `MYGO_LOCALE=zh-Hans`。
+- **验收**：`TestEnglishCatalogRenders`；中文点击测试不因语言目录失败。
 
 ### R6 性能基准重测（S）
 

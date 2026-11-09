@@ -20,6 +20,7 @@ import (
 	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -361,7 +362,7 @@ func (a *app) lockVault() {
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.editor = editorState{}
-	a.toast(ui.Toast{Title: "保险库已锁定"})
+	a.toast(ui.Toast{Title: locales.AppVaultLocked()})
 }
 
 func (a *app) startAutoLock() {
@@ -500,7 +501,7 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 	}
 	route, err := hosts.ResolveRoute(h, a.hosts, a.localUser)
 	if err != nil {
-		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：%w", h.Name, err)
+		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("%s%w", locales.ConnectFailed(h.Name), err)
 	}
 	// 代理只用于第一跳。目标主机没设代理时，沿用第一台跳板机自己的代理设置：
 	// 那台跳板机单独连接时要走这个代理，经由它连接时自然也要。
@@ -510,7 +511,7 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 	}
 	proxy, err := a.dialProxy(proxyOwner)
 	if err != nil {
-		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("无法连接 %s：%w", h.Name, err)
+		return sshconn.Config{}, nil, nil, nil, fmt.Errorf("%s%w", locales.ConnectFailed(h.Name), err)
 	}
 
 	// 所有跳共用一个主机密钥策略：每台机器都要核对指纹，信任记录也存在同一处。
@@ -525,7 +526,7 @@ func (a *app) prepareDialConfig(ctx context.Context, h hosts.Host, creds map[int
 	for i, hh := range chain {
 		key, hasKey := a.keyByID(hh.KeyID)
 		if hh.Auth == hosts.AuthKey && !hasKey {
-			return sshconn.Config{}, nil, nil, nil, fmt.Errorf("%s 选用的私钥已经删除，请编辑这台主机，重新选择私钥", hh.Name)
+			return sshconn.Config{}, nil, nil, nil, errors.New(locales.AppSelectedKeyDeleted(hh.Name))
 		}
 		c := creds[i]
 		fillSaved(hh, key, hasKey, &c)
@@ -551,7 +552,7 @@ func (a *app) dialProxy(h hosts.Host) (*sshconn.Proxy, error) {
 	if h.ProxyID != "" {
 		p, ok := a.proxyByID(h.ProxyID)
 		if !ok {
-			return nil, fmt.Errorf("%s 选用的代理已经删除，请编辑这台主机，重新选择代理", h.Name)
+			return nil, errors.New(locales.AppSelectedProxyDeleted(h.Name))
 		}
 		kind := p.Kind
 		if kind == "" {
@@ -562,7 +563,7 @@ func (a *app) dialProxy(h hosts.Host) (*sshconn.Proxy, error) {
 	}
 	proxy, err := sshconn.ParseProxy(h.Proxy)
 	if err != nil {
-		return nil, fmt.Errorf("代理设置有误，%w", err)
+		return nil, fmt.Errorf("%s%w", locales.AppProxyInvalid(), err)
 	}
 	return proxy, nil
 }
@@ -626,7 +627,7 @@ func (a *app) rememberCredentials(chain []hosts.Host, used map[int]credential) {
 		return // 保存秘密前一定已经设置了主密码（见 submitSecret），这里只是兜底，不把秘密写进未加密的保险库
 	}
 	if err := a.apply(changes...); err != nil {
-		a.toast(ui.Toast{Title: "没能保存密码", Description: err.Error(), Type: "error"})
+		a.toast(ui.Toast{Title: locales.AppSavePasswordFailed(), Description: err.Error(), Type: "error"})
 	}
 }
 
@@ -658,21 +659,19 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 	switch {
 	case errors.As(err, &changed):
 		// 最需要讲清楚的安全事件：说明风险，并给出确实需要时的处理办法。
-		a.notice = fmt.Sprintf("%s 的主机密钥和上次不同，可能有人冒充这台服务器，已拒绝连接。"+
-			"如果服务器确实重装过，右键 %s 选择“重置主机密钥”，下次连接时重新核对指纹"+
-			"（记录来自 ~/.ssh/known_hosts 的，需要在那个文件里删掉 %s 的旧记录）。", who.Name, who.Name, changed.Host)
+		a.notice = locales.AppHostKeyMismatch(who.Name, changed.Host)
 	case errors.Is(err, sshconn.ErrHostKeyRejected):
-		a.notice = fmt.Sprintf("没有连接 %s：未信任它的主机密钥。", who.Name)
+		a.notice = locales.AppHostKeyNotTrusted(who.Name)
 	case errors.Is(err, sshconn.ErrKeyEncrypted):
-		a.askSecret(h, who, hop, creds, true, "这把私钥已加密，输入口令后继续。")
+		a.askSecret(h, who, hop, creds, true, locales.AppKeyEncryptedContinue())
 	case errors.Is(err, sshconn.ErrBadPassphrase):
-		message := "口令不正确，请重新输入。"
+		message := locales.AppPassphraseWrong()
 		if c.storedPassphrase {
-			message = "保存的口令不正确，请重新输入。"
+			message = locales.AppSavedPassphraseWrong()
 		}
 		a.askSecret(h, who, hop, creds, true, message)
 	case errors.Is(err, errChallengeCancelled):
-		a.notice = fmt.Sprintf("已取消连接 %s：没有完成多步验证。", who.Name)
+		a.notice = locales.AppChallengeIncomplete(who.Name)
 	case errors.Is(err, sshconn.ErrNoAuthMethod):
 		a.askSecret(h, who, hop, creds, false, "")
 	case errors.Is(err, sshconn.ErrAgentUnavailable):
@@ -684,9 +683,9 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 		message := ""
 		switch {
 		case c.storedPassword:
-			message = "保存的密码不正确，请重新输入。"
+			message = locales.AppSavedPasswordWrong()
 		case c.password != "":
-			message = "密码不正确，请重新输入。"
+			message = locales.AppPasswordWrong()
 		}
 		a.askSecret(h, who, hop, creds, false, message)
 	default:
@@ -741,7 +740,7 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 		stop()
 		shell.Close()
 		client.Close()
-		a.notice = fmt.Sprintf("启动终端失败: %v", err)
+		a.notice = locales.AppTerminalStartFailed(err.Error())
 		return
 	}
 	t.root, t.focus = leaf, leaf
@@ -814,7 +813,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 			s.Close()
 		}
 		client.Close()
-		a.notice = fmt.Sprintf("启动终端失败: %v", err)
+		a.notice = locales.AppTerminalStartFailed(err.Error())
 		return
 	}
 	t.root = root
@@ -862,7 +861,7 @@ func (a *app) insertRestoredTab(t *tab) {
 func (a *app) restorePaneNode(t *tab, shells []*sshconn.Shell, idx *int, layout *savedPane) (*pane, error) {
 	if layout == nil || (layout.First == nil && layout.Second == nil) {
 		if *idx >= len(shells) {
-			return nil, errors.New("shell 数量不足")
+			return nil, errors.New(locales.AppNotEnoughShells())
 		}
 		shell := shells[*idx]
 		*idx++
@@ -905,7 +904,7 @@ func (a *app) openLocalTerminal() {
 	}
 	pane, err := a.newPane(t, nil)
 	if err != nil {
-		a.notice = fmt.Sprintf("启动本地终端失败: %v", err)
+		a.notice = locales.AppLocalTerminalStartFailed(err.Error())
 		return
 	}
 	t.root = pane
@@ -1123,7 +1122,7 @@ func (a *app) split(t *tab, vertical bool) {
 				if shell != nil {
 					shell.Close()
 				}
-				a.notice = fmt.Sprintf("启动终端失败: %v", err)
+				a.notice = locales.AppTerminalStartFailed(err.Error())
 				return
 			}
 			// 叶子节点的指针必须保持不变：它的退出回调捕获了这个指针。
@@ -1373,11 +1372,10 @@ func (a *app) stopReconnect(t *tab, err error) {
 	a.cancelReconnect(t)
 	var changed *sshconn.HostKeyChangedError
 	if errors.As(err, &changed) {
-		a.notice = fmt.Sprintf("%s 的主机密钥和上次不同，可能有人冒充这台服务器，已停止自动重连。"+
-			"如果服务器确实重装过，右键 %s 选择“重置主机密钥”，再重新连接。", t.host.Name, t.host.Name)
+		a.notice = locales.AppHostKeyMismatchReconnect(t.host.Name)
 		return
 	}
-	a.notice = fmt.Sprintf("%s 自动重连已停止：%v。点窗格上的“重新连接”可以重新输入密码或核对指纹。", t.host.Name, err)
+	a.notice = locales.AppReconnectStopped(t.host.Name, err.Error())
 }
 
 func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
@@ -1689,7 +1687,7 @@ func (a *app) ensureFiles(t *tab) {
 			if err != nil {
 				t.filesError = err.Error()
 				if len(waiting) > 0 {
-					a.toast(ui.Toast{Title: "无法上传", Description: "打不开文件传输通道：" + err.Error(), Type: "error"})
+					a.toast(ui.Toast{Title: locales.AppUploadFailed(), Description: locales.AppTransferChannelFailed(err.Error()), Type: "error"})
 				}
 				return
 			}
@@ -1850,10 +1848,10 @@ func (a *app) flushToasts(c *ui.Context) {
 // 用户没有动手，剪贴板却变了，这件事应该让用户知道。
 func (a *app) copied(by terminal.CopySource) {
 	if by == terminal.CopyProgram {
-		a.toast(ui.Toast{ID: "copy", Title: "远端程序写入了剪贴板"})
+		a.toast(ui.Toast{ID: "copy", Title: locales.AppRemoteClipboard()})
 		return
 	}
-	a.toast(ui.Toast{ID: "copy", Title: "已复制"})
+	a.toast(ui.Toast{ID: "copy", Title: locales.AppCopied()})
 }
 
 // paneEnded 处理窗格里的 shell 退出。
@@ -1876,7 +1874,7 @@ func (a *app) paneEnded(t *tab, p *pane, shell *sshconn.Shell) {
 	allEnded := true
 	t.root.each(func(q *pane) { allEnded = allEnded && q.ended })
 	if !allEnded {
-		a.toast(ui.Toast{Title: t.host.Name + " 的一个窗格已结束"})
+		a.toast(ui.Toast{Title: locales.AppPaneEnded(t.host.Name)})
 		return
 	}
 	// 保活已经失败，肯定是断线。否则看远端有没有发来退出状态：用户输入 exit 时有，断线时没有
@@ -1908,8 +1906,8 @@ func (a *app) paneEnded(t *tab, p *pane, shell *sshconn.Shell) {
 func (a *app) showSessionEnded(t *tab) {
 	a.toast(ui.Toast{
 		ID:       fmt.Sprintf("ended:%d", t.id),
-		Title:    t.host.Name + " 的会话已结束",
-		Action:   "重新连接",
+		Title:    locales.AppSessionEnded(t.host.Name),
+		Action:   locales.Reconnect(),
 		OnAction: func() { a.reconnect(t) },
 		Timeout:  8 * time.Second,
 	})

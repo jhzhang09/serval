@@ -5,6 +5,7 @@ import (
 
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
@@ -38,11 +39,10 @@ func (a *app) hostKeyDialog(c *ui.Context) {
 	}
 	prompt := a.prompts[0]
 	a.asking = true
-	message := fmt.Sprintf("这是第一次连接 %s。请核对下面的指纹和服务器上的一致，再继续。\n\n%s\n%s",
-		prompt.info.Host, prompt.info.KeyType, prompt.info.Fingerprint)
+	message := locales.SheetTrustMessage(prompt.info.Host, prompt.info.KeyType, prompt.info.Fingerprint)
 	// 安全确认保留系统风格的警告框，不做成玻璃：它需要最直接、最不会被误读的样子。
 	// 最后一个按钮是默认按钮，放“取消”，避免按回车就信任了未知主机。
-	choice := ui.AlertDialog(c, &a.asking, "信任这台主机吗？", message, "信任并连接", "取消")
+	choice := ui.AlertDialog(c, &a.asking, locales.SheetTrustHost(), message, locales.SheetTrustConnect(), locales.Cancel())
 	if choice == -1 {
 		return
 	}
@@ -65,9 +65,9 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 					ui.Text(c, a.auth.host.Target()).TextColor(t.TextMuted).FontSize(design.TextSmall)
 				})
 			})
-			label := "密码"
+			label := locales.Password()
 			if a.auth.passphrase {
-				label = "私钥口令"
+				label = locales.SheetKeyPassphrase()
 			}
 			var input ui.Element
 			field := ui.Field(c, label, func() {
@@ -76,24 +76,24 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 			}).Error(a.auth.message)
 			// 为跳板机询问时要说清楚：用户点的是另一台主机，别把目标主机的密码填到这里。
 			if a.auth.via {
-				field.Description(fmt.Sprintf("这是连接 %s 途中的跳板机。", a.auth.target.Name))
+				field.Description(locales.SheetJumpHost(a.auth.target.Name))
 			}
-			remember := "记住密码"
+			remember := locales.SheetRememberPassword()
 			if a.auth.passphrase {
-				remember = "记住口令"
+				remember = locales.SheetRememberPassphrase()
 			}
 			// 临时连接的主机（快速连接、直接写在跳板机列表里的地址）不在保险库里，没有地方保存密码，
 			// 不显示“记住”，免得用户以为记住了。
 			if _, saved := a.hostByID(a.auth.host.ID); saved {
 				c.Key("authRemember")
-				ui.Checkbox(c, &a.auth.remember, remember+"（加密保存在保险库里）")
+				ui.Checkbox(c, &a.auth.remember, remember)
 			}
 			submit := input.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "取消").Key("authCancel").OnClick(func() {
+				ui.Button(c, locales.Cancel()).Key("authCancel").OnClick(func() {
 					a.auth = authSheet{}
 				})
-				if ui.PrimaryButton(c, "连接").Key("authSubmit").Clicked() || submit {
+				if ui.PrimaryButton(c, locales.Connect()).Key("authSubmit").Clicked() || submit {
 					a.submitSecret()
 				}
 			})
@@ -114,32 +114,32 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	sheet(c, colors, &s.open, &s.fresh, 400, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
-			ui.Text(c, "设置主密码").FontSize(design.TextHeading).FontWeight(600)
-			ui.Text(c, "Serval 用主密码加密你保存的密码和私钥。以后在其他设备上同步数据时，也用它解锁。").
+			ui.Text(c, locales.SheetSetMasterPassword()).FontSize(design.TextHeading).FontWeight(600)
+			ui.Text(c, locales.SheetMasterPasswordIntro()).
 				TextColor(t.TextMuted)
-			ui.Field(c, "主密码", func() {
+			ui.Field(c, locales.MasterPassword(), func() {
 				c.Key("setupPassword")
 				ui.TextInput(c, &s.password).Password().AutoFocus()
-			}).Description(fmt.Sprintf("至少 %d 个字符。", vault.MinPasswordLength))
+			}).Description(locales.SheetMinLength(vault.MinPasswordLength))
 			var confirm ui.Element
-			ui.Field(c, "再输入一次", func() {
+			ui.Field(c, locales.SheetEnterAgain(), func() {
 				c.Key("setupConfirm")
 				confirm = ui.TextInput(c, &s.confirm).Password()
 			})
 			if a.device != nil {
 				c.Key("setupRemember")
-				ui.Checkbox(c, &s.remember, "在这台设备上记住，打开 Serval 时自动解锁")
+				ui.Checkbox(c, &s.remember, locales.SheetRememberDeviceUnlock())
 			}
-			ui.Text(c, "主密码无法找回。忘记后，保存的密码和私钥都无法解开。").FontSize(design.TextSmall).TextColor(colors.Danger)
+			ui.Text(c, locales.SheetMasterPasswordWarning()).FontSize(design.TextSmall).TextColor(colors.Danger)
 			if s.err != "" {
 				ui.Text(c, s.err).Key("setupError").TextColor(t.Danger)
 			}
 			submit := confirm.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "取消").Key("setupCancel").Disabled(s.busy).OnClick(func() { a.setup = setupSheet{} })
-				label := "设置并继续"
+				ui.Button(c, locales.Cancel()).Key("setupCancel").Disabled(s.busy).OnClick(func() { a.setup = setupSheet{} })
+				label := locales.SheetSetAndContinue()
 				if s.busy {
-					label = "正在设置…"
+					label = locales.SheetSetting()
 				}
 				b := ui.PrimaryButton(c, label).Key("setupSubmit").Disabled(s.busy)
 				if (b.Clicked() || submit) && !s.busy {
@@ -167,21 +167,21 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 	var title, label, btnText string
 	switch op.kind {
 	case fileOpNewFolder:
-		title = "新建文件夹"
-		label = "文件夹名称"
-		btnText = "创建"
+		title = locales.NewFolder()
+		label = locales.SheetFolderName()
+		btnText = locales.SheetCreate()
 	case fileOpRename:
 		// 标题带上文件名，按钮只写动作：同一界面里可点击的文字不能和标题重复。
-		title = "重命名 " + op.name
-		label = "新名称"
-		btnText = "重命名"
+		title = locales.SheetRenameTitle(op.name)
+		label = locales.SheetNewName()
+		btnText = locales.Rename()
 	case fileOpPermissions:
-		title = "修改 " + op.name + " 的权限"
-		label = "八进制权限（如 755）"
-		btnText = "修改权限"
+		title = locales.SheetChangeModeTitle(op.name)
+		label = locales.SheetOctalMode()
+		btnText = locales.ChangeMode()
 	}
 	if op.busy {
-		btnText = "正在处理…"
+		btnText = locales.SheetWorking()
 	}
 
 	sheet(c, colors, &op.open, &op.fresh, 360, 22, func() {
@@ -197,7 +197,7 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 			}
 			submit := input.Submitted()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				ui.Button(c, "取消").Key("fileOpCancel").Disabled(op.busy).OnClick(func() {
+				ui.Button(c, locales.Cancel()).Key("fileOpCancel").Disabled(op.busy).OnClick(func() {
 					a.fileOp = fileOpState{}
 				})
 				if ui.PrimaryButton(c, btnText).Key("fileOpSubmit").Disabled(op.busy).Clicked() || (submit && !op.busy) {
@@ -214,13 +214,12 @@ func (a *app) fileDeleteDialog(c *ui.Context) {
 		return
 	}
 	del := *a.fileDelete
-	targetType := "文件"
+	message := locales.SheetDeleteFile()
 	if del.isDir {
-		targetType = "目录"
+		message = locales.SheetDeleteDirectory()
 	}
-	message := fmt.Sprintf("删除后无法恢复。确定要删除该%s吗？", targetType)
 	open := true
-	choice := ui.AlertDialog(c, &open, "删除 "+del.name+"？", message, "删除", "取消")
+	choice := ui.AlertDialog(c, &open, locales.SheetDeleteNamed(del.name), message, locales.Delete(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
@@ -241,21 +240,21 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 		card.Children(func() {
 			design.BrandView(c, 56)
 			ui.Column(c).Gap(4).Children(func() {
-				ui.Text(c, "Serval 已锁定").FontSize(design.TextHeading).FontWeight(600)
-				ui.Text(c, "输入主密码解锁保险库。").TextColor(t.TextMuted)
+				ui.Text(c, locales.SheetLocked()).FontSize(design.TextHeading).FontWeight(600)
+				ui.Text(c, locales.SheetUnlockPrompt()).TextColor(t.TextMuted)
 			})
 			var input ui.Element
-			ui.Field(c, "主密码", func() {
+			ui.Field(c, locales.MasterPassword(), func() {
 				c.Key("unlockPassword")
 				input = ui.TextInput(c, &u.password).Password().AutoFocus()
 			}).Error(u.err)
 			if a.device != nil {
 				c.Key("unlockRemember")
-				ui.Checkbox(c, &u.remember, "在这台设备上记住")
+				ui.Checkbox(c, &u.remember, locales.SheetRememberDevice())
 			}
-			label := "解锁"
+			label := locales.SheetUnlock()
 			if u.busy {
-				label = "正在解锁…"
+				label = locales.SheetUnlocking()
 			}
 			submit := input.Submitted()
 			b := ui.PrimaryButton(c, label).Key("unlockSubmit").Disabled(u.busy)
@@ -271,9 +270,9 @@ func (a *app) lockConfirmDialog(c *ui.Context) {
 	if !a.askingLock {
 		return
 	}
-	message := fmt.Sprintf("锁定将关闭当前打开的 %d 个会话。确定要锁定吗？", len(a.tabs))
+	message := locales.SheetLockConfirm(len(a.tabs))
 	open := true
-	choice := ui.AlertDialog(c, &open, "锁定保险库？", message, "锁定", "取消")
+	choice := ui.AlertDialog(c, &open, locales.SheetLockVault(), message, locales.SheetLock(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}
@@ -289,7 +288,7 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 	if ch == nil || !ch.open {
 		return
 	}
-	title := "多步验证"
+	title := locales.SheetChallenge()
 	if ch.name != "" {
 		title = ch.name
 	}
@@ -314,7 +313,7 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 					idx := i
 					label := q.Text
 					if label == "" {
-						label = fmt.Sprintf("问题 %d", idx+1)
+						label = locales.SheetQuestion(idx + 1)
 					}
 					var input ui.Element
 					ui.Field(c, label, func() {
@@ -333,8 +332,8 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 				}
 			})
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-				ui.Button(c, "取消").OnClick(closeSheet)
-				if ui.PrimaryButton(c, "验证").Key("submitChallenge").Clicked() || lastSubmitted {
+				ui.Button(c, locales.Cancel()).OnClick(closeSheet)
+				if ui.PrimaryButton(c, locales.SheetVerify()).Key("submitChallenge").Clicked() || lastSubmitted {
 					a.submitChallenge()
 				}
 			})

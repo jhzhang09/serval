@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"serval/locales"
+
 	"github.com/egoist/mygo"
 )
 
@@ -15,20 +17,20 @@ import (
 func installSystemDialogs(a *app) {
 	home, _ := os.UserHomeDir()
 	a.chooseKeyFile = defaultPickFile(func(dir string) ([]string, error) {
-		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择私钥", DefaultPath: dir, ButtonLabel: "选择", ShowHiddenFiles: true})
+		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: locales.DialogChoosePrivateKey(), DefaultPath: dir, ButtonLabel: locales.DialogChoose(), ShowHiddenFiles: true})
 	})
 	a.chooseUploadFile = func() (string, error) {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择要上传的文件", DefaultPath: home, ButtonLabel: "上传"})
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: locales.DialogChooseUploadFile(), DefaultPath: home, ButtonLabel: locales.Upload()})
 		if err != nil || len(paths) == 0 {
 			return "", err
 		}
 		return paths[0], nil
 	}
 	a.chooseUploadFiles = func() ([]string, error) {
-		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择要通过 rz 上传的文件", DefaultPath: home, ButtonLabel: "上传", Multiple: true})
+		return mygo.Dialog.Open(mygo.OpenDialogOptions{Title: locales.DialogChooseRzFiles(), DefaultPath: home, ButtonLabel: locales.Upload(), Multiple: true})
 	}
 	a.chooseFolder = func() (string, error) {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "把 sz 发来的文件保存到", DefaultPath: downloadsDir(home), ButtonLabel: "保存到这里", Directory: true, CreateDirectories: true})
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: locales.DialogSaveSzTo(), DefaultPath: downloadsDir(home), ButtonLabel: locales.DialogSaveHere(), Directory: true, CreateDirectories: true})
 		if err != nil || len(paths) == 0 {
 			return "", err
 		}
@@ -57,7 +59,7 @@ func installSystemDialogs(a *app) {
 	}
 	a.chooseSavePath = func(defaultName string) (string, error) {
 		dir := downloadsDir(home)
-		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "下载到", DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: "保存", CreateDirectories: true})
+		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: locales.DialogDownloadTo(), DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: locales.Save(), CreateDirectories: true})
 	}
 }
 

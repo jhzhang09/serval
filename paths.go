@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"serval/locales"
 )
 
 // expandHome 展开路径开头的 ~/，其他路径原样返回。
@@ -14,7 +16,7 @@ func expandHome(p string) (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("无法确定用户目录: %w", err)
+		return "", fmt.Errorf("%s%w", locales.PathHomeDirFailed(), err)
 	}
 	return filepath.Join(home, strings.TrimPrefix(p, "~")), nil
 }

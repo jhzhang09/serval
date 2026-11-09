@@ -93,6 +93,7 @@ flowchart TB
 | `broadcast.go` | 广播输入：选择窗格、生产环境确认、把当前窗格的键盘输入镜像到其他窗格 |
 | `paths.go` | `~/` 展开 |
 | `e2e.go` | 只在 `-tags e2e` 构建里引入自动化插件 |
+| `locales/` | 界面文案（简体中文、英文）。源语言是 `zh-Hans`，`catalog_gen.go` 由 `go tool mygo generate` 生成 |
 
 ### design/
 

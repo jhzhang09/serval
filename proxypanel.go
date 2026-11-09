@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"serval/core/hosts"
 	"serval/core/vault"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -65,7 +65,7 @@ func hostNames(list []hosts.Host) string {
 	for i, h := range list {
 		names[i] = h.Name
 	}
-	return strings.Join(names, "、")
+	return strings.Join(names, locales.NameSeparator())
 }
 
 // closeProxyEdit 离开编辑页：从表单打开的回到表单，否则回到列表。
@@ -84,23 +84,23 @@ func (a *app) saveProxy() {
 	name := strings.TrimSpace(p.name)
 	address := strings.TrimSpace(p.address)
 	if address == "" {
-		p.err = "请填写代理地址，例如 127.0.0.1。"
+		p.err = locales.ProxyAddressRequired()
 		return
 	}
 	if strings.Contains(address, "://") || strings.Contains(address, "/") {
-		p.err = "地址只填主机名或 IP，协议在上面选择，端口填在右边。"
+		p.err = locales.ProxyAddressPlain()
 		return
 	}
 	port, err := strconv.Atoi(strings.TrimSpace(p.port))
 	if err != nil || port < 1 || port > 65535 {
-		p.err = "端口必须是 1 到 65535 之间的数字。"
+		p.err = locales.ProxyPortInvalid()
 		return
 	}
 	if name == "" {
 		name = address + ":" + strconv.Itoa(port)
 	}
 	if slices.ContainsFunc(a.proxies, func(x hosts.Proxy) bool { return x.Name == name && x.ID != p.id }) {
-		p.err = fmt.Sprintf("已经有一个叫 %s 的代理，请换一个名称。", name)
+		p.err = locales.ProxyNameTaken(name)
 		return
 	}
 	proxy := hosts.Proxy{ID: p.id, Name: name, Kind: proxyKinds[p.kind], Address: address, Port: port,
@@ -126,7 +126,7 @@ func (a *app) saveProxy() {
 		p.err = err.Error()
 		return
 	}
-	a.toast(ui.Toast{Title: "已保存代理 " + name})
+	a.toast(ui.Toast{Title: locales.ProxySaved(name)})
 	if p.fromForm {
 		a.form.showProxy, a.form.proxyName = true, name
 	}
@@ -144,7 +144,7 @@ func (a *app) deleteProxy(p hosts.Proxy) {
 		a.proxyPanel.err = err.Error()
 		return
 	}
-	a.toast(ui.Toast{Title: "已删除代理 " + p.Name})
+	a.toast(ui.Toast{Title: locales.ProxyDeleted(p.Name)})
 }
 
 // proxiesDialog 是代理面板。设置主密码的面板打开时让位，内容保留。
@@ -170,13 +170,13 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "代理").FontSize(design.TextHeading).FontWeight(600).Grow(1)
-			ui.PrimaryButton(c, "添加代理").Key("proxiesAdd").OnClick(func() { a.openProxyAdd(false) })
+			ui.Text(c, locales.Proxy()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
+			ui.PrimaryButton(c, locales.AddProxy()).Key("proxiesAdd").OnClick(func() { a.openProxyAdd(false) })
 		})
 		if len(a.proxies) == 0 {
 			ui.Column(c).Gap(6).Padding(20, 0).Children(func() {
-				ui.Text(c, "还没有代理").FontWeight(600)
-				ui.Text(c, "需要经 SOCKS5 或 HTTP 代理才能连上服务器时，在这里添加，然后在主机里选择它。").
+				ui.Text(c, locales.ProxyEmptyTitle()).FontWeight(600)
+				ui.Text(c, locales.ProxyEmptyBody()).
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
 		}
@@ -189,7 +189,7 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
 		ui.Row(c).Justify(ui.End).Children(func() {
-			ui.Button(c, "完成").Key("proxiesClose").OnClick(func() { a.proxyPanel = proxyPanel{} })
+			ui.Button(c, locales.Done()).Key("proxiesClose").OnClick(func() { a.proxyPanel = proxyPanel{} })
 		})
 	})
 }
@@ -197,11 +197,11 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 	t := c.Theme()
 	menu := func(m *ui.Menu) {
-		if m.Item("编辑").Chosen() {
+		if m.Item(locales.Edit()).Chosen() {
 			a.editProxy(px)
 		}
 		m.Separator()
-		if m.Item("删除").Danger().Chosen() {
+		if m.Item(locales.Delete()).Danger().Chosen() {
 			a.proxyPanel.deleting = &px
 		}
 	}
@@ -218,13 +218,13 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 				ui.Text(c, px.Name).FontWeight(500).SingleLine()
 				sub := px.Target()
 				if n := len(a.proxyUsers(px.ID)); n > 0 {
-					sub = fmt.Sprintf("%s  %d 台主机在用", sub, n)
+					sub = locales.ProxyHostsUsing(sub, n)
 				}
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 		}).OnClick(func() { a.editProxy(px) })
 		row.PopoverMenu(menu)
-		more := ui.ButtonBase(c).Key("proxyMore:"+px.ID).Label("更多操作").Size(26, 26).Radius(6).Shrink(0)
+		more := ui.ButtonBase(c).Key("proxyMore:"+px.ID).Label(locales.MoreActions()).Size(26, 26).Radius(6).Shrink(0)
 		if more.Hovered() {
 			more.Background(colors.Hover)
 		}
@@ -237,37 +237,37 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 func (a *app) proxyEditPage(c *ui.Context) {
 	t := c.Theme()
 	p := &a.proxyPanel
-	title, submit := "添加代理", "添加"
+	title, submit := locales.AddProxy(), locales.Add()
 	if p.id != "" {
 		if _, ok := a.proxyByID(p.id); ok {
-			title, submit = "编辑代理", "保存"
+			title, submit = locales.ProxyEdit(), locales.Save()
 		}
 	}
 	ui.Column(c).Gap(12).Children(func() {
 		ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
-		ui.Field(c, "协议", func() {
+		ui.Field(c, locales.ProxyProtocol(), func() {
 			c.Key("proxyKind")
 			ui.Segmented(c, &p.kind, "SOCKS5", "HTTP")
 		})
 		ui.Row(c).Gap(10).Children(func() {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				ui.Field(c, "地址", func() {
+				ui.Field(c, locales.Address(), func() {
 					c.Key("proxyAddress")
 					ui.TextInput(c, &p.address).Placeholder("127.0.0.1").AutoFocus()
 				})
 			})
 			ui.Column(c).Width(90).Children(func() {
-				ui.Field(c, "端口", func() {
+				ui.Field(c, locales.Port(), func() {
 					c.Key("proxyPort")
 					ui.TextInput(c, &p.port).Placeholder("1080")
 				})
 			})
 		})
-		ui.Field(c, "名称", func() {
+		ui.Field(c, locales.Name(), func() {
 			c.Key("proxyName")
-			ui.TextInput(c, &p.name).Placeholder("留空时使用地址和端口")
+			ui.TextInput(c, &p.name).Placeholder(locales.ProxyNamePlaceholder())
 		})
-		ui.Field(c, "用户名（可选）", func() {
+		ui.Field(c, locales.ProxyUserOptional(), func() {
 			c.Key("proxyUser")
 			ui.TextInput(c, &p.user)
 		})
@@ -275,21 +275,21 @@ func (a *app) proxyEditPage(c *ui.Context) {
 			placeholder := ""
 			switch {
 			case p.passwordSaved && p.clearPassword:
-				placeholder = "保存后清除已保存的密码"
+				placeholder = locales.ProxyClearPasswordPending()
 			case p.passwordSaved:
-				placeholder = "已保存，留空保持不变"
+				placeholder = locales.ProxyPasswordUnchanged()
 			}
 			ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-					ui.Field(c, "密码", func() {
+					ui.Field(c, locales.Password(), func() {
 						c.Key("proxyPassword")
 						ui.TextInput(c, &p.password).Password().Placeholder(placeholder)
 					})
 				})
 				if p.passwordSaved {
-					text := "清除密码"
+					text := locales.ProxyClearPassword()
 					if p.clearPassword {
-						text = "撤销清除"
+						text = locales.ProxyUndoClear()
 					}
 					ui.Button(c, text).Key("proxyPasswordClear").OnClick(func() {
 						p.clearPassword = !p.clearPassword
@@ -304,7 +304,7 @@ func (a *app) proxyEditPage(c *ui.Context) {
 			ui.Text(c, p.err).Key("proxyError").TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, "返回").Key("proxyBack").OnClick(a.closeProxyEdit)
+			ui.Button(c, locales.Back()).Key("proxyBack").OnClick(a.closeProxyEdit)
 			ui.PrimaryButton(c, submit).Key("proxySubmit").OnClick(a.saveProxy)
 		})
 	})
@@ -316,12 +316,12 @@ func (a *app) proxyDeleteDialog(c *ui.Context) {
 		return
 	}
 	px := *p.deleting
-	message := "删除后无法恢复，为它保存的密码也会一并删除。"
+	message := locales.ProxyDeleteBody()
 	if used := a.proxyUsers(px.ID); len(used) > 0 {
-		message += fmt.Sprintf("\n\n%s 正在使用它，删除后这些主机改为直连。", hostNames(used))
+		message += locales.ProxyDeleteInUse(hostNames(used))
 	}
 	open := true
-	choice := ui.AlertDialog(c, &open, "删除代理 "+px.Name+"？", message, "删除", "取消")
+	choice := ui.AlertDialog(c, &open, locales.ProxyDeleteTitle(px.Name), message, locales.Delete(), locales.Cancel())
 	if choice == -1 && open {
 		return
 	}

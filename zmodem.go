@@ -16,6 +16,7 @@ import (
 
 	"serval/core/zmodem"
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -302,7 +303,7 @@ func (a *app) startZmodemUpload(t *tab, p *pane, z *zmodemConn, s *zmodemSession
 	if time.Since(s.started) > zmodemUploadPatience {
 		// rz 多半已经退出：不写任何东西，否则 ZMODEM 数据会被当成命令交给 shell。
 		z.finish(s, nil)
-		a.toast(ui.Toast{Title: "远程的 rz 已经不再等待", Description: "rz 只等 50 秒左右。请重新运行 rz 再选择文件。", Type: "error"})
+		a.toast(ui.Toast{Title: locales.ZmRzNotWaiting(), Description: locales.ZmRzWaitHint(), Type: "error"})
 		return
 	}
 	var files []zmodem.File
@@ -324,14 +325,14 @@ func (a *app) startZmodemUpload(t *tab, p *pane, z *zmodemConn, s *zmodemSession
 		})
 	}
 	if len(folders) > 0 {
-		a.toast(ui.Toast{Title: "rz 不能上传文件夹", Description: "已跳过 " + strings.Join(folders, "、") + "。", Type: "error"})
+		a.toast(ui.Toast{Title: locales.ZmRzNoFolders(), Description: locales.ZmSkippedNames(strings.Join(folders, locales.FileListSeparator())), Type: "error"})
 	}
 	if err != nil || len(files) == 0 {
 		// 告诉 rz 不传了，让它退出，回到命令提示符。
 		zmodem.Cancel(z.shell)
 		z.finish(s, nil)
 		if err != nil && !errors.Is(err, errZmodemDeclined) {
-			a.toast(ui.Toast{Title: "无法上传", Description: err.Error(), Type: "error"})
+			a.toast(ui.Toast{Title: locales.FileCannotUpload(), Description: err.Error(), Type: "error"})
 		}
 		return
 	}
@@ -436,38 +437,50 @@ func (a *app) askOnMain(ctx context.Context, choose func() (string, error)) (str
 
 // zmodemFinished 告诉用户传输的结果。
 func (a *app) zmodemFinished(kind zmodem.Kind, count int, skipped []string, dir string, err error) {
-	verb := "上传"
-	if kind == zmodem.Download {
-		verb = "接收"
-	}
 	switch {
 	case err == nil:
 		if count > 0 {
 			desc := ""
 			if dir != "" {
-				desc = "保存在 " + shortPath(dir)
+				desc = locales.ZmSavedIn(shortPath(dir))
 			}
-			a.toast(ui.Toast{Title: fmt.Sprintf("已%s %d 个文件", verb, count), Description: desc})
+			title := locales.ZmUploadedCount(count)
+			if kind == zmodem.Download {
+				title = locales.ZmReceivedCount(count)
+			}
+			a.toast(ui.Toast{Title: title, Description: desc})
 		}
 		if len(skipped) > 0 {
 			a.toast(ui.Toast{
-				Title:       "服务器上已有同名文件，已跳过",
-				Description: strings.Join(skipped, "、") + "。rz 默认不覆盖已有文件，要覆盖可以运行 rz -y。",
+				Title:       locales.ZmSkippedExistingTitle(),
+				Description: locales.ZmSkippedExistingHint(strings.Join(skipped, locales.FileListSeparator())),
 				Type:        "error",
 			})
 		}
 	case errors.Is(err, errZmodemDeclined):
 		// 用户在选择框里取消了，不用提示
 	case errors.Is(err, zmodem.ErrAbandon):
-		a.toast(ui.Toast{Title: "远程的 sz 已经不再等待", Description: "sz 只等 60 秒左右。请重新运行 sz。", Type: "error"})
+		a.toast(ui.Toast{Title: locales.ZmSzNotWaiting(), Description: locales.ZmSzWaitHint(), Type: "error"})
 	case errors.Is(err, zmodem.ErrCommandRefused):
-		a.toast(ui.Toast{Title: "已拒绝远程执行命令", Description: "对端要求在本机执行命令（ZMODEM 的 ZCOMMAND），Serval 不支持这项功能。", Type: "error"})
+		a.toast(ui.Toast{Title: locales.ZmCommandRefused(), Description: locales.ZmCommandRefusedHint(), Type: "error"})
 	case errors.Is(err, zmodem.ErrCancelled):
-		a.toast(ui.Toast{Title: "已取消" + verb})
+		title := locales.ZmUploadCancelled()
+		if kind == zmodem.Download {
+			title = locales.ZmReceiveCancelled()
+		}
+		a.toast(ui.Toast{Title: title})
 	case errors.Is(err, zmodem.ErrTimeout):
-		a.toast(ui.Toast{Title: verb + "失败", Description: "远程长时间没有响应，传输已停止。", Type: "error"})
+		title := locales.ZmUploadFailed()
+		if kind == zmodem.Download {
+			title = locales.ZmReceiveFailed()
+		}
+		a.toast(ui.Toast{Title: title, Description: locales.ZmTimeout(), Type: "error"})
 	default:
-		a.toast(ui.Toast{Title: verb + "失败", Description: err.Error(), Type: "error"})
+		title := locales.ZmUploadFailed()
+		if kind == zmodem.Download {
+			title = locales.ZmReceiveFailed()
+		}
+		a.toast(ui.Toast{Title: title, Description: err.Error(), Type: "error"})
 	}
 }
 
@@ -518,7 +531,7 @@ func (s *localSink) Commit() error {
 			return err
 		}
 	}
-	return fmt.Errorf("%s 里同名文件太多", s.dir)
+	return fmt.Errorf("%s", locales.ZmTooManyNames(s.dir))
 }
 
 func (s *localSink) Abort() {
@@ -531,9 +544,9 @@ func (s *localSink) Abort() {
 func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 	tr := p.zmodem
 	theme := c.Theme()
-	verb, icon := "正在通过 rz 上传", "arrow-up"
+	verb, icon := locales.ZmUploading(), "arrow-up"
 	if tr.kind == zmodem.Download {
-		verb, icon = "正在通过 sz 接收", "arrow-down"
+		verb, icon = locales.ZmReceiving(), "arrow-down"
 	}
 	name := ""
 	if n := tr.name.Load(); n != nil {
@@ -554,8 +567,8 @@ func (a *app) zmodemBar(c *ui.Context, colors design.Colors, p *pane) {
 				ui.Text(c, fmt.Sprintf("%s / %s", formatSize(done), formatSize(total))).
 					TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 			}
-			ui.ButtonBase(c).Key("cancelZmodem").Label("取消传输").Shrink(0).Tooltip("也可以在终端里按 Ctrl+C").Children(func() {
-				ui.Text(c, "取消").TextColor(theme.Accent).FontWeight(600).NoWrap()
+			ui.ButtonBase(c).Key("cancelZmodem").Label(locales.ZmCancelTransfer()).Shrink(0).Tooltip(locales.ZmCancelHint()).Children(func() {
+				ui.Text(c, locales.Cancel()).TextColor(theme.Accent).FontWeight(600).NoWrap()
 			}).OnClick(tr.cancel)
 		})
 		ui.Box(c).Height(2).Draw(func(painter *ui.Painter, r ui.Rect) {
