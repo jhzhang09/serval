@@ -17,16 +17,17 @@ flowchart TB
         keys["keys<br/>私钥解析与生成"]
         hosts["hosts<br/>主机结构 · 链路解析"]
         totp["totp<br/>RFC 6238 验证码"]
+        syncer["syncer<br/>WebDAV 同步"]
     end
     mygo["MyGo：窗口、原生 UI、终端插件、玻璃插件、系统安全存储"]
     view --> state
     view --> design
-    state --> sshconn & vault & keys & hosts & totp
+    state --> sshconn & vault & keys & hosts & totp & syncer
     view --> mygo
     state --> mygo
 ```
 
-依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。目前这些 core 包互不引用，需要互相引用时只能单向，不能成环。
+依赖只能从上往下：core 包不能引用应用层、`design` 或 MyGo。core 包之间需要互相引用时只能单向，不能成环。`syncer` 不引用其他 core 包，只通过 `Merge` / `Bytes` 接口使用保险库。
 
 ## 分层职责
 
@@ -63,6 +64,10 @@ flowchart TB
 - `hosts.Host`：主机记录（包括密码）。`ResolveRoute` 把 `ProxyJump` 展开成跳板机链路，处理名称引用、`[user@]host[:port]` 写法、环路和级数上限。
 - `hosts.Forward`：端口转发规则。监听地址空着时只使用 127.0.0.1。
 
+### core/syncer
+
+下载远端 `vault.json`，调用保险库的 `Merge`，再用 ETag（`If-Match` / `If-None-Match`）上传。空设备的新文件不能合并进另一份保险库，这时用 `Vault.Adopt` 整份换上。WebDAV 只用 GET、PUT 和 PROPFIND。地址规范、冲突重试和断网错误都在这一层，应用层负责何时触发、把密码放进系统安全存储。
+
 ### 应用层（package main）
 
 | 文件 | 职责 |
@@ -70,13 +75,14 @@ flowchart TB
 | `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
 | `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
 | `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
+| `sync.go`、`syncdir.go` | WebDAV 同步的触发，以及同步文件夹：本地写入后导出、轮询合并、冲突副本确认后删除。密码只进出系统安全存储，文件夹路径在本机设置 |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
 | `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
 | `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |
 | `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
 | `forwardpanel.go` | 端口转发面板：规则的增删改、手动启停；绑定主机的规则随连接自动开启 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
-| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
+| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观、终端、同步、已知主机）、本机最近使用主机记录 |
 | `sessionlog.go` | 远程终端输出的纯文本会话日志；开关和目录在本机 `device.json`，默认关闭 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `files.go`、`folderupload.go`、`dragout.go`、`dualpane.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面、抽屉里的本机栏；系统文件选择框接线 |

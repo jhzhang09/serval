@@ -88,6 +88,14 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
+	// SyncURL 是 WebDAV 上 vault.json 的地址，或它所在的目录。密码不在这里。
+	SyncURL string `json:"syncURL,omitempty"`
+	// SyncUser 是 WebDAV 账号。密码在系统安全存储的 sync-password。
+	SyncUser string `json:"syncUser,omitempty"`
+	// SyncOn 为真时，解锁后、本地修改后和每隔几分钟会同步。
+	SyncOn bool `json:"syncOn,omitempty"`
+	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
+	SyncDir string `json:"syncDir,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
@@ -134,6 +142,7 @@ type settingsTab int
 const (
 	settingsTabGeneral settingsTab = iota
 	settingsTabTerminal
+	settingsTabSync
 )
 
 // settingsPanel 是“设置”浮层面板的状态。
@@ -156,6 +165,26 @@ type settingsPanel struct {
 	// revealChangePw 让刚展开的修改主密码表单滚动到可见位置（设置项在滚动区域里，表单可能在下方）。
 	revealChangePw bool
 	restoreSession bool
+
+	// 同步页的草稿。密码只在点保存时写入系统安全存储，空着表示保留已有密码。
+	syncURL, syncUser, syncPassword string
+	syncOn                          bool
+	probeBusy                       bool
+	probeOK                         bool
+	probeMsg                        string
+	// askSyncMerge 在已有数据的设备第一次开启同步时弹出合并说明。allowMerge 是用户确认之后。
+	askSyncMerge bool
+	allowMerge   bool
+}
+
+// restorePanel 是空设备“从同步恢复”的面板。
+type restorePanel struct {
+	open, fresh bool
+	url         string
+	user        string
+	password    string
+	busy        bool
+	err         string
 }
 
 // openSettings 打开设置面板。
@@ -166,6 +195,9 @@ func (a *app) openSettings() {
 		rememberDevice: a.isRememberedOnDevice(),
 		restoreSession: !a.local.DisableRestoreSession,
 		sessionLog:     a.local.SessionLog,
+		syncURL:        a.local.SyncURL,
+		syncUser:       a.local.SyncUser,
+		syncOn:         a.local.SyncOn,
 	}
 }
 
@@ -305,6 +337,7 @@ func (a *app) submitChangePassword() {
 			default:
 				p.changePwOpen = false
 				p.currentPassword, p.newPassword, p.confirmPassword, p.changePwErr = "", "", "", ""
+				a.noteVaultChanged()
 				a.toast(ui.Toast{Title: "已修改主密码"})
 			}
 		})
@@ -314,7 +347,7 @@ func (a *app) submitChangePassword() {
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	if !p.open || a.setup.open {
+	if !p.open || a.setup.open || a.restore.open {
 		return
 	}
 	t := c.Theme()
@@ -348,7 +381,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, "设置").FontSize(design.TextHeading).FontWeight(600).Grow(1)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
-				ui.Segmented(c, &tabIdx, "通用", "终端").OnChange(func() {
+				ui.Segmented(c, &tabIdx, "通用", "终端", "同步").OnChange(func() {
 					p.tab = settingsTab(tabIdx)
 				})
 			})
@@ -481,6 +514,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						a.knownHostsSection(c, colors)
 						return
 					}
+					if p.tab == settingsTabSync {
+						a.syncSettingsSection(c, colors)
+						return
+					}
 					ui.Field(c, "终端字号", func() {
 						c.Key("settingsFontSize")
 						ui.Segmented(c, &sizeIdx, fontSizeLabels...).OnChange(func() {
@@ -535,6 +572,72 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	})
 	if !p.open {
 		a.settingsPanel = settingsPanel{}
+	}
+}
+
+// syncSettingsSection 是设置里的“同步”页。地址和账号写在本机，密码只在保存时进系统安全存储。
+func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	ui.Field(c, "服务地址", func() {
+		c.Key("syncURL")
+		ui.TextInput(c, &p.syncURL).Placeholder("https://example.com/remote/")
+	}).Description("填目录或 vault.json 的地址。账号和密码不要写在地址里。")
+	ui.Field(c, "账号", func() {
+		c.Key("syncUser")
+		ui.TextInput(c, &p.syncUser).Placeholder("可选")
+	})
+	ui.Field(c, "同步密码", func() {
+		c.Key("syncPassword")
+		ui.TextInput(c, &p.syncPassword).Password().Placeholder("留空则保留已保存的密码")
+	}).Description("密码只放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
+	c.Key("syncEnabled")
+	ui.Checkbox(c, &p.syncOn, "启用同步")
+	hint := "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。"
+	if a.vault != nil && a.vault.Empty() {
+		hint = "这台设备还没有数据。要下载另一台设备上的保险库，用侧栏的“从同步恢复”。"
+	}
+	ui.Text(c, hint).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	ui.Divider(c)
+	dirLabel := "未选择文件夹"
+	if a.local.SyncDir != "" {
+		dirLabel = a.local.SyncDir
+	}
+	ui.Field(c, "同步文件夹", func() {
+		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
+	}).Description("把保险库副本放进 iCloud Drive、Dropbox 或 Syncthing 的文件夹。文件仍然是加密的。")
+	ui.Row(c).Gap(8).Children(func() {
+		ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
+		if a.local.SyncDir != "" {
+			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
+				if err := a.setSyncDir(""); err != nil {
+					p.err = err.Error()
+				}
+			})
+		}
+	})
+	ui.Row(c).Gap(8).Children(func() {
+		label := "测试连接"
+		if p.probeBusy {
+			label = "正在测试连接"
+		}
+		ui.Button(c, label).Key("syncTest").Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
+		ui.PrimaryButton(c, "保存同步设置").Key("syncSave").OnClick(a.saveSyncSettings)
+	})
+	if p.probeMsg != "" {
+		col := c.Theme().TextMuted
+		if !p.probeOK {
+			col = colors.Danger
+		}
+		ui.Text(c, p.probeMsg).Key("syncProbe").FontSize(design.TextSmall).TextColor(col).Selectable()
+	}
+	switch {
+	case a.syncing:
+		ui.Text(c, "正在同步…").Key("syncProgress").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	case !a.lastSync.IsZero():
+		ui.Text(c, "上次同步 "+formatSyncTime(a.lastSync)).Key("syncLast").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	}
+	if a.syncErr != "" {
+		ui.Text(c, a.syncErr).Key("syncError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 	}
 }
 

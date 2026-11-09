@@ -2,6 +2,7 @@ package vault
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,5 +224,87 @@ func TestMergeRejectsOtherVault(t *testing.T) {
 	data, _ := other.Bytes()
 	if _, err := a.Merge(data); err != ErrDifferentVault {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestAdoptReplacesEmptyVaultOnly(t *testing.T) {
+	empty, emptyPath := newVault(t)
+	if !empty.Empty() {
+		t.Fatal("新保险库应为空")
+	}
+	src, _ := newVault(t)
+	if err := src.Protect(password); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Put("host", "h", []byte(`{"name":"web"}`)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := src.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := empty.Adopt(raw); err != nil {
+		t.Fatal(err)
+	}
+	if empty.Empty() || empty.State() != Locked || empty.ID() != src.ID() {
+		t.Fatalf("state=%v empty=%v id=%s want %s", empty.State(), empty.Empty(), empty.ID(), src.ID())
+	}
+	again, err := Open(emptyPath, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := again.Unlock(password); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := again.Get("h"); err != nil || !ok {
+		t.Fatalf("恢复后应有记录 ok=%v err=%v", ok, err)
+	}
+	if err := again.Put("host", "local", []byte(`{"name":"local"}`)); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := newVault(t)
+	if err := other.Protect(password); err != nil {
+		t.Fatal(err)
+	}
+	body, err := other.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := again.Adopt(body); !errors.Is(err, ErrNotEmpty) {
+		t.Fatalf("应拒绝覆盖，得到 %v", err)
+	}
+	if _, ok, _ := again.Get("h"); !ok {
+		t.Fatal("拒绝覆盖后原记录还在")
+	}
+	if err := again.Adopt([]byte("{")); err == nil {
+		t.Fatal("损坏文件应失败")
+	}
+	if _, ok, _ := again.Get("local"); !ok {
+		t.Fatal("损坏文件不应改动本地")
+	}
+
+	fresh, _ := newVault(t)
+	plain, _ := newVault(t)
+	if err := plain.Put("host", "p", []byte(`{"name":"plain"}`)); err != nil {
+		t.Fatal(err)
+	}
+	plainBody, err := plain.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Adopt(plainBody); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.State() != Unprotected {
+		t.Fatalf("未加密文件换上后应仍未加密: %v", fresh.State())
+	}
+	if _, ok, _ := fresh.Get("p"); !ok {
+		t.Fatal("未加密的保险库应直接可读")
+	}
+	if err := fresh.Adopt([]byte(`{"format":99,"vaultId":"x","records":[]}`)); err == nil {
+		t.Fatal("更高的格式应拒绝")
+	}
+	if _, ok, _ := fresh.Get("p"); !ok {
+		t.Fatal("拒绝新格式后原记录还在")
 	}
 }

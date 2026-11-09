@@ -90,8 +90,11 @@ func main() {
 		a.post = win.Update
 		a.idleTime = mygo.Power.IdleTime
 		a.startAutoLock()
+		a.onVaultReady()
 		win.OnClosed(func() {
 			stop()
+			a.stopSyncLoop()
+			a.stopSyncDir()
 			a.closeAll()
 		})
 	})

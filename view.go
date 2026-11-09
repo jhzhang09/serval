@@ -65,6 +65,9 @@ func (a *app) view(c *ui.Context) {
 	a.keysDialog(c, colors)
 	a.snippetsDialog(c, colors)
 	a.settingsDialog(c, colors)
+	a.restoreDialog(c, colors)
+	a.syncMergeDialog(c)
+	a.syncConflictDialog(c)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)
 	a.uploadConfirmDialog(c)
@@ -294,7 +297,47 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				ui.Icon(c, design.Icon("settings")).FontSize(14).TextColor(t.TextMuted)
 				ui.Text(c, "设置").TextColor(t.TextMuted)
 			}).OnClick(a.openSettings)
+			a.syncStatus(c, colors)
 		})
+	})
+}
+
+// syncStatus 在侧栏底部放一个不占终端宽度的状态。没开同步时不显示。
+func (a *app) syncStatus(c *ui.Context, colors design.Colors) {
+	if !a.syncConfigured() && a.syncErr == "" && !a.syncing {
+		return
+	}
+	caption := "等待同步"
+	tip := "已开启同步，还没有成功对齐过"
+	icon := "cloud"
+	color := c.Theme().TextMuted
+	switch {
+	case a.syncing:
+		caption = "正在同步"
+		tip = "正在与同步服务对齐"
+		icon = "refresh-cw"
+	case a.syncErr != "":
+		caption = "同步失败"
+		tip = a.syncErr
+		icon = "cloud-off"
+		color = colors.Danger
+	case !a.lastSync.IsZero():
+		caption = "同步正常"
+		tip = "上次同步 " + formatSyncTime(a.lastSync)
+	}
+	row := ui.ButtonBase(c).Key("syncStatus").Label("同步状态").Tooltip(tip).Height(30).Padding(0, 10).Gap(8).
+		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+	if row.Hovered() {
+		row.Background(colors.Hover)
+	}
+	row.Children(func() {
+		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
+		ui.Text(c, caption).FontSize(design.TextSmall).TextColor(color).SingleLine()
+	}).OnClick(func() {
+		if !a.settingsPanel.open {
+			a.openSettings()
+		}
+		a.settingsPanel.tab = settingsTabSync
 	})
 }
 
@@ -304,6 +347,9 @@ func (a *app) sidebarEmpty(c *ui.Context) {
 		ui.Text(c, "还没有主机").FontWeight(600)
 		ui.Text(c, "添加一台主机开始使用。私钥可以在下面的“密钥”里添加。").
 			FontSize(design.TextSmall).TextColor(t.TextMuted)
+		if a.vault != nil && a.vault.Empty() {
+			ui.Button(c, "从同步恢复").Key("restoreOpen").OnClick(a.openRestore)
+		}
 	})
 }
 
