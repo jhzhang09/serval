@@ -101,6 +101,12 @@ type app struct {
 	chooseUploadFiles func() ([]string, error)
 	chooseFolder      func() (string, error)
 	chooseSavePath    func(defaultName string) (string, error)
+	// chooseLogDir 选会话日志存放的文件夹。和 sz 的选择框分开，标题不能混用。
+	chooseLogDir func() (string, error)
+	// sessionLogNoted 避免每个输出包都弹出同一次写入失败。
+	sessionLogNoted bool
+	// sessionLogPicking 表示文件夹选择框还开着，忽略重复点击。
+	sessionLogPicking bool
 	// pendingUploads 是等待确认替换远端同名文件的上传，一次拖进多个文件时逐个询问。
 	pendingUploads []*pendingUpload
 	// pendingFolders 是等用户决定如何处理同名文件的文件夹上传。
@@ -216,6 +222,8 @@ type pane struct {
 	// zconn 位于 shell 和终端之间，处理 rz/sz；zmodem 是正在进行的 rz/sz 传输，界面显示进度。
 	zconn  *zmodemConn
 	zmodem *zmodemTransfer
+	// log 记录这个窗格的远程输出。本地窗格没有字节流，文件保持关闭。
+	log *sessionLog
 
 	searchOpen  bool
 	searchQuery string
@@ -871,6 +879,14 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 		z = newZmodemConn(shell, func(s *zmodemSession) {
 			a.post(func() { a.startZmodem(t, p, z, s) })
 		})
+		z.onOutput = func(b []byte) {
+			if p.log == nil {
+				return
+			}
+			if err := p.log.write(b); err != nil {
+				a.post(a.noteSessionLogError)
+			}
+		}
 		opts.Conn = z
 		p.zconn = z
 	}
@@ -879,13 +895,14 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 
 func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
 	a.nextID++
-	p := &pane{id: a.nextID}
+	p := &pane{id: a.nextID, log: &sessionLog{}}
 	term, err := a.createTerminal(t, p, shell)
 	if err != nil {
 		return nil, err
 	}
 	p.term = term
 	p.shell = shell
+	a.ensureSessionLog(t, p)
 	return p, nil
 }
 
@@ -1100,6 +1117,9 @@ func (a *app) closeFocused(t *tab) {
 		}
 	})
 	a.saveSessionLayout()
+	if closing.log != nil {
+		closing.log.close()
+	}
 	term := closing.term
 	go term.Close()
 }
@@ -1130,7 +1150,12 @@ func (t *tab) close() {
 	if t.stop != nil {
 		t.stop()
 	}
-	t.root.each(func(p *pane) { p.term.Close() })
+	t.root.each(func(p *pane) {
+		if p.log != nil {
+			p.log.close()
+		}
+		p.term.Close()
+	})
 	if t.files != nil {
 		t.files.Close()
 	}

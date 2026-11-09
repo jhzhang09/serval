@@ -34,6 +34,13 @@ func installSystemDialogs(a *app) {
 		}
 		return paths[0], nil
 	}
+	a.chooseLogDir = func() (string, error) {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择会话日志文件夹", DefaultPath: home, ButtonLabel: "记录到这里", Directory: true, CreateDirectories: true})
+		if err != nil || len(paths) == 0 {
+			return "", err
+		}
+		return paths[0], nil
+	}
 	a.chooseSavePath = func(defaultName string) (string, error) {
 		dir := downloadsDir(home)
 		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "下载到", DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: "保存", CreateDirectories: true})

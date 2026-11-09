@@ -81,6 +81,9 @@ type deviceSettings struct {
 	AutoLockMinutes int `json:"autoLockMinutes,omitempty"`
 	// DisableRestoreSession 为真时不在启动时恢复上次会话。
 	DisableRestoreSession bool `json:"disableRestoreSession,omitempty"`
+	// SessionLog 为真时把远程终端输出写到 SessionLogDir。默认关闭。路径只属于这台机器。
+	SessionLog    bool   `json:"sessionLog,omitempty"`
+	SessionLogDir string `json:"sessionLogDir,omitempty"`
 	// SavedSession 是本机退出时保存的标签与窗格布局。
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
@@ -140,6 +143,7 @@ type settingsPanel struct {
 	err         string
 
 	rememberDevice bool
+	sessionLog     bool
 
 	// 修改主密码表单
 	changePwOpen    bool
@@ -161,6 +165,7 @@ func (a *app) openSettings() {
 		fresh:          true,
 		rememberDevice: a.isRememberedOnDevice(),
 		restoreSession: !a.local.DisableRestoreSession,
+		sessionLog:     a.local.SessionLog,
 	}
 }
 
@@ -388,6 +393,23 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								}
 							}
 						}).Description("退出时记住当前打开的主机和窗格拆分，下次启动时自动恢复（仅保存在本机）。")
+
+						ui.Field(c, "会话日志", func() {
+							c.Key("settingsSessionLog")
+							ui.Checkbox(c, &p.sessionLog, "记录终端输出").OnChange(func() {
+								a.setSessionLog(p.sessionLog)
+							})
+							ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+								ui.Button(c, "选择日志文件夹").Key("settingsLogDir").OnClick(func() {
+									a.pickSessionLogDir(false)
+								})
+								pathText := a.local.SessionLogDir
+								if pathText == "" {
+									pathText = "还没有选择"
+								}
+								ui.Text(c, pathText).TextColor(t.TextMuted).FontSize(design.TextSmall).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							})
+						}).Description("默认关闭。只记录远程会话的输出，存成纯文本并去掉颜色和控制字符。文件在所选文件夹里，不进保险库。本机终端不记录。")
 
 						if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
 							ui.Field(c, "记住主密码", func() {

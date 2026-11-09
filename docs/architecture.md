@@ -74,6 +74,7 @@ flowchart TB
 | `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观切换、已知主机管理等）、本机最近使用主机记录 |
+| `sessionlog.go` | 远程终端输出的纯文本会话日志；开关和目录在本机 `device.json`，默认关闭 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
