@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pkg/sftp"
 )
@@ -225,4 +227,104 @@ func (f *Files) RemoveDirectory(remotePath string) error {
 // Chmod 修改远程文件或目录的权限。
 func (f *Files) Chmod(remotePath string, mode fs.FileMode) error {
 	return f.client.Chmod(remotePath, mode)
+}
+
+// 编辑器读写文本时用的哨兵错误。界面负责把它们说成用户能照做的话。
+var (
+	// ErrFileTooLarge 表示文件比调用方给的上限大，没有把内容读进内存。
+	ErrFileTooLarge = errors.New("文件太大")
+	// ErrNotText 表示内容含有 NUL 或不是合法 UTF-8，不适合当文本编辑。
+	ErrNotText = errors.New("不是文本文件")
+	// ErrRemoteChanged 表示保存前发现远端大小或修改时间和打开时不一致。
+	ErrRemoteChanged = errors.New("远程文件已变化")
+)
+
+// Stat 返回远程路径的大小、修改时间和权限，不跟随符号链接。
+func (f *Files) Stat(remotePath string) (size int64, mod time.Time, mode fs.FileMode, err error) {
+	info, err := f.client.Lstat(remotePath)
+	if err != nil {
+		return 0, time.Time{}, 0, fmt.Errorf("读取 %s 失败: %w", remotePath, err)
+	}
+	return info.Size(), info.ModTime(), info.Mode(), nil
+}
+
+// ReadLimited 读取一个普通文本文件。size 大于 limit 时不读正文。
+// 符号链接、目录和其他特殊文件直接拒绝，避免改到链接背后的目标。
+func (f *Files) ReadLimited(ctx context.Context, remotePath string, limit int64) (data []byte, mod time.Time, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	info, err := f.client.Lstat(remotePath)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("读取 %s 失败: %w", remotePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, time.Time{}, errors.New("只能编辑普通文件")
+	}
+	if info.Size() > limit {
+		return nil, info.ModTime(), ErrFileTooLarge
+	}
+	src, err := f.client.Open(remotePath)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("打开远程文件失败: %w", err)
+	}
+	defer src.Close()
+	buf := make([]byte, info.Size())
+	read := 0
+	for read < len(buf) {
+		if err = ctx.Err(); err != nil {
+			return nil, time.Time{}, err
+		}
+		n, readErr := src.Read(buf[read:])
+		read += n
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, time.Time{}, fmt.Errorf("读取远程文件失败: %w", readErr)
+		}
+	}
+	data = buf[:read]
+	if int64(len(data)) != info.Size() {
+		return nil, time.Time{}, errors.New("读取文件时大小变了，请再试一次")
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return nil, time.Time{}, ErrNotText
+	}
+	return data, info.ModTime(), nil
+}
+
+// WriteFile 把 data 写回一个普通文本文件。
+// force 为 false 时，远端大小或修改时间（精确到秒）和打开时不一致就返回 ErrRemoteChanged，不写入。
+func (f *Files) WriteFile(ctx context.Context, remotePath string, data []byte, expectSize, expectUnix int64, force bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return ErrNotText
+	}
+	info, err := f.client.Lstat(remotePath)
+	if err != nil {
+		return fmt.Errorf("读取远程文件失败: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("远程路径已经不是普通文件，没有保存")
+	}
+	if !force && (info.Size() != expectSize || info.ModTime().Unix() != expectUnix) {
+		return ErrRemoteChanged
+	}
+	tmp, err := os.CreateTemp("", "serval-edit-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err = tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	return f.Upload(ctx, tmpName, remotePath, nil)
 }

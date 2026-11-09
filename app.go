@@ -79,6 +79,8 @@ type app struct {
 
 	fileOp     fileOpState
 	fileDelete *fileDeleteState
+	// editor 是正在编辑的远端文本。锁定保险库时清空，避免内存里留下文件内容。
+	editor editorState
 
 	auth authSheet
 	form hostForm
@@ -323,6 +325,7 @@ func (a *app) lockVault() {
 	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
+	a.editor = editorState{}
 	a.toast(ui.Toast{Title: "保险库已锁定"})
 }
 
@@ -1175,6 +1178,16 @@ func (a *app) closeFocused(t *tab) {
 func (a *app) closeTab(t *tab) {
 	i := slices.Index(a.tabs, t)
 	if i < 0 {
+		return
+	}
+	// 这个标签下还开着有未保存修改的文件时，先确认放弃修改，确认后再关标签；
+	// 直接关会把编辑器里没保存的内容悄悄丢掉。确认框开着期间不再重复触发。
+	if a.editor.open && a.editor.tab == t && a.editor.dirty {
+		if a.editor.askDiscard {
+			return
+		}
+		a.editor.askDiscard = true
+		a.editor.closeAfterDiscard = t
 		return
 	}
 	a.dropTabBroadcast(t)
