@@ -51,6 +51,10 @@ type zmodemConn struct {
 	// onOutput 在写给终端显示的数据写进管道之后调用，参数只在回调返回前有效。
 	// 在读取 goroutine 上、并且正拿着 wmu：只能做短的写文件，不能再拿 zmodem 的锁。
 	onOutput func([]byte)
+	// onInput 在键盘输入成功写进 shell 之后调用，参数只在回调返回前有效。
+	// 在终端的输入 goroutine 上调用，应该尽快返回，不能读界面状态。
+	// 传输进行中不调用：那些字节没有写进 shell。
+	onInput func([]byte)
 
 	// wmu 保证写终端的顺序（读取 goroutine 平时写、会话结束时交还数据），持有期间可能阻塞在终端读取上。
 	// mu 只保护会话状态，持有期间绝不做阻塞的写：终端在读输出时会把应答（比如光标位置）写回 Conn，
@@ -97,7 +101,12 @@ func (z *zmodemConn) Write(p []byte) (int, error) {
 	}
 	z.mu.Unlock()
 	if s == nil {
-		return z.shell.Write(p)
+		n, err := z.shell.Write(p)
+		// 终端应答和用户按键走同一个 Write。应答不通知 onInput，避免广播到其他机器。
+		if err == nil && n == len(p) && n > 0 && z.onInput != nil && !isTerminalReply(p) {
+			z.onInput(p)
+		}
+		return n, err
 	}
 	if cancel != nil && bytes.IndexByte(p, 0x03) >= 0 {
 		cancel()
