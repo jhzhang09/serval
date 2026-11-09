@@ -689,8 +689,37 @@ func chip(c *ui.Context, text string, fg, bg ui.Color) ui.Element {
 func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 	a.ensureFiles(t)
 	a.followCwd(t)
-	// 两栏并排，宽度一次定死。终端只收到一次尺寸变化，不能把宽度做成动画。
-	drawer := raised(ui.Column(c).Key("drawer").Width(560).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	if a.filesWidth <= 0 {
+		a.filesWidth = 560
+	}
+	if a.filesSplit <= 0 {
+		a.filesSplit = 50
+	}
+	// 终端与文件抽屉之间的拖动分隔条：负外边距贴在两张卡片之间的空隙里，不改变卡片间距；
+	// 拖动改变抽屉宽度，双击恢复默认宽度。
+	grip := ui.Box(c).Key("drawerResize").Width(8).Shrink(0).Margin(design.Gap/2, -4).
+		Cursor(ui.CursorResizeEW).Focusable().Label("调整文件抽屉宽度")
+	dx, _, held := grip.Dragged()
+	windowWidth, _ := c.Size()
+	maxW := max(float32(320), windowWidth-360)
+	switch {
+	case grip.DoubleClicked():
+		a.filesWidth = 560
+	case held && dx != 0:
+		a.filesWidth = min(max(a.filesWidth-dx, 320), maxW)
+	case grip.Shortcut(0, ui.KeyLeft):
+		a.filesWidth = min(a.filesWidth+20, maxW)
+	case grip.Shortcut(0, ui.KeyRight):
+		a.filesWidth = max(a.filesWidth-20, 320)
+	}
+	if held || grip.Hovered() {
+		accent := c.Theme().Accent
+		grip.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X + r.W/2 - 0.5, Y: r.Y + 8, W: 1, H: max(0, r.H-16)}, accent, 0)
+		})
+	}
+	// 两栏并排，支持拖动调整抽屉总宽和内部左右栏比例；不做宽度动画，避免终端连续收到几十次 SIGWINCH。
+	drawer := raised(ui.Column(c).Key("drawer").Width(a.filesWidth).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	// 抽屉的宽度一步到位，终端只改一次尺寸；内容从右侧滑入。
 	// 之前用 Collapse 让宽度从 0 长大，会让终端逐帧改尺寸，已改掉。
 	drawer.Transition(design.SlideIn(18)).Children(func() {
@@ -711,11 +740,12 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 			}
 		}
 		a.ensureLocalList()
-		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+		c.Key("filesSplit")
+		ui.SplitPercent(c, &a.filesSplit, func() {
 			a.localColumn(c, colors, t)
-			ui.Box(c).Width(1).Shrink(0).Background(colors.Hairline)
+		}, func() {
 			a.remoteColumn(c, colors, t)
-		})
+		}).Grow(1).MinHeight(0).SplitReset(50)
 		if len(t.transfers) > 0 {
 			ui.Divider(c)
 			a.transferQueueView(c, colors, t)

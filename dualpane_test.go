@@ -125,13 +125,13 @@ func TestDualPaneColumnsStretchAndScroll(t *testing.T) {
 		t.Fatalf("两栏顶部标签位置异常（未贴齐抽屉顶部）: Y=%v", localHeader.Y)
 	}
 
-	localTitle, ok := h.tt.Find(filepath.Base(h.a.localDir))
+	localTitle, ok := h.tt.Find(drawerPath(filepath.ToSlash(h.a.localDir)))
 	if !ok {
-		t.Fatal("找不到本地目录名")
+		t.Fatalf("找不到本地路径标题 %q: %q", drawerPath(filepath.ToSlash(h.a.localDir)), h.tt.Texts())
 	}
-	filesTitle, ok := h.tt.Find("many")
+	filesTitle, ok := h.tt.Find(drawerPath(tb.dir))
 	if !ok {
-		t.Fatal("找不到远端目录名")
+		t.Fatalf("找不到远端路径标题 %q: %q", drawerPath(tb.dir), h.tt.Texts())
 	}
 	if localTitle.Y != filesTitle.Y {
 		t.Fatalf("左右目录标题未水平对齐: localTitle.Y=%v filesTitle.Y=%v", localTitle.Y, filesTitle.Y)
@@ -161,6 +161,34 @@ func TestDualPaneColumnsStretchAndScroll(t *testing.T) {
 	}
 	if r39.Y < filesTitle.Y+filesTitle.H || r39.Y+r39.H > 720 {
 		t.Fatalf("底部文件不在远端栏可视范围内: r39=%+v", r39)
+	}
+
+	// 拖动终端与文件抽屉之间的分隔条，验证抽屉总宽度可以左右调整。
+	resizeGrip, ok := h.tt.Find("调整文件抽屉宽度")
+	if !ok {
+		t.Fatal("找不到 调整文件抽屉宽度")
+	}
+	gx, gy := resizeGrip.X+resizeGrip.W/2, resizeGrip.Y+resizeGrip.H/2
+	h.tt.Press(gx, gy)
+	h.tt.Move(gx-80, gy)
+	h.tt.Release(gx-80, gy)
+	h.tt.Frame()
+	if h.a.filesWidth <= 560 {
+		t.Fatalf("向左拖动后抽屉宽度应增大: filesWidth=%v", h.a.filesWidth)
+	}
+
+	// 拖动抽屉内部左右栏之间的分隔线，验证本地栏与远程栏比例可左右调整。
+	remoteAfter, ok := h.tt.Find("远程")
+	if !ok {
+		t.Fatal("找不到远程标题")
+	}
+	midX, midY := remoteAfter.X-14, remoteAfter.Y+100
+	h.tt.Press(midX, midY)
+	h.tt.Move(midX-60, midY)
+	h.tt.Release(midX-60, midY)
+	h.tt.Frame()
+	if h.a.filesSplit >= 50 {
+		t.Fatalf("向左拖动内部拆分线后本地栏比例应减小: filesSplit=%v", h.a.filesSplit)
 	}
 }
 

@@ -75,6 +75,9 @@ type app struct {
 
 	sidebarOpen bool
 	filesOpen   bool
+	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
+	filesWidth float32
+	filesSplit float32
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
 	hostFilter string
 
@@ -291,6 +294,8 @@ type pane struct {
 func newApp() *app {
 	a := &app{
 		sidebarOpen: true,
+		filesWidth:  560,
+		filesSplit:  50,
 		connecting:  map[string]context.CancelFunc{},
 		arrived:     map[int]bool{},
 		tunnels:     map[string]*liveTunnel{},

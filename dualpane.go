@@ -141,9 +141,17 @@ func (a *app) acceptPaneDrop(t *tab, destLocal bool, destDir string, item paneDr
 	a.runTransfer(t, transferDownload, item.path, local, item.name, true)
 }
 
+// drawerPath 返回文件抽屉标题栏显示的路径；路径过长时保留末尾层级，避免右端截断遮住当前目录名。
+func drawerPath(p string) string {
+	if len(p) <= 38 {
+		return p
+	}
+	return shortPath(p)
+}
+
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	col := ui.Column(c).Key("localPane").Basis(0).Grow(1).MinWidth(0).MinHeight(0)
+	col := ui.Column(c).Key("localPane").Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, true, a.localDir, item)
 	}
@@ -151,19 +159,22 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 		col.Background(theme.Accent.Alpha(0.08))
 	}
 	col.Children(func() {
-		ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Padding(8, 14, 0, 14)
-		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
-			name := filepath.Base(a.localDir)
-			if a.localDir == "" || name == "." {
-				name = "本机"
-			}
-			ui.Text(c, name).Key("localTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(a.localDir)
+		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
 			parent := filepath.Dir(a.localDir)
 			iconButton(c, colors, "arrow-up", "本地上一级", func() { a.openLocal(parent) }).
 				Disabled(a.localDir == "" || parent == a.localDir)
 			iconButton(c, colors, "refresh-cw", "刷新本地", func() { a.openLocal(a.localDir) }).
 				Disabled(a.localDir == "")
+		})
+		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+			title := drawerPath(filepath.ToSlash(a.localDir))
+			if a.localDir == "" || a.localDir == "." {
+				title = "本机"
+			}
+			ui.Text(c, title).Key("localTitle").FontSize(design.TextSmall).FontWeight(600).
+				Grow(1).MinWidth(0).SingleLine().Tooltip(a.localDir)
 		})
 		if a.localErr != "" {
 			ui.Text(c, a.localErr).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
@@ -211,7 +222,7 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 
 func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	col := ui.Column(c).Key("remotePane").Basis(0).Grow(1).MinWidth(0).MinHeight(0)
+	col := ui.Column(c).Key("remotePane").Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, false, t.dir, item)
 	}
@@ -219,19 +230,22 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 		col.Background(theme.Accent.Alpha(0.08))
 	}
 	col.Children(func() {
-		ui.Text(c, "远程").FontSize(design.TextSmall).TextColor(theme.TextMuted).Padding(8, 14, 0, 14)
-		ui.Row(c).Height(36).Shrink(0).Padding(0, 6, 0, 14).Gap(2).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
-			name := path.Base(t.dir)
-			if t.dir == "" {
-				name = "文件"
-			}
-			ui.Text(c, name).Key("filesTitle").FontWeight(600).Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
+		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "远程").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
 			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
+		})
+		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+			title := drawerPath(t.dir)
+			if t.dir == "" {
+				title = "文件"
+			}
+			ui.Text(c, title).Key("filesTitle").FontSize(design.TextSmall).FontWeight(600).
+				Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
 		})
 		if t.filesError != "" {
 			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
