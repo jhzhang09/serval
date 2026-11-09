@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"serval/internal/devsshd"
@@ -23,11 +22,12 @@ func TestDownloadTreeCopiesFilesAndSkipsLinks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "sub", "b.txt"), []byte("bbb"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	wantSkipped := 1
 	if err := os.Symlink(filepath.Join(remote, "a.txt"), filepath.Join(remote, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(remote, "pipe"), 0o644); err != nil {
-		t.Fatal(err)
+	if makeFIFO(t, filepath.Join(remote, "pipe")) {
+		wantSkipped++
 	}
 
 	server := startServer(t, devsshd.Options{})
@@ -39,12 +39,12 @@ func TestDownloadTreeCopiesFilesAndSkipsLinks(t *testing.T) {
 	defer files.Close()
 
 	local := filepath.Join(t.TempDir(), "pack")
-	skipped, err := files.DownloadTree(context.Background(), remote, local, nil)
+	skipped, err := files.DownloadTree(context.Background(), filepath.ToSlash(remote), local, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 2 {
-		t.Fatalf("应跳过符号链接和管道，skipped=%d", skipped)
+	if skipped != wantSkipped {
+		t.Fatalf("应跳过符号链接和管道，skipped=%d want=%d", skipped, wantSkipped)
 	}
 	if got := readLocal(t, filepath.Join(local, "a.txt")); got != "aaa" {
 		t.Fatalf("a.txt = %q", got)
