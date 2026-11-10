@@ -494,6 +494,16 @@ func (msgs Messages) Connect() string {
 	return Catalog.Format(msgs.locale, "connect", nil)
 }
 
+// ConnectNewTab says "在新标签页中打开"
+// in the language the app shows.
+func ConnectNewTab() string { return In(i18n.Locale()).ConnectNewTab() }
+
+// ConnectNewTab says "在新标签页中打开"
+// in the language of msgs.
+func (msgs Messages) ConnectNewTab() string {
+	return Catalog.Format(msgs.locale, "connectNewTab", nil)
+}
+
 // Delete says "删除"
 // in the language the app shows.
 func Delete() string { return In(i18n.Locale()).Delete() }
@@ -712,6 +722,26 @@ func PaletteNewLocalTerminal() string { return In(i18n.Locale()).PaletteNewLocal
 // in the language of msgs.
 func (msgs Messages) PaletteNewLocalTerminal() string {
 	return Catalog.Format(msgs.locale, "paletteNewLocalTerminal", nil)
+}
+
+// PaletteDuplicateTab says "复制当前标签页"
+// in the language the app shows.
+func PaletteDuplicateTab() string { return In(i18n.Locale()).PaletteDuplicateTab() }
+
+// PaletteDuplicateTab says "复制当前标签页"
+// in the language of msgs.
+func (msgs Messages) PaletteDuplicateTab() string {
+	return Catalog.Format(msgs.locale, "paletteDuplicateTab", nil)
+}
+
+// PaletteCloseOtherTabs says "关闭其他标签页"
+// in the language the app shows.
+func PaletteCloseOtherTabs() string { return In(i18n.Locale()).PaletteCloseOtherTabs() }
+
+// PaletteCloseOtherTabs says "关闭其他标签页"
+// in the language of msgs.
+func (msgs Messages) PaletteCloseOtherTabs() string {
+	return Catalog.Format(msgs.locale, "paletteCloseOtherTabs", nil)
 }
 
 // PaletteNotFound says "没有找到“{query}”"
@@ -1264,6 +1294,46 @@ func ViewCloseTab(name string) string { return In(i18n.Locale()).ViewCloseTab(na
 // in the language of msgs.
 func (msgs Messages) ViewCloseTab(name string) string {
 	return Catalog.Format(msgs.locale, "viewCloseTab", map[string]any{"name": name})
+}
+
+// ViewTabDuplicate says "复制标签页"
+// in the language the app shows.
+func ViewTabDuplicate() string { return In(i18n.Locale()).ViewTabDuplicate() }
+
+// ViewTabDuplicate says "复制标签页"
+// in the language of msgs.
+func (msgs Messages) ViewTabDuplicate() string {
+	return Catalog.Format(msgs.locale, "viewTabDuplicate", nil)
+}
+
+// ViewTabCloseOther says "关闭其他标签页"
+// in the language the app shows.
+func ViewTabCloseOther() string { return In(i18n.Locale()).ViewTabCloseOther() }
+
+// ViewTabCloseOther says "关闭其他标签页"
+// in the language of msgs.
+func (msgs Messages) ViewTabCloseOther() string {
+	return Catalog.Format(msgs.locale, "viewTabCloseOther", nil)
+}
+
+// ViewTabCloseRight says "关闭右侧标签页"
+// in the language the app shows.
+func ViewTabCloseRight() string { return In(i18n.Locale()).ViewTabCloseRight() }
+
+// ViewTabCloseRight says "关闭右侧标签页"
+// in the language of msgs.
+func (msgs Messages) ViewTabCloseRight() string {
+	return Catalog.Format(msgs.locale, "viewTabCloseRight", nil)
+}
+
+// ViewTabCloseAll says "关闭全部标签页"
+// in the language the app shows.
+func ViewTabCloseAll() string { return In(i18n.Locale()).ViewTabCloseAll() }
+
+// ViewTabCloseAll says "关闭全部标签页"
+// in the language of msgs.
+func (msgs Messages) ViewTabCloseAll() string {
+	return Catalog.Format(msgs.locale, "viewTabCloseAll", nil)
 }
 
 // ViewConnectHost says "连接一台主机"

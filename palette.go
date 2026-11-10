@@ -190,10 +190,14 @@ func (a *app) paletteItems(query string) []paletteItem {
 		}
 	}
 	if t := a.current(); t != nil {
+		action("terminal", locales.PaletteDuplicateTab(), func() { a.duplicateTab(t) })
 		action("search", locales.PaletteFindInTerminal(), func() { a.openSearch(t) })
 		action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
 		action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
 		action("x", locales.PaletteClosePane(), func() { a.closeFocused(t) })
+		if len(a.tabs) > 1 {
+			action("x", locales.PaletteCloseOtherTabs(), func() { a.closeOtherTabs(t) })
+		}
 	}
 	if a.broadcastOn {
 		action("radio", "关闭广播", a.toggleBroadcast)

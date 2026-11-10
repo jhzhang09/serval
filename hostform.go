@@ -329,6 +329,9 @@ func (a *app) hostMenu(h hosts.Host) func(m *ui.Menu) {
 		if m.Item(locales.Connect()).Chosen() {
 			a.open(h)
 		}
+		if m.Item(locales.ConnectNewTab()).Chosen() {
+			a.connect(h, nil)
+		}
 		if m.Item(locales.Edit()).Chosen() {
 			a.openEdit(h)
 		}

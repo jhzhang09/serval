@@ -457,6 +457,34 @@ func tabLabel(t *tab) string {
 	return t.host.Name
 }
 
+// tabMenu 是标签页右键菜单，提供复制标签页和关闭等快捷操作。
+func (a *app) tabMenu(t *tab) func(m *ui.Menu) {
+	return func(m *ui.Menu) {
+		if m.Item(locales.ViewTabDuplicate()).Chosen() {
+			a.duplicateTab(t)
+		}
+		m.Separator()
+		if m.Item(locales.ViewCloseTab(tabLabel(t))).Chosen() {
+			a.closeTab(t)
+		}
+		if len(a.tabs) > 1 {
+			if m.Item(locales.ViewTabCloseOther()).Chosen() {
+				a.closeOtherTabs(t)
+			}
+			idx := slices.Index(a.tabs, t)
+			if idx >= 0 && idx < len(a.tabs)-1 {
+				if m.Item(locales.ViewTabCloseRight()).Chosen() {
+					a.closeTabsToRight(t)
+				}
+			}
+			m.Separator()
+			if m.Item(locales.ViewTabCloseAll()).Danger().Chosen() {
+				a.closeAllTabs()
+			}
+		}
+	}
+}
+
 func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 	theme := c.Theme()
 	selected := i == a.active
@@ -465,7 +493,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
 	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
 		Height(28).MinWidth(36).MaxWidth(200).Shrink(1).Padding(0, 10).Gap(8).AlignItems(ui.Center).
-		Radius(design.RadiusRow).Transition(design.Hover)
+		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t))
 	hovered := item.Hovered()
 	if !selected && hovered {
 		item.Background(colors.Hover)
@@ -615,8 +643,14 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		cols, rows := p.term.Size()
 		compact, tiny := cols < 70, cols < 50
 
-		design.CoatView(c, t.host.ID, t.host.Production, 14)
-		ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
+		multiPane := t.root.leaves() > 1
+		if multiPane {
+			design.CoatView(c, t.host.ID, t.host.Production, 14)
+			ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
+		} else {
+			// 单窗格时主机名已在上方标签页清晰显示，此处仅展示主机专属斑纹，避免信息冗余
+			design.CoatView(c, t.host.ID, t.host.Production, 14)
+		}
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {
 			if dir := p.term.Dir(); dir != "" {

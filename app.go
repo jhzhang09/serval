@@ -1217,6 +1217,50 @@ func (a *app) closeFocused(t *tab) {
 	go term.Close()
 }
 
+// duplicateTab 复制标签页：若为本地终端则新建本地终端，若为远程主机则开启新的连接会话。
+func (a *app) duplicateTab(t *tab) {
+	if t == nil {
+		return
+	}
+	if t.local {
+		a.openLocalTerminal()
+		return
+	}
+	a.connect(t.host, nil)
+}
+
+// closeOtherTabs 关闭除了指定标签页之外的所有标签页。
+func (a *app) closeOtherTabs(keep *tab) {
+	if keep == nil {
+		return
+	}
+	// 倒序关闭其他标签页
+	for i := len(a.tabs) - 1; i >= 0; i-- {
+		t := a.tabs[i]
+		if t != keep {
+			a.closeTab(t)
+		}
+	}
+}
+
+// closeTabsToRight 关闭指定标签页右侧的所有标签页。
+func (a *app) closeTabsToRight(from *tab) {
+	idx := slices.Index(a.tabs, from)
+	if idx < 0 || idx >= len(a.tabs)-1 {
+		return
+	}
+	for i := len(a.tabs) - 1; i > idx; i-- {
+		a.closeTab(a.tabs[i])
+	}
+}
+
+// closeAllTabs 关闭所有标签页。
+func (a *app) closeAllTabs() {
+	for len(a.tabs) > 0 {
+		a.closeTab(a.tabs[len(a.tabs)-1])
+	}
+}
+
 func (a *app) closeTab(t *tab) {
 	i := slices.Index(a.tabs, t)
 	if i < 0 {
