@@ -458,3 +458,42 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+func TestWebDAVRetryOn502AndStreamError(t *testing.T) {
+	var count int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		if count == 1 {
+			// 第一次返回 502 Bad Gateway
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("bad gateway"))
+			return
+		}
+		// 第二次返回正常
+		w.Header().Set("ETag", `"v1"`)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"vault":"test"}`))
+	}))
+	defer ts.Close()
+
+	c := &Client{
+		URL:  ts.URL + "/vault.json",
+		HTTP: ts.Client(),
+	}
+
+	// Probe 应在重试后成功
+	count = 0
+	if err := c.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe 遇到 502 后重试应该成功，得到: %v", err)
+	}
+
+	// Download 应在重试后成功
+	count = 0
+	data, etag, err := c.Download(context.Background())
+	if err != nil {
+		t.Fatalf("Download 遇到 502 后重试应该成功，得到: %v", err)
+	}
+	if string(data) != `{"vault":"test"}` || etag != `"v1"` {
+		t.Fatalf("Download 得到非预期数据: %s, etag: %s", string(data), etag)
+	}
+}

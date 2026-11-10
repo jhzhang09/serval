@@ -573,3 +573,23 @@ func TestSyncS3SettingsUIAndManualTrigger(t *testing.T) {
 		t.Fatal("清除后配置应为空")
 	}
 }
+
+func TestSyncUserMessageNoDoublePrefix(t *testing.T) {
+	err1 := fmt.Errorf("%w: 没有读完响应", syncer.ErrUnavailable)
+	msg1 := syncUserMessage(err1)
+	if strings.Contains(msg1, "连不上同步服务: 连不上同步服务:") {
+		t.Fatalf("出现重复前缀: %s", msg1)
+	}
+	if msg1 != "连不上同步服务: 没有读完响应" {
+		t.Fatalf("期望 '连不上同步服务: 没有读完响应'，得到 %s", msg1)
+	}
+
+	err2 := fmt.Errorf("%w: 测试连接时服务器返回了 502", syncer.ErrUnavailable)
+	msg2 := syncUserMessage(err2)
+	if strings.Contains(msg2, "连不上同步服务: 连不上同步服务:") {
+		t.Fatalf("出现重复前缀: %s", msg2)
+	}
+	if msg2 != "连不上同步服务: 测试连接时服务器返回了 502" {
+		t.Fatalf("期望 '连不上同步服务: 测试连接时服务器返回了 502'，得到 %s", msg2)
+	}
+}

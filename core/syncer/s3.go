@@ -208,54 +208,100 @@ func (c *S3Client) objectURL() (*url.URL, error) {
 
 // Probe 测试 S3 服务与认证可用性。
 func (c *S3Client) Probe(ctx context.Context) error {
-	resp, err := c.do(ctx, http.MethodHead, nil, nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNotFound:
-		return nil
-	default:
-		if err := classifyS3(resp.StatusCode); err != nil {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: 测试 S3 连接时返回了 %d", ErrUnavailable, resp.StatusCode)
+		resp, err := c.do(ctx, http.MethodHead, nil, nil)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return err
+		}
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusNotFound:
+			return nil
+		default:
+			if isTransientHTTPStatus(resp.StatusCode) {
+				lastErr = fmt.Errorf("%w: 测试 S3 连接时返回了 %d", ErrUnavailable, resp.StatusCode)
+				continue
+			}
+			if err := classifyS3(resp.StatusCode); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: 测试 S3 连接时返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
 	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ErrUnavailable
 }
 
 // Download 下载保险库文件。
 func (c *S3Client) Download(ctx context.Context) ([]byte, string, error) {
-	resp, err := c.do(ctx, http.MethodGet, nil, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
+			return nil, "", err
+		}
+		resp, err := c.do(ctx, http.MethodGet, nil, nil)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return nil, "", err
+		}
 
-	if resp.StatusCode == http.StatusNotFound {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", ErrNotFound
-	}
-	if err := classifyS3(resp.StatusCode); err != nil {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", fmt.Errorf("%w: 下载保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
-	}
+		if resp.StatusCode == http.StatusNotFound {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", ErrNotFound
+		}
+		if isTransientHTTPStatus(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("%w: 下载保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
+			continue
+		}
+		if err := classifyS3(resp.StatusCode); err != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", err
+		}
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", fmt.Errorf("%w: 下载保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
 
-	body, err := readLimited(resp.Body)
-	if err != nil {
-		return nil, "", err
-	}
+		body, err := readLimited(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return nil, "", err
+		}
 
-	etag := cleanETag(resp.Header.Get("ETag"))
-	if etag == "" {
-		return nil, "", ErrNoETag
+		etag := cleanETag(resp.Header.Get("ETag"))
+		if etag == "" {
+			return nil, "", ErrNoETag
+		}
+		return body, etag, nil
 	}
-	return body, etag, nil
+	if lastErr != nil {
+		return nil, "", lastErr
+	}
+	return nil, "", ErrUnavailable
 }
 
 // Upload 上传保险库文件。
@@ -269,24 +315,42 @@ func (c *S3Client) Upload(ctx context.Context, body []byte, ifMatch string) (str
 		headers["If-Match"] = quoteETag(ifMatch)
 	}
 
-	resp, err := c.do(ctx, http.MethodPut, body, headers)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-		return cleanETag(resp.Header.Get("ETag")), nil
-	case http.StatusPreconditionFailed:
-		return "", ErrConflict
-	default:
-		if err := classifyS3(resp.StatusCode); err != nil {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
 			return "", err
 		}
-		return "", fmt.Errorf("%w: 上传保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
+		resp, err := c.do(ctx, http.MethodPut, body, headers)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return "", err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+			return cleanETag(resp.Header.Get("ETag")), nil
+		case http.StatusPreconditionFailed:
+			return "", ErrConflict
+		default:
+			if isTransientHTTPStatus(resp.StatusCode) {
+				lastErr = fmt.Errorf("%w: 上传保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
+				continue
+			}
+			if err := classifyS3(resp.StatusCode); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("%w: 上传保险库时返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
 	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", ErrUnavailable
 }
 
 func cleanETag(s string) string {

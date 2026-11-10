@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 )
 
 const maxVaultBytes = 32 << 20
@@ -115,58 +116,108 @@ func strongETag(s string) string {
 
 // Probe 检查账号能否访问这个地址。文件还不存在也算连上了，因为新设备第一次同步时远端就是空的。
 func (c *Client) Probe(ctx context.Context) error {
-	resp, err := c.do(ctx, http.MethodGet, nil, nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNotFound:
-		return nil
-	default:
-		if err := classify(resp.StatusCode); err != nil {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+		resp, err := c.do(ctx, http.MethodGet, nil, nil)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusNotFound:
+			return nil
+		default:
+			if isTransientHTTPStatus(resp.StatusCode) {
+				lastErr = fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+				continue
+			}
+			if err := classify(resp.StatusCode); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
 	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ErrUnavailable
 }
 
 // Download 读取远端文件。404 返回 ErrNotFound。
 func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
-	resp, err := c.do(ctx, http.MethodGet, nil, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", ErrNotFound
-	}
-	if err := classify(resp.StatusCode); err != nil {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", fmt.Errorf("%w: 读取保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
-	}
-	body, err := readLimited(resp.Body)
-	if err != nil {
-		return nil, "", err
-	}
-	etag := strongETag(resp.Header.Get("ETag"))
-	if etag == "" {
-		raw, err := c.propfindETag(ctx)
-		if err != nil {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
 			return nil, "", err
 		}
-		etag = strongETag(raw)
+		resp, err := c.do(ctx, http.MethodGet, nil, nil)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return nil, "", err
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", ErrNotFound
+		}
+		if isTransientHTTPStatus(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("%w: 读取保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+			continue
+		}
+		if err := classify(resp.StatusCode); err != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", err
+		}
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, "", fmt.Errorf("%w: 读取保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
+
+		body, err := readLimited(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return nil, "", err
+		}
+
+		etag := strongETag(resp.Header.Get("ETag"))
+		if etag == "" {
+			raw, err := c.propfindETag(ctx)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			etag = strongETag(raw)
+		}
+		if etag == "" {
+			return nil, "", ErrNoETag
+		}
+		return body, etag, nil
 	}
-	if etag == "" {
-		return nil, "", ErrNoETag
+	if lastErr != nil {
+		return nil, "", lastErr
 	}
-	return body, etag, nil
+	return nil, "", ErrUnavailable
 }
 
 // Upload 上传保险库。ifMatch 为空时要求远端还没有文件。
@@ -178,44 +229,86 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 	} else {
 		headers["If-Match"] = match
 	}
-	resp, err := c.do(ctx, http.MethodPut, bytes.NewReader(body), headers)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-		return strongETag(resp.Header.Get("ETag")), nil
-	case http.StatusPreconditionFailed:
-		return "", ErrConflict
-	default:
-		if err := classify(resp.StatusCode); err != nil {
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
 			return "", err
 		}
-		return "", fmt.Errorf("%w: 上传保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+		resp, err := c.do(ctx, http.MethodPut, bytes.NewReader(body), headers)
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return "", err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+			return strongETag(resp.Header.Get("ETag")), nil
+		case http.StatusPreconditionFailed:
+			return "", ErrConflict
+		default:
+			if isTransientHTTPStatus(resp.StatusCode) {
+				lastErr = fmt.Errorf("%w: 上传保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+				continue
+			}
+			if err := classify(resp.StatusCode); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("%w: 上传保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+		}
 	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", ErrUnavailable
 }
 
 func (c *Client) propfindETag(ctx context.Context) (string, error) {
 	const body = `<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`
-	resp, err := c.do(ctx, "PROPFIND", strings.NewReader(body), map[string]string{
-		"Depth":        "0",
-		"Content-Type": "application/xml",
-	})
-	if err != nil {
-		return "", err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := retryBackoff(ctx, attempt); err != nil {
+			return "", err
+		}
+		resp, err := c.do(ctx, "PROPFIND", strings.NewReader(body), map[string]string{
+			"Depth":        "0",
+			"Content-Type": "application/xml",
+		})
+		if err != nil {
+			lastErr = err
+			if isTransientErr(err) {
+				continue
+			}
+			return "", err
+		}
+		if isTransientHTTPStatus(resp.StatusCode) {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("%w: 查询文件信息时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode != http.StatusMultiStatus && resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return "", nil
+		}
+		payload, err := readLimited(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return etagFromPropfind(payload), nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusMultiStatus && resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		return "", nil
+	if lastErr != nil {
+		return "", lastErr
 	}
-	payload, err := readLimited(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return etagFromPropfind(payload), nil
+	return "", nil
 }
 
 func etagFromPropfind(payload []byte) string {
@@ -285,4 +378,37 @@ func readLimited(r io.Reader) ([]byte, error) {
 		return nil, errors.New("远端的保险库文件过大，已中止同步")
 	}
 	return b, nil
+}
+
+func isTransientHTTPStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusTooManyRequests,
+		520, 521, 522, 523, 524: // 常见反向代理或网盘服务瞬态故障码
+		return true
+	default:
+		return false
+	}
+}
+
+func isTransientErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	return true
+}
+
+func retryBackoff(ctx context.Context, attempt int) error {
+	if attempt <= 0 {
+		return nil
+	}
+	delay := time.Duration(attempt) * 250 * time.Millisecond
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
 }

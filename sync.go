@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -619,7 +618,11 @@ func syncUserMessage(err error) string {
 	case errors.Is(err, syncer.ErrAuth):
 		return "同步账号或密码不正确。"
 	case errors.Is(err, syncer.ErrUnavailable):
-		return fmt.Sprintf("连不上同步服务: %v", err)
+		s := err.Error()
+		if !strings.HasPrefix(s, "连不上同步服务") {
+			s = "连不上同步服务: " + s
+		}
+		return s
 	case errors.Is(err, syncer.ErrConflict):
 		return "同步时和其他设备改到了一起，请稍后再试。"
 	case errors.Is(err, syncer.ErrNoFolder):
