@@ -444,6 +444,13 @@ func TestS3SyncIntegration(t *testing.T) {
 	h.a.openSettings()
 	h.tt.Frame()
 	h.a.settingsPanel.tab = settingsTabSync
+	h.a.settingsPanel.syncKind = "S3 兼容存储"
+	h.a.settingsPanel.s3Endpoint = ts.URL
+	h.a.settingsPanel.s3Region = "auto"
+	h.a.settingsPanel.s3Bucket = "serval-test-bucket"
+	h.a.settingsPanel.s3AccessID = "AKIAIOSFODNN7EXAMPLE"
+	h.a.settingsPanel.s3Secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	h.a.settingsPanel.syncSubDir = ""
 	h.a.settingsPanel.syncURL = s3URL
 	h.a.settingsPanel.syncUser = "AKIAIOSFODNN7EXAMPLE"
 	h.a.settingsPanel.syncPassword = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -456,9 +463,13 @@ func TestS3SyncIntegration(t *testing.T) {
 	})
 
 	// 2. 保存 S3 同步设置并触发合并
-	h.click("保存同步设置")
+	if box, ok := h.tt.Find("存储桶 (Bucket)"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
+	h.click("保存配置")
 	h.tt.Frame()
-	if h.tt.HasText("合并并同步") {
+	if h.tt.HasText("与已有数据合并？") {
 		h.click("合并并同步")
 		h.tt.Frame()
 	}

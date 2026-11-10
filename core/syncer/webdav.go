@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/xml"
@@ -24,10 +25,11 @@ var defaultHTTPClient = &http.Client{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		// 彻底禁用 HTTP/2，强制使用成熟稳定的 HTTP/1.1。
-		// 避免 Cloudflare / AList 代理云盘时频繁发生 HTTP/2 stream error (INTERNAL_ERROR) 与 502 网关重置。
-		ForceAttemptHTTP2: false,
-		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		// 彻底禁用 HTTP/2 与传输层自动压缩，强制使用成熟稳定的 HTTP/1.1。
+		// 避免 Cloudflare / AList / OpenList 代理云盘时因二次压缩、Content-Length 失配导致 HTTP/2 stream error、4096 字节截断或 502 网关重置。
+		ForceAttemptHTTP2:  false,
+		DisableCompression: true,
+		TLSNextProto:       make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
@@ -140,8 +142,11 @@ func strongETag(s string) string {
 }
 
 // Probe 检查账号能否访问这个地址。文件还不存在也算连上了，因为新设备第一次同步时远端就是空的。
+// 优先使用 PROPFIND (Depth: 0) 仅探测元数据，避免触发网盘后端流式拉取与半途掐流；若服务端不支持 PROPFIND 再回退到 GET。
 func (c *Client) Probe(ctx context.Context) error {
+	const propBody = `<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`
 	var lastErr error
+	useGet := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			c.closeIdle()
@@ -149,7 +154,18 @@ func (c *Client) Probe(ctx context.Context) error {
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return err
 		}
-		resp, err := c.do(ctx, http.MethodGet, nil, nil)
+		var (
+			resp *http.Response
+			err  error
+		)
+		if !useGet {
+			resp, err = c.do(ctx, "PROPFIND", strings.NewReader(propBody), map[string]string{
+				"Depth":        "0",
+				"Content-Type": "application/xml",
+			})
+		} else {
+			resp, err = c.do(ctx, http.MethodGet, nil, nil)
+		}
 		if err != nil {
 			lastErr = err
 			if isTransientErr(err) {
@@ -157,12 +173,19 @@ func (c *Client) Probe(ctx context.Context) error {
 			}
 			return err
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxVaultBytes))
 		resp.Body.Close()
 
 		switch resp.StatusCode {
-		case http.StatusOK, http.StatusNotFound:
+		case http.StatusOK, http.StatusMultiStatus, http.StatusNotFound:
 			return nil
+		case http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusBadRequest:
+			if !useGet {
+				useGet = true
+				attempt--
+				continue
+			}
+			return fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
 		default:
 			if isTransientHTTPStatus(resp.StatusCode) {
 				lastErr = fmt.Errorf("%w: 测试连接时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
@@ -183,7 +206,7 @@ func (c *Client) Probe(ctx context.Context) error {
 // Download 读取远端文件。404 返回 ErrNotFound。
 func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		if attempt > 0 {
 			c.closeIdle()
 		}
@@ -253,7 +276,18 @@ func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 
 // Upload 上传保险库。ifMatch 为空时要求远端还没有文件。
 func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (string, error) {
-	headers := map[string]string{"Content-Type": "application/json"}
+	uploadBody := body
+	contentType := "application/json"
+	// 对远端 WebDAV 服务（非本地回环测试服务），上传前预先进行 Gzip 压缩并以二进制流发送：
+	// 避免夸克网盘等上游 CDN 在下载 .json 明文时动态二次压缩，导致 AList/OpenList 的 Content-Length 校验失配而截断在 4096 字节或报 502。
+	if !isLoopbackURL(c.URL) && !isGzipBytes(body) {
+		if compressed, err := compressGzip(body); err == nil {
+			uploadBody = compressed
+			contentType = "application/octet-stream"
+		}
+	}
+
+	headers := map[string]string{"Content-Type": contentType}
 	match := strongETag(ifMatch)
 	if match == "" {
 		headers["If-None-Match"] = "*"
@@ -265,11 +299,12 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			c.closeIdle()
+			c.cleanupStaleTemp(ctx)
 		}
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return "", err
 		}
-		resp, err := c.do(ctx, http.MethodPut, bytes.NewReader(body), headers)
+		resp, err := c.do(ctx, http.MethodPut, bytes.NewReader(uploadBody), headers)
 		if err != nil {
 			lastErr = err
 			if isTransientErr(err) {
@@ -286,10 +321,6 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 		case http.StatusPreconditionFailed:
 			return "", ErrConflict
 		case http.StatusConflict:
-			// 409 Conflict 通常表示父级目录不存在，尝试自动创建父目录并重试
-			if c.ensureParentDir(ctx) == nil {
-				continue
-			}
 			return "", ErrNoFolder
 		default:
 			if isTransientHTTPStatus(resp.StatusCode) {
@@ -438,13 +469,79 @@ func readLimited(r io.Reader) ([]byte, error) {
 	if len(b) > maxVaultBytes {
 		return nil, errors.New("远端的保险库文件过大，已中止同步")
 	}
+
+	// 透明解开可能存在的 Gzip 压缩层（包括反代叠加的多层 Gzip 包装）
+	for isGzipBytes(b) {
+		zr, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			return nil, fmt.Errorf("%w: 解压远端数据失败 (%v)", ErrUnavailable, err)
+		}
+		decompressed, err := io.ReadAll(io.LimitReader(zr, maxVaultBytes+1))
+		_ = zr.Close()
+		if err != nil {
+			return nil, fmt.Errorf("%w: 解压远端数据失败 (%v)", ErrUnavailable, err)
+		}
+		if len(decompressed) > maxVaultBytes {
+			return nil, errors.New("远端的保险库文件解压后过大，已中止同步")
+		}
+		b = decompressed
+	}
+
 	return b, nil
+}
+
+func isGzipBytes(b []byte) bool {
+	return len(b) >= 2 && b[0] == 0x1f && b[1] == 0x8b
+}
+
+func compressGzip(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+// cleanupStaleTemp 清理 AList / 网盘在上传发生 504/重试时遗留的临时冲突文件（如 vault.json.openlist_to_delete）。
+func (c *Client) cleanupStaleTemp(ctx context.Context) {
+	tempURL := strings.TrimSuffix(c.URL, "vault.json") + "vault.json.openlist_to_delete"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, tempURL, nil)
+	if err != nil {
+		return
+	}
+	if c.User != "" || c.Password != "" {
+		req.SetBasicAuth(c.User, c.Password)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	hc := c.HTTP
+	if hc == nil {
+		hc = defaultHTTPClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 }
 
 func isTransientHTTPStatus(code int) bool {
 	switch code {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusTooManyRequests,
-		520, 521, 522, 523, 524: // 常见反向代理或网盘服务瞬态故障码
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusTooManyRequests,
+		520, 521, 522, 523, 524: // 常见反向代理或网盘服务瞬态故障码（含网盘落盘异步冲突导致的瞬态 500）
 		return true
 	default:
 		return false
@@ -465,8 +562,8 @@ func retryBackoff(ctx context.Context, attempt int) error {
 	if attempt <= 0 {
 		return nil
 	}
-	// 网盘服务在写入后有短暂落盘延迟，且 502 冷启动需要退避时间
-	delay := time.Duration(attempt) * 1000 * time.Millisecond
+	// 网盘服务在写入后有短暂落盘延迟，且 502/504/500 网盘中间件恢复需要退避时间
+	delay := time.Duration(attempt) * 1500 * time.Millisecond
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

@@ -267,7 +267,7 @@ func (a *app) openSettings() {
 				server := strings.TrimSuffix(p.syncURL, "/"+p.syncSubDir+"/vault.json")
 				p.webdavServer = strings.TrimSuffix(server, "/vault.json")
 			} else {
-				p.syncSubDir = "serval"
+				p.syncSubDir = ""
 				p.webdavServer = strings.TrimSuffix(p.syncURL, "/vault.json")
 			}
 		}
