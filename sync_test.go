@@ -168,14 +168,15 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	h.tt.Frame()
 	h.click("同步")
 	h.tt.Frame()
-	if !h.tt.HasText("服务地址") || !h.tt.HasText("同步密码") {
+	if !h.tt.HasText("WebDAV 服务器地址") || !h.tt.HasText("WebDAV 密码") {
 		t.Fatalf("同步页没有打开: %q", h.tt.Texts())
 	}
-	h.a.settingsPanel.syncURL = srv.URL
-	h.a.settingsPanel.syncUser = "alice"
-	h.a.settingsPanel.syncPassword = "wrong-password"
+	h.a.settingsPanel.webdavServer = srv.URL
+	h.a.settingsPanel.webdavUser = "alice"
+	h.a.settingsPanel.webdavPassword = "wrong-password"
+	h.a.settingsPanel.syncSubDir = ""
 	h.tt.Frame()
-	h.click("启用同步")
+	h.click("自动同步")
 	h.tt.Frame()
 	if !h.a.settingsPanel.syncOn {
 		t.Fatal("勾选后应启用同步")
@@ -183,12 +184,12 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	h.click("测试连接")
 	h.pump("错误密码的测试结果", func() bool { return h.tt.HasText("同步账号或密码不正确。") })
 
-	h.a.settingsPanel.syncPassword = pass
+	h.a.settingsPanel.webdavPassword = pass
 	h.tt.Frame()
 	h.click("测试连接")
 	h.pump("正确密码的测试结果", func() bool { return h.tt.HasText("可以连接。") })
 
-	h.click("保存同步设置")
+	h.click("保存配置")
 	h.tt.Frame()
 	if !h.tt.HasText("与已有数据合并？") {
 		t.Fatalf("已有数据时应先说明合并，而不是覆盖: %q", h.tt.Texts())
@@ -198,11 +199,11 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	if h.a.local.SyncOn {
 		t.Fatal("取消后不应开启同步")
 	}
-	h.click("保存同步设置")
+	h.click("保存配置")
 	h.tt.Frame()
 	h.click("合并并同步")
 	h.tt.Frame()
-	if h.a.settingsPanel.syncPassword != "" {
+	if h.a.settingsPanel.webdavPassword != "" {
 		t.Fatal("保存后应清掉表单里的密码")
 	}
 	if !h.a.local.SyncOn || !strings.HasSuffix(h.a.local.SyncURL, "/vault.json") || h.a.local.SyncUser != "alice" {
@@ -234,10 +235,10 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	if !h.a.settingsPanel.open || h.a.settingsPanel.tab != settingsTabSync {
 		t.Fatalf("点状态图标应打开同步页: open=%v tab=%d", h.a.settingsPanel.open, h.a.settingsPanel.tab)
 	}
-	if h.a.settingsPanel.syncPassword != "" {
+	if h.a.settingsPanel.webdavPassword != "" {
 		t.Fatal("再次打开时不应把已存密码填回输入框")
 	}
-	h.click("保存同步设置")
+	h.click("保存配置")
 	h.tt.Frame()
 	got, err = h.device.Get(syncSecretName)
 	if err != nil || string(got) != pass {
@@ -245,9 +246,9 @@ func TestSyncSettingsSaveProbeAndStatus(t *testing.T) {
 	}
 	h.pump("再次同步结束", func() bool { return !h.a.syncing && h.tt.HasText("同步正常") })
 
-	h.click("启用同步")
+	h.click("自动同步")
 	h.tt.Frame()
-	h.click("保存同步设置")
+	h.click("保存配置")
 	h.tt.Frame()
 	if h.a.local.SyncOn || h.a.syncLoopStop != nil {
 		t.Fatal("取消启用后应停用同步")
@@ -381,15 +382,17 @@ func TestSyncJoinMergesBothSides(t *testing.T) {
 	h.tt.Frame()
 	h.click("同步")
 	h.tt.Frame()
-	h.a.settingsPanel.syncURL = srv.URL
-	h.a.settingsPanel.syncUser = "alice"
-	h.a.settingsPanel.syncPassword = "merge-secret"
+	h.a.settingsPanel.webdavServer = srv.URL
+	h.a.settingsPanel.webdavUser = "alice"
+	h.a.settingsPanel.webdavPassword = "merge-secret"
+	h.a.settingsPanel.syncSubDir = ""
 	h.tt.Frame()
-	h.click("启用同步")
+	h.click("自动同步")
 	h.tt.Frame()
-	h.click("保存同步设置")
+	h.click("保存配置")
 	h.tt.Frame()
 	h.click("合并并同步")
+	h.tt.Frame()
 	h.pump("两边合并", func() bool {
 		return h.tt.HasText("local-box") && h.tt.HasText("remote-box") && remoteHasHost(t, dir, h.a.vault.Key(), "local-box") && remoteHasHost(t, dir, h.a.vault.Key(), "remote-box")
 	})
@@ -505,5 +508,64 @@ func TestS3SyncIntegration(t *testing.T) {
 	})
 	if h2.a.vault.ID() != h.a.vault.ID() {
 		t.Fatalf("应换上远端保险库 id=%s want %s", h2.a.vault.ID(), h.a.vault.ID())
+	}
+}
+
+func TestSyncS3SettingsUIAndManualTrigger(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() {
+		h.a.stopSyncLoop()
+	})
+	h.tt.Frame()
+	h.click("设置")
+	h.tt.Frame()
+	h.click("同步")
+	h.tt.Frame()
+
+	// 切换为 S3 兼容存储
+	h.a.settingsPanel.syncKind = "S3 兼容存储"
+	h.tt.Frame()
+	if !h.tt.HasText("存储桶 (Bucket)") || !h.tt.HasText("Access Key ID") {
+		t.Fatalf("S3 表单项没有正常展示: %q", h.tt.Texts())
+	}
+
+	h.a.settingsPanel.syncVendor = "AWS S3"
+	h.a.settingsPanel.s3Region = "us-east-1"
+	h.a.settingsPanel.s3Bucket = "my-backup"
+	h.a.settingsPanel.s3AccessID = "AKIA123456"
+	h.a.settingsPanel.s3Secret = "SECRET987654"
+	h.a.settingsPanel.syncSubDir = "serval"
+	h.tt.Frame()
+	h.click("自动同步")
+	h.tt.Frame()
+	h.click("保存配置")
+	h.tt.Frame()
+	if !h.tt.HasText("与已有数据合并？") {
+		t.Fatalf("应弹出合并确认: %q", h.tt.Texts())
+	}
+	h.click("合并并同步")
+	h.tt.Frame()
+
+	if !h.a.local.SyncOn {
+		t.Fatal("保存后 SyncOn 应为 true")
+	}
+	if h.a.local.SyncKind != "S3 兼容存储" {
+		t.Fatalf("保存后 SyncKind=%q", h.a.local.SyncKind)
+	}
+	if !strings.HasPrefix(h.a.local.SyncURL, "s3://") {
+		t.Fatalf("保存后 SyncURL 应为 s3:// 开头: %q", h.a.local.SyncURL)
+	}
+	if h.a.local.SyncUser != "AKIA123456" {
+		t.Fatalf("保存后 SyncUser=%q", h.a.local.SyncUser)
+	}
+	if !h.tt.HasText("上传到云端") || !h.tt.HasText("从云端下载") {
+		t.Fatalf("已配置同步时应展示手动上传和下载按钮: %q", h.tt.Texts())
+	}
+
+	// 测试清除配置
+	h.click("清除配置")
+	h.tt.Frame()
+	if h.a.local.SyncOn || h.a.local.SyncURL != "" {
+		t.Fatal("清除后配置应为空")
 	}
 }

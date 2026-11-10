@@ -2,7 +2,10 @@ package main
 
 import (
 	"errors"
+	"net/url"
+	"path"
 	"slices"
+	"strings"
 
 	"serval/core/syncer"
 	"serval/core/vault"
@@ -101,10 +104,16 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
-	// SyncURL 是 WebDAV 上 vault.json 的地址，或它所在的目录。密码不在这里。
+	// SyncKind 为同步提供商类型："webdav"、"s3"、空（根据 SyncURL 自动识别）
+	SyncKind string `json:"syncKind,omitempty"`
+	// SyncURL 是 WebDAV 或 S3 上 vault.json 的统一地址。密码/私钥在系统安全存储。
 	SyncURL string `json:"syncURL,omitempty"`
-	// SyncUser 是 WebDAV 账号。密码在系统安全存储的 sync-password。
+	// SyncUser 是 WebDAV 账号或 S3 的 AccessKeyId。密码在系统安全存储的 sync-password。
 	SyncUser string `json:"syncUser,omitempty"`
+	// SyncSubDir 是远程根目录（如 serval、cc-switch-sync 等，默认为 serval）。
+	SyncSubDir string `json:"syncSubDir,omitempty"`
+	// SyncVendor 是预设服务商名称（如 "坚果云"、"AWS S3"、"Cloudflare R2" 等）。
+	SyncVendor string `json:"syncVendor,omitempty"`
 	// SyncOn 为真时，解锁后、本地修改后和每隔几分钟会同步。
 	SyncOn bool `json:"syncOn,omitempty"`
 	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
@@ -180,14 +189,32 @@ type settingsPanel struct {
 	restoreSession bool
 
 	// 同步页的草稿。密码只在点保存时写入系统安全存储，空着表示保留已有密码。
-	syncURL, syncUser, syncPassword string
-	syncOn                          bool
-	probeBusy                       bool
-	probeOK                         bool
-	probeMsg                        string
-	// askSyncMerge 在已有数据的设备第一次开启同步时弹出合并说明。allowMerge 是用户确认之后。
+	syncKind     string // "WebDAV" 或 "S3 兼容存储"
+	syncVendor   string // 厂商预设
+	syncSubDir   string // 远程根目录，如 serval
+	syncOn       bool
+	probeBusy    bool
+	probeOK      bool
+	probeMsg     string
 	askSyncMerge bool
 	allowMerge   bool
+
+	// WebDAV 专用字段
+	webdavServer   string
+	webdavUser     string
+	webdavPassword string
+
+	// S3 专用字段
+	s3Region   string
+	s3Bucket   string
+	s3AccessID string
+	s3Secret   string
+	s3Endpoint string
+
+	// 兼容老字段
+	syncURL      string
+	syncUser     string
+	syncPassword string
 }
 
 // restorePanel 是空设备“从同步恢复”的面板。
@@ -202,7 +229,7 @@ type restorePanel struct {
 
 // openSettings 打开设置面板。
 func (a *app) openSettings() {
-	a.settingsPanel = settingsPanel{
+	p := settingsPanel{
 		open:           true,
 		fresh:          true,
 		rememberDevice: a.isRememberedOnDevice(),
@@ -211,7 +238,51 @@ func (a *app) openSettings() {
 		syncURL:        a.local.SyncURL,
 		syncUser:       a.local.SyncUser,
 		syncOn:         a.local.SyncOn,
+		syncSubDir:     a.local.SyncSubDir,
+		syncVendor:     a.local.SyncVendor,
 	}
+	if p.syncSubDir == "" && a.local.SyncURL == "" {
+		p.syncSubDir = "serval"
+	}
+	if syncer.IsS3URL(p.syncURL) {
+		p.syncKind = "S3 兼容存储"
+		target, err := syncer.ParseS3URL(p.syncURL)
+		if err == nil {
+			p.s3Bucket = target.Bucket
+			p.s3Region = target.Region
+			p.s3Endpoint = target.Endpoint
+			p.s3AccessID = a.local.SyncUser
+			keyDir := path.Dir(target.Key)
+			if keyDir != "." && keyDir != "/" && keyDir != "" {
+				p.syncSubDir = keyDir
+			}
+		}
+		if p.syncVendor == "" {
+			p.syncVendor = "AWS S3"
+		}
+	} else {
+		p.syncKind = "WebDAV"
+		if p.syncURL != "" {
+			u, err := url.Parse(p.syncURL)
+			if err == nil {
+				keyDir := path.Dir(strings.Trim(u.Path, "/"))
+				if keyDir != "." && keyDir != "/" && keyDir != "" {
+					p.syncSubDir = keyDir
+				}
+				basePath := strings.TrimSuffix(u.Path, "/"+p.syncSubDir+"/vault.json")
+				basePath = strings.TrimSuffix(basePath, "/vault.json")
+				u.Path = basePath
+				p.webdavServer = u.String()
+			} else {
+				p.webdavServer = p.syncURL
+			}
+		}
+		p.webdavUser = a.local.SyncUser
+		if p.syncVendor == "" {
+			p.syncVendor = "自定义"
+		}
+	}
+	a.settingsPanel = p
 }
 
 // setAppearance 切换外观并写入保险库，让所有已打开的终端立即跟着更新。
@@ -397,6 +468,9 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Segmented(c, &tabIdx, locales.SetGeneral(), locales.SetTerminal(), "同步").OnChange(func() {
 					p.tab = settingsTab(tabIdx)
 				})
+				if int(p.tab) != tabIdx {
+					p.tab = settingsTab(tabIdx)
+				}
 			})
 			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-165, 120)).Children(func() {
 				ui.Column(c).Gap(11).Padding(0, 4, 0, 0).Children(func() {
@@ -588,62 +662,162 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	}
 }
 
-// syncSettingsSection 是设置里的“同步”页。地址和账号写在本机，密码只在保存时进系统安全存储。
+var (
+	syncKindOptions = []string{"WebDAV", "S3 兼容存储"}
+	webdavVendors   = []string{"自定义", "坚果云", "Nextcloud", "群晖 NAS"}
+	s3Vendors       = []string{"AWS S3", "MinIO", "Cloudflare R2", "阿里云 OSS", "腾讯云 COS", "华为云 OBS", "S3 兼容服务（自定义）"}
+)
+
+// syncSettingsSection 是设置里的“同步”页。
 func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	ui.Field(c, "服务地址", func() {
-		c.Key("syncURL")
-		ui.TextInput(c, &p.syncURL).Placeholder("WebDAV 地址或 s3://bucket/vault.json")
-	}).Description("支持 WebDAV 或 S3 对象存储（如 s3://my-bucket/vault.json）。")
-	userLabel := "账号"
-	passLabel := "同步密码"
-	userDesc := "可选"
-	if syncer.IsS3URL(p.syncURL) {
-		userLabel = "AccessKey"
-		passLabel = "SecretKey"
-		userDesc = "S3 访问密钥 ID"
+	if p.syncKind == "" {
+		p.syncKind = "WebDAV"
 	}
-	ui.Field(c, userLabel, func() {
-		c.Key("syncUser")
-		ui.TextInput(c, &p.syncUser).Placeholder(userDesc)
+
+	ui.Field(c, "同步方式", func() {
+		c.Key("syncKind")
+		ui.Select(c, &p.syncKind, syncKindOptions)
 	})
-	ui.Field(c, passLabel, func() {
-		c.Key("syncPassword")
-		ui.TextInput(c, &p.syncPassword).Password().Placeholder("留空则保留已保存的密码")
-	}).Description("凭据只存放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
+
+	if p.syncKind == "WebDAV" {
+		if !slices.Contains(webdavVendors, p.syncVendor) {
+			p.syncVendor = "自定义"
+		}
+		ui.Field(c, "服务商", func() {
+			c.Key("webdavVendor")
+			ui.Select(c, &p.syncVendor, webdavVendors)
+		})
+		// 切换服务商自动辅助填入提示或常用地址前缀
+		placeholder := "https://example.com/dav/"
+		switch p.syncVendor {
+		case "坚果云":
+			placeholder = "https://dav.jianguoyun.com/dav/"
+			if p.webdavServer == "" {
+				p.webdavServer = "https://dav.jianguoyun.com/dav/"
+			}
+		case "Nextcloud":
+			placeholder = "https://your-domain.com/remote.php/dav/files/username/"
+		case "群晖 NAS":
+			placeholder = "https://nas-ip:5006/home/"
+		}
+
+		ui.Field(c, "WebDAV 服务器地址", func() {
+			c.Key("webdavServer")
+			ui.TextInput(c, &p.webdavServer).Placeholder(placeholder)
+		}).Description("填服务器基础地址，无需手动写 /vault.json。")
+
+		ui.Field(c, "WebDAV 账户", func() {
+			c.Key("webdavUser")
+			ui.TextInput(c, &p.webdavUser).Placeholder("账号或邮箱")
+		})
+
+		ui.Field(c, "WebDAV 密码", func() {
+			c.Key("webdavPassword")
+			ui.TextInput(c, &p.webdavPassword).Password().Placeholder("应用密码（坚果云请使用“第三方应用密码”）")
+		}).Description("密码保存在系统安全存储中，不会以明文保存。")
+
+	} else {
+		// S3 兼容存储
+		if !slices.Contains(s3Vendors, p.syncVendor) {
+			p.syncVendor = "AWS S3"
+		}
+		ui.Field(c, "服务商", func() {
+			c.Key("s3Vendor")
+			ui.Select(c, &p.syncVendor, s3Vendors)
+		})
+
+		ui.Text(c, "使用 IAM Access Key，需要 s3:PutObject/GetObject/HeadObject 权限。").
+			FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+
+		endpointPlaceholder := "例如 https://s3-compatible.example.com"
+		regionPlaceholder := "例如 us-east-1"
+		switch p.syncVendor {
+		case "AWS S3":
+			endpointPlaceholder = "AWS 可留空"
+			if p.s3Region == "" {
+				p.s3Region = "us-east-1"
+			}
+		case "Cloudflare R2":
+			endpointPlaceholder = "https://<account_id>.r2.cloudflarestorage.com"
+			if p.s3Region == "" {
+				p.s3Region = "auto"
+			}
+		case "MinIO":
+			endpointPlaceholder = "例如 http://127.0.0.1:9000"
+		case "阿里云 OSS":
+			endpointPlaceholder = "例如 https://oss-cn-hangzhou.aliyuncs.com"
+		case "腾讯云 COS":
+			endpointPlaceholder = "例如 https://cos.ap-guangzhou.myqcloud.com"
+		case "华为云 OBS":
+			endpointPlaceholder = "例如 https://obs.cn-north-4.myhuaweicloud.com"
+		}
+
+		ui.Field(c, "区域 (Region)", func() {
+			c.Key("s3Region")
+			ui.TextInput(c, &p.s3Region).Placeholder(regionPlaceholder)
+		})
+
+		ui.Field(c, "存储桶 (Bucket)", func() {
+			c.Key("s3Bucket")
+			ui.TextInput(c, &p.s3Bucket).Placeholder("存储桶名称")
+		})
+
+		ui.Field(c, "Access Key ID", func() {
+			c.Key("s3AccessID")
+			ui.TextInput(c, &p.s3AccessID).Placeholder("访问密钥 ID")
+		})
+
+		ui.Field(c, "Secret Access Key", func() {
+			c.Key("s3Secret")
+			ui.TextInput(c, &p.s3Secret).Password().Placeholder("留空则保持现有密钥")
+		}).Description("密钥保存在系统安全存储中，不会以明文保存。")
+
+		ui.Field(c, "Endpoint 终端节点", func() {
+			c.Key("s3Endpoint")
+			ui.TextInput(c, &p.s3Endpoint).Placeholder(endpointPlaceholder)
+		}).Description("多数 S3 兼容服务需填写（AWS S3 可留空）。")
+	}
+
+	ui.Field(c, "远程根目录", func() {
+		c.Key("syncSubDir")
+		ui.TextInput(c, &p.syncSubDir).Placeholder("默认 serval")
+	}).Description("数据将保存在该目录下（例如 serval/vault.json），便于多应用分类管理。")
+
 	c.Key("syncEnabled")
-	ui.Checkbox(c, &p.syncOn, "启用同步")
-	hint := "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。"
+	ui.Checkbox(c, &p.syncOn, "自动同步")
+	hint := "开启后，每次修改或启动解锁时都会自动合并与同步。"
 	if a.vault != nil && a.vault.Empty() {
 		hint = "这台设备还没有数据。要下载另一台设备上的保险库，用侧栏的“从同步恢复”。"
 	}
 	ui.Text(c, hint).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
-	ui.Divider(c)
-	dirLabel := "未选择文件夹"
-	if a.local.SyncDir != "" {
-		dirLabel = a.local.SyncDir
-	}
-	ui.Field(c, "同步文件夹", func() {
-		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
-	}).Description("把保险库副本放进 iCloud Drive、Dropbox 或 Syncthing 的文件夹。文件仍然是加密的。")
-	ui.Row(c).Gap(8).Children(func() {
-		ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
-		if a.local.SyncDir != "" {
-			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
-				if err := a.setSyncDir(""); err != nil {
-					p.err = err.Error()
-				}
-			})
-		}
-	})
+
 	ui.Row(c).Gap(8).Children(func() {
 		label := "测试连接"
 		if p.probeBusy {
 			label = "正在测试连接"
 		}
 		ui.Button(c, label).Key("syncTest").Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
-		ui.PrimaryButton(c, "保存同步设置").Key("syncSave").OnClick(a.saveSyncSettings)
+		ui.PrimaryButton(c, "保存配置").Key("syncSave").OnClick(a.saveSyncSettings)
+		if a.local.SyncOn || a.local.SyncURL != "" {
+			ui.Button(c, "清除配置").Key("syncClear").OnClick(func() {
+				p.syncOn = false
+				p.syncURL = ""
+				p.syncUser = ""
+				p.syncPassword = ""
+				p.webdavServer = ""
+				p.webdavUser = ""
+				p.webdavPassword = ""
+				p.s3Bucket = ""
+				p.s3AccessID = ""
+				p.s3Secret = ""
+				p.s3Endpoint = ""
+				a.configureSync("", "", "", false)
+				a.toast(ui.Toast{Title: "已清除同步配置"})
+			})
+		}
 	})
+
 	if p.probeMsg != "" {
 		col := c.Theme().TextMuted
 		if !p.probeOK {
@@ -660,6 +834,39 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	if a.syncErr != "" {
 		ui.Text(c, a.syncErr).Key("syncError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 	}
+
+	if a.syncConfigured() {
+		ui.Row(c).Gap(10).Children(func() {
+			ui.PrimaryButton(c, "上传到云端").Key("syncPush").Disabled(a.syncing).OnClick(func() {
+				a.syncNow(true)
+			})
+			ui.Button(c, "从云端下载").Key("syncPull").Disabled(a.syncing).OnClick(func() {
+				a.syncNow(true)
+			})
+		})
+	}
+
+	ui.Divider(c)
+
+	// 本地同步文件夹（独立解耦，用于本地离线/云盘同步备份）
+	dirLabel := "未选择文件夹"
+	if a.local.SyncDir != "" {
+		dirLabel = a.local.SyncDir
+	}
+	ui.Field(c, "本地同步文件夹", func() {
+		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
+	}).Description("将加密的保险库镜像保存至 iCloud Drive、Dropbox 或 Syncthing 文件夹。与云同步独立运作。")
+	ui.Row(c).Gap(8).Children(func() {
+		btn := ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
+		btn.ScrollIntoView()
+		if a.local.SyncDir != "" {
+			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
+				if err := a.setSyncDir(""); err != nil {
+					p.err = err.Error()
+				}
+			})
+		}
+	})
 }
 
 func (a *app) knownHostsSection(c *ui.Context, colors design.Colors) {

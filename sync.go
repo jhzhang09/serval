@@ -70,6 +70,55 @@ func probeSyncRemote(ctx context.Context, fileURL, user, password string) error 
 	return err
 }
 
+// buildSyncURLFromDraft 根据草稿面板字段构建规范的同步地址及账号、密码。
+func (p *settingsPanel) buildDraftConfig() (fileURL string, user string, password string, err error) {
+	subDir := strings.TrimSpace(p.syncSubDir)
+	kind := strings.TrimSpace(p.syncKind)
+	if kind == "S3 兼容存储" || syncer.IsS3URL(p.syncURL) {
+		bucket := strings.TrimSpace(p.s3Bucket)
+		if bucket == "" {
+			return "", "", "", errors.New("请填写存储桶 (Bucket)")
+		}
+		cleanSub := strings.Trim(subDir, "/")
+		key := "vault.json"
+		if cleanSub != "" {
+			key = cleanSub + "/vault.json"
+		}
+		target := syncer.S3Target{
+			Endpoint: strings.TrimSpace(p.s3Endpoint),
+			Region:   strings.TrimSpace(p.s3Region),
+			Bucket:   bucket,
+			Key:      key,
+		}
+		fileURL = target.FormatURL()
+		user = strings.TrimSpace(p.s3AccessID)
+		password = p.s3Secret
+		return fileURL, user, password, nil
+	}
+
+	// WebDAV
+	server := strings.TrimSpace(p.webdavServer)
+	if server == "" {
+		server = strings.TrimSpace(p.syncURL)
+	}
+	if server == "" {
+		return "", "", "", errors.New("请填写 WebDAV 服务器地址")
+	}
+	fileURL, err = syncer.FileURLWithDir(server, subDir)
+	if err != nil {
+		return "", "", "", err
+	}
+	user = strings.TrimSpace(p.webdavUser)
+	if user == "" {
+		user = strings.TrimSpace(p.syncUser)
+	}
+	password = p.webdavPassword
+	if password == "" {
+		password = p.syncPassword
+	}
+	return fileURL, user, password, nil
+}
+
 // configureSync 保存本机的同步设置。password 为空时保留安全存储里已有的密码。
 // 地址会规范成 vault.json 的 URL。开启并且保险库未锁定、窗口已就绪时立刻同步一次。
 func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
@@ -95,6 +144,9 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 	next.SyncURL = fileURL
 	next.SyncUser = strings.TrimSpace(user)
 	next.SyncOn = enabled
+	next.SyncSubDir = strings.TrimSpace(a.settingsPanel.syncSubDir)
+	next.SyncVendor = strings.TrimSpace(a.settingsPanel.syncVendor)
+	next.SyncKind = strings.TrimSpace(a.settingsPanel.syncKind)
 	if err := a.saveLocal(next); err != nil {
 		return err
 	}
@@ -116,12 +168,28 @@ func (a *app) saveSyncSettings() {
 		return
 	}
 	p.allowMerge = false
+
+	fileURL, user, password, err := p.buildDraftConfig()
+	if err != nil && p.syncOn {
+		p.err = err.Error()
+		return
+	}
+	if err == nil {
+		p.syncURL = fileURL
+		p.syncUser = user
+		if password != "" {
+			p.syncPassword = password
+		}
+	}
+
 	if err := a.configureSync(p.syncURL, p.syncUser, p.syncPassword, p.syncOn); err != nil {
 		p.err = err.Error()
 		return
 	}
 	p.err = ""
 	p.syncPassword = ""
+	p.webdavPassword = ""
+	p.s3Secret = ""
 	p.syncURL = a.local.SyncURL
 	p.syncUser = a.local.SyncUser
 	p.syncOn = a.local.SyncOn
@@ -134,15 +202,22 @@ func (a *app) testSyncFromPanel() {
 	if p.probeBusy {
 		return
 	}
-	rawURL := strings.TrimSpace(p.syncURL)
-	fileURL, err := normalizeSyncURL(rawURL)
+	fileURL, user, password, err := p.buildDraftConfig()
+	if err != nil {
+		// 回退兼容老字段
+		rawURL := strings.TrimSpace(p.syncURL)
+		if rawURL != "" {
+			fileURL, err = normalizeSyncURL(rawURL)
+			user = strings.TrimSpace(p.syncUser)
+			password = p.syncPassword
+		}
+	}
 	if err != nil {
 		p.probeOK = false
 		p.probeMsg = err.Error()
 		p.err = ""
 		return
 	}
-	password := p.syncPassword
 	if password == "" {
 		password = a.syncPassword()
 	}
@@ -151,7 +226,6 @@ func (a *app) testSyncFromPanel() {
 		p.probeMsg = "窗口还没准备好，稍后再试。"
 		return
 	}
-	user := strings.TrimSpace(p.syncUser)
 	p.probeBusy = true
 	p.probeOK = false
 	p.probeMsg = ""

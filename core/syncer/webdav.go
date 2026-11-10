@@ -40,6 +40,40 @@ type Client struct {
 	HTTP *http.Client
 }
 
+// FileURLWithDir 把用户填写的服务器根地址与远程子目录规范成完整的 vault.json URL。
+// 如果 subDir 为空，则保存在服务器根目录；非空则保存在指定子目录下。
+func FileURLWithDir(rawServerURL, subDir string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawServerURL))
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", errors.New("服务器地址需要以 http:// 或 https:// 开头")
+	}
+	if u.User != nil {
+		return "", errors.New("不要把账号和密码写在地址里")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("服务器地址里不能带查询参数")
+	}
+
+	cleanSub := strings.Trim(strings.TrimSpace(subDir), "/")
+	basePath := strings.TrimRight(u.Path, "/")
+	if strings.EqualFold(path.Base(basePath), "vault.json") {
+		// 用户直接填了完整 vault.json 地址
+		return u.String(), nil
+	}
+
+	if cleanSub == "" {
+		u.Path = path.Clean(basePath + "/vault.json")
+	} else {
+		cleanSub = strings.TrimSuffix(cleanSub, "/vault.json")
+		if cleanSub == "" {
+			u.Path = path.Clean(basePath + "/vault.json")
+		} else {
+			u.Path = path.Clean(basePath + "/" + cleanSub + "/vault.json")
+		}
+	}
+	return u.String(), nil
+}
+
 // FileURL 把用户填写的地址规范成 vault.json 的 URL。
 // 目录地址会补上 /vault.json。账号和密码不能写在地址里。
 func FileURL(raw string) (string, error) {
