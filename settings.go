@@ -827,6 +827,11 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	}
 	if a.syncErr != "" {
 		ui.Text(c, a.syncErr).Key("syncError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
+		if a.syncDifferentVault && !a.vault.Empty() {
+			ui.Button(c, "用本机覆盖远端").Key("syncOverwriteBtn").OnClick(func() {
+				a.syncOverwriteAsk = true
+			})
+		}
 	}
 
 	if a.syncConfigured() {

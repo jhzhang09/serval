@@ -68,6 +68,7 @@ func (a *app) view(c *ui.Context) {
 	a.settingsDialog(c, colors)
 	a.restoreDialog(c, colors)
 	a.syncMergeDialog(c)
+	a.syncOverwriteDialog(c)
 	a.syncConflictDialog(c)
 	a.setupDialog(c, colors)
 	a.deleteDialog(c)

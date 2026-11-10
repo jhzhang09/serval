@@ -51,15 +51,17 @@ type app struct {
 
 	// syncDelay、syncEvery 用于测试缩短去抖和周期，零值使用 3 秒和 5 分钟。
 	// syncTimer、syncLoopStop、syncing 只在主线程读写；同步本身在后台做。
-	syncDelay    time.Duration
-	syncEvery    time.Duration
-	syncTimer    *time.Timer
-	syncLoopStop context.CancelFunc
-	syncing      bool
-	syncAgain    bool
-	syncManual   bool
-	syncErr      string
-	lastSync     time.Time
+	syncDelay          time.Duration
+	syncEvery          time.Duration
+	syncTimer          *time.Timer
+	syncLoopStop       context.CancelFunc
+	syncing            bool
+	syncAgain          bool
+	syncManual         bool
+	syncErr            string
+	syncDifferentVault bool
+	syncOverwriteAsk   bool
+	lastSync           time.Time
 	// syncDirEvery 用于测试缩短同步文件夹的轮询间隔，零值是 5 秒。
 	syncDirEvery     time.Duration
 	syncDirStop      context.CancelFunc

@@ -326,6 +326,69 @@ func (a *app) syncMergeDialog(c *ui.Context) {
 	}
 }
 
+// syncOverwriteDialog 在远端是另一个保险库时询问是否覆盖。默认按钮是取消。
+func (a *app) syncOverwriteDialog(c *ui.Context) {
+	if !a.syncOverwriteAsk {
+		return
+	}
+	choice := ui.AlertDialog(c, &a.syncOverwriteAsk, "用本机数据覆盖远端？",
+		"远端已存在属于另一个保险库的文件（可能是历史测试遗留数据）。覆盖后远端历史文件将被替换为当前设备的数据。",
+		"覆盖远端", "取消")
+	if choice == 0 {
+		a.overwriteRemote()
+	}
+}
+
+// overwriteRemote 用当前本地的保险库强制覆盖远端。
+func (a *app) overwriteRemote() {
+	if !a.vaultOpen() || !a.syncConfigured() {
+		return
+	}
+	v := a.vault
+	fileURL, user, pass := a.local.SyncURL, a.local.SyncUser, a.syncPassword()
+	a.syncing = true
+	a.syncErr = ""
+	a.syncDifferentVault = false
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		remote, err := newSyncRemote(fileURL, user, pass)
+		if err != nil {
+			a.post(func() {
+				a.syncing = false
+				a.syncErr = syncUserMessage(err)
+			})
+			return
+		}
+		local, err := v.Bytes()
+		if err != nil {
+			a.post(func() {
+				a.syncing = false
+				a.syncErr = err.Error()
+			})
+			return
+		}
+		_, etag, _ := remote.Download(ctx)
+		_, err = remote.Upload(ctx, local, etag)
+		a.post(func() {
+			a.syncing = false
+			if !a.vaultOpen() || a.vault != v {
+				return
+			}
+			if err != nil {
+				a.syncErr = syncUserMessage(err)
+				a.toast(ui.Toast{Title: "覆盖失败", Description: a.syncErr, Type: "error"})
+			} else {
+				a.syncErr = ""
+				a.syncDifferentVault = false
+				a.lastSync = time.Now()
+				a.reload()
+				a.toast(ui.Toast{Title: "已用本机覆盖远端"})
+			}
+		})
+	}()
+}
+
 // submitRestore 下载远端保险库。本地是空的才整份换上；已有数据时拒绝覆盖。
 func (a *app) submitRestore() {
 	p := &a.restore
@@ -526,7 +589,8 @@ func (a *app) syncNow(manual bool) {
 			}
 			if err != nil {
 				a.syncErr = syncUserMessage(err)
-				if errors.Is(err, vault.ErrDifferentVault) && a.vault.Empty() {
+				a.syncDifferentVault = errors.Is(err, vault.ErrDifferentVault)
+				if a.syncDifferentVault && a.vault.Empty() {
 					a.syncErr = "远端是另一个保险库。这台设备还是空的，请用侧栏的“从同步恢复”。"
 				}
 				if manual {
@@ -534,6 +598,7 @@ func (a *app) syncNow(manual bool) {
 				}
 			} else {
 				a.syncErr = ""
+				a.syncDifferentVault = false
 				a.lastSync = time.Now()
 				a.reload()
 				if manual {
