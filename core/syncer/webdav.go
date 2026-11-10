@@ -97,6 +97,22 @@ func FileURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// strongETag 保证 ETag 是去除 W/ 弱标记并且带有双引号的强验证器。
+// Cloudflare 或某些代理在开启压缩时会把 ETag 弱化（加上 W/），而在 If-Match 中使用弱 ETag 会导致服务器返回 412。
+func strongETag(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "W/")
+	s = strings.TrimPrefix(s, "w/")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !strings.HasPrefix(s, `"`) {
+		s = `"` + s + `"`
+	}
+	return s
+}
+
 // Probe 检查账号能否访问这个地址。文件还不存在也算连上了，因为新设备第一次同步时远端就是空的。
 func (c *Client) Probe(ctx context.Context) error {
 	resp, err := c.do(ctx, http.MethodGet, nil, nil)
@@ -139,12 +155,13 @@ func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	etag := resp.Header.Get("ETag")
+	etag := strongETag(resp.Header.Get("ETag"))
 	if etag == "" {
-		etag, err = c.propfindETag(ctx)
+		raw, err := c.propfindETag(ctx)
 		if err != nil {
 			return nil, "", err
 		}
+		etag = strongETag(raw)
 	}
 	if etag == "" {
 		return nil, "", ErrNoETag
@@ -155,10 +172,11 @@ func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 // Upload 上传保险库。ifMatch 为空时要求远端还没有文件。
 func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (string, error) {
 	headers := map[string]string{"Content-Type": "application/json"}
-	if ifMatch == "" {
+	match := strongETag(ifMatch)
+	if match == "" {
 		headers["If-None-Match"] = "*"
 	} else {
-		headers["If-Match"] = ifMatch
+		headers["If-Match"] = match
 	}
 	resp, err := c.do(ctx, http.MethodPut, bytes.NewReader(body), headers)
 	if err != nil {
@@ -168,7 +186,7 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 	io.Copy(io.Discard, resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-		return resp.Header.Get("ETag"), nil
+		return strongETag(resp.Header.Get("ETag")), nil
 	case http.StatusPreconditionFailed:
 		return "", ErrConflict
 	default:

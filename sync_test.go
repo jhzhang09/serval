@@ -536,6 +536,10 @@ func TestSyncS3SettingsUIAndManualTrigger(t *testing.T) {
 	h.a.settingsPanel.s3Secret = "SECRET987654"
 	h.a.settingsPanel.syncSubDir = "serval"
 	h.tt.Frame()
+	if box, ok := h.tt.Find("存储桶 (Bucket)"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("自动同步")
 	h.tt.Frame()
 	h.click("保存配置")

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -263,18 +262,13 @@ func (a *app) openSettings() {
 	} else {
 		p.syncKind = "WebDAV"
 		if p.syncURL != "" {
-			u, err := url.Parse(p.syncURL)
-			if err == nil {
-				keyDir := path.Dir(strings.Trim(u.Path, "/"))
-				if keyDir != "." && keyDir != "/" && keyDir != "" {
-					p.syncSubDir = keyDir
-				}
-				basePath := strings.TrimSuffix(u.Path, "/"+p.syncSubDir+"/vault.json")
-				basePath = strings.TrimSuffix(basePath, "/vault.json")
-				u.Path = basePath
-				p.webdavServer = u.String()
+			if a.local.SyncSubDir != "" {
+				p.syncSubDir = a.local.SyncSubDir
+				server := strings.TrimSuffix(p.syncURL, "/"+p.syncSubDir+"/vault.json")
+				p.webdavServer = strings.TrimSuffix(server, "/vault.json")
 			} else {
-				p.webdavServer = p.syncURL
+				p.syncSubDir = ""
+				p.webdavServer = strings.TrimSuffix(p.syncURL, "/vault.json")
 			}
 		}
 		p.webdavUser = a.local.SyncUser
