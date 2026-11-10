@@ -3,6 +3,7 @@ package syncer
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -16,14 +17,20 @@ import (
 )
 
 var defaultHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
+	Timeout: 35 * time.Second,
 	Transport: &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     true,
+		// 彻底禁用 HTTP/2，强制使用成熟稳定的 HTTP/1.1。
+		// 避免 Cloudflare / AList 代理云盘时频繁发生 HTTP/2 stream error (INTERNAL_ERROR) 与 502 网关重置。
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 		MaxIdleConns:          20,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       30 * time.Second,
@@ -458,7 +465,8 @@ func retryBackoff(ctx context.Context, attempt int) error {
 	if attempt <= 0 {
 		return nil
 	}
-	delay := time.Duration(attempt) * 250 * time.Millisecond
+	// 网盘服务在写入后有短暂落盘延迟，且 502 冷启动需要退避时间
+	delay := time.Duration(attempt) * 1000 * time.Millisecond
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
