@@ -41,6 +41,12 @@ func TestSyncDirExportsAndMergesFolder(t *testing.T) {
 	h.tt.Frame()
 	h.click("同步")
 	h.tt.Frame()
+	if box, ok := h.tt.Find("WebDAV 服务器地址"); ok {
+		for range 5 {
+			h.tt.Scroll(box.X+50, box.Y+50, 0, 200)
+			h.tt.Frame()
+		}
+	}
 	h.click("选择同步文件夹")
 	h.pump("选择同步文件夹", func() bool { return h.a.local.SyncDir == dir })
 	raw, err := os.ReadFile(h.a.devicePath)

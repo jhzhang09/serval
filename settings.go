@@ -857,8 +857,7 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		ui.Text(c, dirLabel).Key("syncDirPath").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted).SingleLine()
 	}).Description("将加密的保险库镜像保存至 iCloud Drive、Dropbox 或 Syncthing 文件夹。与云同步独立运作。")
 	ui.Row(c).Gap(8).Children(func() {
-		btn := ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
-		btn.ScrollIntoView()
+		ui.Button(c, "选择同步文件夹").Key("syncDirChoose").OnClick(a.chooseSyncDir)
 		if a.local.SyncDir != "" {
 			ui.Button(c, "停止使用此文件夹").Key("syncDirStop").OnClick(func() {
 				if err := a.setSyncDir(""); err != nil {
