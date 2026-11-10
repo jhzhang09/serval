@@ -7,12 +7,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 	"time"
 )
+
+var defaultHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          20,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
 
 const maxVaultBytes = 32 << 20
 
@@ -118,6 +136,9 @@ func strongETag(s string) string {
 func (c *Client) Probe(ctx context.Context) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			c.closeIdle()
+		}
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return err
 		}
@@ -156,6 +177,9 @@ func (c *Client) Probe(ctx context.Context) error {
 func (c *Client) Download(ctx context.Context) ([]byte, string, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			c.closeIdle()
+		}
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return nil, "", err
 		}
@@ -232,6 +256,9 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			c.closeIdle()
+		}
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return "", err
 		}
@@ -251,6 +278,12 @@ func (c *Client) Upload(ctx context.Context, body []byte, ifMatch string) (strin
 			return strongETag(resp.Header.Get("ETag")), nil
 		case http.StatusPreconditionFailed:
 			return "", ErrConflict
+		case http.StatusConflict:
+			// 409 Conflict 通常表示父级目录不存在，尝试自动创建父目录并重试
+			if c.ensureParentDir(ctx) == nil {
+				continue
+			}
+			return "", ErrNoFolder
 		default:
 			if isTransientHTTPStatus(resp.StatusCode) {
 				lastErr = fmt.Errorf("%w: 上传保险库时服务器返回了 %d", ErrUnavailable, resp.StatusCode)
@@ -272,6 +305,9 @@ func (c *Client) propfindETag(ctx context.Context) (string, error) {
 	const body = `<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:getetag/></D:prop></D:propfind>`
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			c.closeIdle()
+		}
 		if err := retryBackoff(ctx, attempt); err != nil {
 			return "", err
 		}
@@ -336,6 +372,16 @@ func etagFromPropfind(payload []byte) string {
 	}
 }
 
+func (c *Client) closeIdle() {
+	hc := c.HTTP
+	if hc == nil {
+		hc = defaultHTTPClient
+	}
+	if tr, ok := hc.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+}
+
 func (c *Client) do(ctx context.Context, method string, body io.Reader, headers map[string]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.URL, body)
 	if err != nil {
@@ -344,16 +390,26 @@ func (c *Client) do(ctx context.Context, method string, body io.Reader, headers 
 	if c.User != "" || c.Password != "" {
 		req.SetBasicAuth(c.User, c.Password)
 	}
+	// 避免反向代理或网盘服务识别到 Go-http-client 从而掐断流或限流
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	// 针对小型 JSON 同步文件采用 identity 原生传输，防止 Cloudflare / 网盘代理在动态 gzip 流式传输中断时产生意外 EOF
+	req.Header.Set("Accept-Encoding", "identity")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = defaultHTTPClient
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, "请求没有完成")
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w: 连接超时", ErrUnavailable)
+		}
+		return nil, fmt.Errorf("%w: 请求没有完成 (%v)", ErrUnavailable, err)
 	}
 	return resp, nil
 }
@@ -372,7 +428,7 @@ func classify(code int) error {
 func readLimited(r io.Reader) ([]byte, error) {
 	b, err := io.ReadAll(io.LimitReader(r, maxVaultBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, "没有读完响应")
+		return nil, fmt.Errorf("%w: 没有读完响应 (%v)", ErrUnavailable, err)
 	}
 	if len(b) > maxVaultBytes {
 		return nil, errors.New("远端的保险库文件过大，已中止同步")
@@ -411,4 +467,38 @@ func retryBackoff(ctx context.Context, attempt int) error {
 	case <-time.After(delay):
 		return nil
 	}
+}
+
+func (c *Client) ensureParentDir(ctx context.Context) error {
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return err
+	}
+	parent := path.Dir(strings.TrimRight(u.Path, "/"))
+	if parent == "/" || parent == "." || parent == "" {
+		return nil
+	}
+	u.Path = parent + "/"
+	req, err := http.NewRequestWithContext(ctx, "MKCOL", u.String(), nil)
+	if err != nil {
+		return err
+	}
+	if c.User != "" || c.Password != "" {
+		req.SetBasicAuth(c.User, c.Password)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	hc := c.HTTP
+	if hc == nil {
+		hc = defaultHTTPClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return fmt.Errorf("mkdir status: %d", resp.StatusCode)
 }

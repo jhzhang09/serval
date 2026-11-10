@@ -240,7 +240,7 @@ func (a *app) openSettings() {
 		syncSubDir:     a.local.SyncSubDir,
 		syncVendor:     a.local.SyncVendor,
 	}
-	if p.syncSubDir == "" && a.local.SyncURL == "" {
+	if p.syncSubDir == "" {
 		p.syncSubDir = "serval"
 	}
 	if syncer.IsS3URL(p.syncURL) {
@@ -267,7 +267,7 @@ func (a *app) openSettings() {
 				server := strings.TrimSuffix(p.syncURL, "/"+p.syncSubDir+"/vault.json")
 				p.webdavServer = strings.TrimSuffix(server, "/vault.json")
 			} else {
-				p.syncSubDir = ""
+				p.syncSubDir = "serval"
 				p.webdavServer = strings.TrimSuffix(p.syncURL, "/vault.json")
 			}
 		}
