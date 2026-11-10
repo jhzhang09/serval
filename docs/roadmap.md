@@ -238,9 +238,10 @@
 - **验收**：界面测试覆盖空设备加入；已有数据的设备加入后两边数据合并。
 - **依赖**：S1。
 
-### S4 S3 兼容存储（M）
+### S4 S3 兼容存储（M，已完成：`feat/S4-s3-sync`）
 
-- **范围**：AWS S3、Cloudflare R2、MinIO 等。用条件写入（`If-Match`）防覆盖。是否引入 SDK 需决策（手写 SigV4 也可，标准库足够）。
+- **范围**：AWS S3、Cloudflare R2、MinIO 等。用条件写入（`If-Match`）防覆盖。纯 Go 标准库实现 AWS SigV4 认证签名，不引入外部重型 SDK。
+- **实现**：`core/syncer/s3.go` 支持标准 AWS SigV4 计算与路径模式（Path-Style）；设置与恢复面板支持直接输入 `s3://bucket/vault.json`（支持带 `endpoint` 和 `region` 参数），凭据（AccessKey/SecretKey）存入系统安全存储；两端并发修改时经由 ETag 乐观锁触发重新拉取并由混合逻辑时钟在本地完成合并后再上传，集成测试覆盖两设备收敛与空设备恢复。
 - **依赖**：S1。
 
 ### S5 同步文件夹（S，已完成：`feat/S5-sync-folder`）

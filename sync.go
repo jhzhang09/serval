@@ -30,13 +30,53 @@ func (a *app) vaultOpen() bool {
 	return a.vault != nil && a.vault.State() != vault.Locked
 }
 
+// normalizeSyncURL 规范化用户填写的 WebDAV 或 S3 同步目标地址。
+func normalizeSyncURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", errors.New("请填写同步地址")
+	}
+	if syncer.IsS3URL(s) {
+		target, err := syncer.ParseS3URL(s)
+		if err != nil {
+			return "", err
+		}
+		return target.FormatURL(), nil
+	}
+	return syncer.FileURL(s)
+}
+
+// newSyncRemote 根据地址与凭据构造 Remote 客户端。
+func newSyncRemote(fileURL, user, password string) (syncer.Remote, error) {
+	if syncer.IsS3URL(fileURL) {
+		return syncer.NewS3ClientFromURL(fileURL, user, password)
+	}
+	return &syncer.Client{URL: fileURL, User: user, Password: password}, nil
+}
+
+// probeSyncRemote 测试远端是否能连接。
+func probeSyncRemote(ctx context.Context, fileURL, user, password string) error {
+	remote, err := newSyncRemote(fileURL, user, password)
+	if err != nil {
+		return err
+	}
+	if probeable, ok := remote.(interface{ Probe(context.Context) error }); ok {
+		return probeable.Probe(ctx)
+	}
+	_, _, err = remote.Download(ctx)
+	if errors.Is(err, syncer.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // configureSync 保存本机的同步设置。password 为空时保留安全存储里已有的密码。
 // 地址会规范成 vault.json 的 URL。开启并且保险库未锁定、窗口已就绪时立刻同步一次。
 func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 	var fileURL string
 	if strings.TrimSpace(rawURL) != "" {
 		var err error
-		fileURL, err = syncer.FileURL(rawURL)
+		fileURL, err = normalizeSyncURL(rawURL)
 		if err != nil {
 			return err
 		}
@@ -95,7 +135,7 @@ func (a *app) testSyncFromPanel() {
 		return
 	}
 	rawURL := strings.TrimSpace(p.syncURL)
-	fileURL, err := syncer.FileURL(rawURL)
+	fileURL, err := normalizeSyncURL(rawURL)
 	if err != nil {
 		p.probeOK = false
 		p.probeMsg = err.Error()
@@ -119,7 +159,7 @@ func (a *app) testSyncFromPanel() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		err := (&syncer.Client{URL: fileURL, User: user, Password: password}).Probe(ctx)
+		err := probeSyncRemote(ctx, fileURL, user, password)
 		msg := "可以连接。"
 		ok := err == nil
 		if err != nil {
@@ -156,18 +196,26 @@ func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
 			ui.Text(c, "恢复保险库").FontSize(design.TextHeading).FontWeight(600)
 			ui.Text(c, "从同步服务下载已有的保险库。下载完成后输入原来的主密码解锁。").
 				FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+			userLabel := "账号"
+			passLabel := "同步密码"
+			userDesc := "可选"
+			if syncer.IsS3URL(p.url) {
+				userLabel = "AccessKey"
+				passLabel = "SecretKey"
+				userDesc = "S3 访问密钥 ID"
+			}
 			ui.Field(c, "服务地址", func() {
 				c.Key("restoreURL")
-				ui.TextInput(c, &p.url).Placeholder("https://example.com/remote/").AutoFocus()
-			}).Description("填目录或 vault.json 的地址。")
-			ui.Field(c, "账号", func() {
+				ui.TextInput(c, &p.url).Placeholder("WebDAV 地址或 s3://bucket/vault.json").AutoFocus()
+			}).Description("支持 WebDAV 或 S3 对象存储（如 s3://my-bucket/vault.json）。")
+			ui.Field(c, userLabel, func() {
 				c.Key("restoreUser")
-				ui.TextInput(c, &p.user).Placeholder("可选")
+				ui.TextInput(c, &p.user).Placeholder(userDesc)
 			})
-			ui.Field(c, "同步密码", func() {
+			ui.Field(c, passLabel, func() {
 				c.Key("restorePassword")
 				ui.TextInput(c, &p.password).Password()
-			}).Description("只保存在这台设备的系统安全存储里。")
+			}).Description("凭据只存放在这台设备的系统安全存储里。")
 			if p.err != "" {
 				ui.Text(c, p.err).Key("restoreError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 			}
@@ -209,7 +257,7 @@ func (a *app) submitRestore() {
 	if p.busy {
 		return
 	}
-	fileURL, err := syncer.FileURL(p.url)
+	fileURL, err := normalizeSyncURL(p.url)
 	if err != nil {
 		p.err = err.Error()
 		return
@@ -229,7 +277,17 @@ func (a *app) submitRestore() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		body, _, err := (&syncer.Client{URL: fileURL, User: user, Password: password}).Download(ctx)
+		remote, err := newSyncRemote(fileURL, user, password)
+		if err != nil {
+			a.post(func() {
+				if a.vault == v && p.open {
+					p.busy = false
+					p.err = err.Error()
+				}
+			})
+			return
+		}
+		body, _, err := remote.Download(ctx)
 		a.post(func() {
 			p := &a.restore
 			p.busy = false
@@ -382,7 +440,10 @@ func (a *app) syncNow(manual bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		err := syncer.Sync(ctx, v, &syncer.Client{URL: fileURL, User: user, Password: pass})
+		remote, err := newSyncRemote(fileURL, user, pass)
+		if err == nil {
+			err = syncer.Sync(ctx, v, remote)
+		}
 		a.post(func() {
 			a.syncing = false
 			if !a.vaultOpen() || a.vault != v {

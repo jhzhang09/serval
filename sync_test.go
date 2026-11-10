@@ -1,19 +1,99 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"serval/core/hosts"
+	"serval/core/syncer"
 	"serval/core/vault"
 
 	"golang.org/x/net/webdav"
 )
+
+type testS3Mock struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+	etags   map[string]string
+}
+
+func (m *testS3Mock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 ") {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	key := r.URL.Path
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch r.Method {
+	case http.MethodHead:
+		data, exists := m.objects[key]
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"`+m.etags[key]+`"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w.WriteHeader(http.StatusOK)
+
+	case http.MethodGet:
+		data, exists := m.objects[key]
+		if !exists {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("ETag", `"`+m.etags[key]+`"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
+
+	case http.MethodPut:
+		ifMatch := r.Header.Get("If-Match")
+		ifNoneMatch := r.Header.Get("If-None-Match")
+
+		_, exists := m.objects[key]
+		if ifNoneMatch == "*" && exists {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+		if ifMatch != "" {
+			currentETag := `"` + m.etags[key] + `"`
+			if ifMatch != currentETag && ifMatch != m.etags[key] {
+				w.WriteHeader(http.StatusPreconditionFailed)
+				return
+			}
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		h := md5.Sum(body)
+		etag := hex.EncodeToString(h[:])
+		m.objects[key] = body
+		m.etags[key] = etag
+
+		w.Header().Set("ETag", `"`+etag+`"`)
+		w.WriteHeader(http.StatusOK)
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
 
 func TestSyncNowWithoutConfigExplains(t *testing.T) {
 	h := newHarness(t)
@@ -334,4 +414,96 @@ func remoteHasHost(t *testing.T, dir string, key []byte, id string) bool {
 	}
 	_, ok, err := v.Get(id)
 	return err == nil && ok
+}
+
+func TestS3SyncIntegration(t *testing.T) {
+	mock := &testS3Mock{
+		objects: make(map[string][]byte),
+		etags:   make(map[string]string),
+	}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	s3Target := syncer.S3Target{
+		Endpoint: ts.URL,
+		Region:   "auto",
+		Bucket:   "serval-test-bucket",
+		Key:      "vault.json",
+	}
+	s3URL := s3Target.FormatURL()
+
+	h := newHarness(t)
+	t.Cleanup(func() {
+		h.a.stopSyncLoop()
+	})
+
+	// 1. 设置主密码以解锁
+	h.a.openSettings()
+	h.tt.Frame()
+	h.a.settingsPanel.tab = settingsTabSync
+	h.a.settingsPanel.syncURL = s3URL
+	h.a.settingsPanel.syncUser = "AKIAIOSFODNN7EXAMPLE"
+	h.a.settingsPanel.syncPassword = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	h.a.settingsPanel.syncOn = true
+	h.tt.Frame()
+
+	h.a.testSyncFromPanel()
+	h.pump("S3 probe 完成", func() bool {
+		return !h.a.settingsPanel.probeBusy && h.a.settingsPanel.probeOK
+	})
+
+	// 2. 保存 S3 同步设置并触发合并
+	h.click("保存同步设置")
+	h.tt.Frame()
+	if h.tt.HasText("合并并同步") {
+		h.click("合并并同步")
+		h.tt.Frame()
+	}
+
+	if h.a.local.SyncURL != s3URL {
+		t.Fatalf("local.SyncURL 不匹配: %s != %s", h.a.local.SyncURL, s3URL)
+	}
+	if h.a.local.SyncUser != "AKIAIOSFODNN7EXAMPLE" {
+		t.Fatalf("local.SyncUser 不匹配: %s", h.a.local.SyncUser)
+	}
+
+	// 3. 手动同步上传初始保险库
+	h.a.syncNow(true)
+	h.pump("S3 手动同步完成", func() bool {
+		return !h.a.syncing && !h.a.lastSync.IsZero()
+	})
+	if h.a.syncErr != "" {
+		t.Fatalf("S3 首次同步失败: %s", h.a.syncErr)
+	}
+
+	// 4. 新建另一台空设备测试从 S3 恢复
+	h2 := newBareHarness(t)
+	t.Cleanup(func() {
+		h2.a.stopSyncLoop()
+	})
+	empty, err := vault.Open(filepath.Join(h2.dir, "empty.json"), "empty-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2.a.vault = empty
+	h2.a.reload()
+
+	h2.tt.Frame()
+	h2.click("从同步恢复")
+	h2.tt.Frame()
+	if !h2.tt.HasText("恢复保险库") {
+		t.Fatalf("恢复面板没有打开: %q", h2.tt.Texts())
+	}
+	h2.a.restore.url = s3URL
+	h2.a.restore.user = "AKIAIOSFODNN7EXAMPLE"
+	h2.a.restore.password = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	h2.tt.Frame()
+	h2.click("开始恢复")
+
+	h2.pump("S3 恢复完成并锁定", func() bool {
+		return h2.a.vault.State() == vault.Locked && h2.tt.HasText("Serval 已锁定")
+	})
+	if h2.a.vault.ID() != h.a.vault.ID() {
+		t.Fatalf("应换上远端保险库 id=%s want %s", h2.a.vault.ID(), h.a.vault.ID())
+	}
 }

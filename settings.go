@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 
+	"serval/core/syncer"
 	"serval/core/vault"
 	"serval/design"
 	"serval/locales"
@@ -592,16 +593,24 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
 	ui.Field(c, "服务地址", func() {
 		c.Key("syncURL")
-		ui.TextInput(c, &p.syncURL).Placeholder("https://example.com/remote/")
-	}).Description("填目录或 vault.json 的地址。账号和密码不要写在地址里。")
-	ui.Field(c, "账号", func() {
+		ui.TextInput(c, &p.syncURL).Placeholder("WebDAV 地址或 s3://bucket/vault.json")
+	}).Description("支持 WebDAV 或 S3 对象存储（如 s3://my-bucket/vault.json）。")
+	userLabel := "账号"
+	passLabel := "同步密码"
+	userDesc := "可选"
+	if syncer.IsS3URL(p.syncURL) {
+		userLabel = "AccessKey"
+		passLabel = "SecretKey"
+		userDesc = "S3 访问密钥 ID"
+	}
+	ui.Field(c, userLabel, func() {
 		c.Key("syncUser")
-		ui.TextInput(c, &p.syncUser).Placeholder("可选")
+		ui.TextInput(c, &p.syncUser).Placeholder(userDesc)
 	})
-	ui.Field(c, "同步密码", func() {
+	ui.Field(c, passLabel, func() {
 		c.Key("syncPassword")
 		ui.TextInput(c, &p.syncPassword).Password().Placeholder("留空则保留已保存的密码")
-	}).Description("密码只放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
+	}).Description("凭据只存放在这台设备的系统安全存储里，不会写进保险库或本机设置文件。")
 	c.Key("syncEnabled")
 	ui.Checkbox(c, &p.syncOn, "启用同步")
 	hint := "开启后，解锁、本地修改和每隔几分钟都会与服务器对齐。"
