@@ -392,8 +392,6 @@ func (c *Client) do(ctx context.Context, method string, body io.Reader, headers 
 	}
 	// 避免反向代理或网盘服务识别到 Go-http-client 从而掐断流或限流
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
-	// 针对小型 JSON 同步文件采用 identity 原生传输，防止 Cloudflare / 网盘代理在动态 gzip 流式传输中断时产生意外 EOF
-	req.Header.Set("Accept-Encoding", "identity")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

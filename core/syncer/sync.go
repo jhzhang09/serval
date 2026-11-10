@@ -56,6 +56,9 @@ func syncOnce(ctx context.Context, v Vault, remote Remote) error {
 	if err != nil {
 		return err
 	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return errors.New("远端文件内容为空，无法合并")
+	}
 	if _, err := v.Merge(body); err != nil {
 		return err
 	}

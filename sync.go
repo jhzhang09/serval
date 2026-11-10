@@ -634,6 +634,10 @@ func syncUserMessage(err error) string {
 	case errors.Is(err, vault.ErrLocked):
 		return "保险库已锁定，解锁后再同步。"
 	default:
+		msg := strings.TrimSpace(err.Error())
+		if msg != "" {
+			return msg
+		}
 		return "没能完成同步，本机的修改还在。"
 	}
 }
