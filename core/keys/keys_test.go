@@ -25,6 +25,45 @@ func TestGenerateAndParse(t *testing.T) {
 	if err != nil || again.Fingerprint != k.Fingerprint {
 		t.Fatalf("重新解析应得到同一把钥匙: %v %v", again.Fingerprint, err)
 	}
+	if again.PublicKey != k.PublicKey {
+		t.Fatalf("导入时应保留公钥注释: got=%q want=%q", again.PublicKey, k.PublicKey)
+	}
+}
+
+func TestParsePreservesComment(t *testing.T) {
+	// 带口令的 Ed25519 私钥
+	enc, err := Generate(Ed25519, "工作", "alice@work", "kp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotEnc, err := Parse("工作", []byte(enc.PrivateKey), "kp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(gotEnc.PublicKey, " alice@work") {
+		t.Fatalf("加密私钥导入后未保留注释: %q", gotEnc.PublicKey)
+	}
+
+	// ECDSA 带注释，以及无注释时不附加多余空格
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	withComment, _ := ssh.MarshalPrivateKey(priv, "ec@host")
+	gotEC, err := Parse("ec", pem.EncodeToMemory(withComment), "")
+	if err != nil || !strings.HasSuffix(gotEC.PublicKey, " ec@host") {
+		t.Fatalf("ECDSA 注释未保留: got=%q err=%v", gotEC.PublicKey, err)
+	}
+
+	withoutComment, _ := ssh.MarshalPrivateKey(priv, "")
+	gotNoComment, err := Parse("ec-plain", pem.EncodeToMemory(withoutComment), "")
+	if err != nil || strings.Contains(gotNoComment.PublicKey, "\n") || strings.HasSuffix(gotNoComment.PublicKey, " ") {
+		t.Fatalf("无注释公钥格式异常: got=%q err=%v", gotNoComment.PublicKey, err)
+	}
+
+	// 注释里的换行/控制字符应被清理，保持 authorized_keys 单行格式
+	dirty, _ := ssh.MarshalPrivateKey(priv, "user@host\ninjected")
+	gotDirty, err := Parse("dirty", pem.EncodeToMemory(dirty), "")
+	if err != nil || strings.ContainsAny(gotDirty.PublicKey, "\r\n") || !strings.HasSuffix(gotDirty.PublicKey, " user@hostinjected") {
+		t.Fatalf("控制字符未清理: got=%q err=%v", gotDirty.PublicKey, err)
+	}
 }
 
 func TestEncryptedKeyNeedsPassphrase(t *testing.T) {
@@ -64,9 +103,13 @@ func TestRSAAndECDSALabels(t *testing.T) {
 	if testing.Short() {
 		t.Skip("生成 RSA 4096 较慢")
 	}
-	k, err := Generate(RSA4096, "", "", "")
+	k, err := Generate(RSA4096, "", "rsa@host", "")
 	if err != nil || k.Label() != "RSA 4096" {
 		t.Fatalf("label=%q err=%v", k.Label(), err)
+	}
+	parsedRSA, err := Parse("rsa", []byte(k.PrivateKey), "")
+	if err != nil || !strings.HasSuffix(parsedRSA.PublicKey, " rsa@host") {
+		t.Fatalf("RSA 注释未保留: got=%q err=%v", parsedRSA.PublicKey, err)
 	}
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	block, _ := ssh.MarshalPrivateKey(priv, "")

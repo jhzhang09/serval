@@ -79,7 +79,11 @@ func Parse(name string, pemText []byte, passphrase string) (Key, error) {
 		}
 		return Key{}, fmt.Errorf("无法解析私钥: %w", err)
 	}
-	return describe(Key{Name: strings.TrimSpace(name), PrivateKey: string(data), Passphrase: passphrase}, signer.PublicKey()), nil
+	k := describe(Key{Name: strings.TrimSpace(name), PrivateKey: string(data), Passphrase: passphrase}, signer.PublicKey())
+	if comment := openSSHComment(data, passphrase); comment != "" {
+		k.PublicKey += " " + comment
+	}
+	return k, nil
 }
 
 func describe(k Key, pub ssh.PublicKey) Key {
