@@ -127,6 +127,7 @@ func (a *app) loadLocal() {
 		return
 	}
 	a.local = d
+	a.migrateAIKey()
 }
 
 // saveLocal 保存只属于本机的设置到 device.json，不写进保险库。

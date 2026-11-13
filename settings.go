@@ -89,9 +89,10 @@ type settings struct {
 	TerminalThemeLight   string `json:"terminalThemeLight,omitempty"`
 	TerminalThemeDark    string `json:"terminalThemeDark,omitempty"`
 
-	// AI 助手设置（随同步，APIKey 单独存设备）
+	// AI 助手设置（随加密保险库同步）
 	AIBaseURL string `json:"aiBaseURL,omitempty"`
 	AIModel   string `json:"aiModel,omitempty"`
+	AIKey     string `json:"aiKey,omitempty"`
 }
 
 // deviceSettings 是只属于当前这台设备的设置，保存在配置目录下的 device.json，
@@ -110,6 +111,12 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
+	// DefaultMonitor 为真时，新建 SSH 会话默认开启顶栏服务器监控。
+	DefaultMonitor bool `json:"defaultMonitor,omitempty"`
+	// HostMonitor 记录各台主机上次的监控开关状态。
+	HostMonitor map[string]bool `json:"hostMonitor,omitempty"`
+	// DisableDistroProbe 为真时，不在首次连接时执行发行版探测命令。
+	DisableDistroProbe bool `json:"disableDistroProbe,omitempty"`
 	// SyncKind 为同步提供商类型："webdav"、"s3"、空（根据 SyncURL 自动识别）
 	SyncKind string `json:"syncKind,omitempty"`
 	// SyncURL 是 WebDAV 或 S3 上 vault.json 的统一地址。密码/私钥在系统安全存储。
@@ -124,8 +131,8 @@ type deviceSettings struct {
 	SyncOn bool `json:"syncOn,omitempty"`
 	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
 	SyncDir string `json:"syncDir,omitempty"`
-	// AIKey 是当前设备保存的 AI 接口访问密钥。
-	AIKey string `json:"aiKey,omitempty"`
+	// LegacyAIKey 仅用于将旧版本明文保存在 device.json 的密钥迁移进加密保险库，迁移后即清空。
+	LegacyAIKey string `json:"aiKey,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
@@ -552,6 +559,30 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 							})
 						}).Description("默认关闭。只记录远程会话的输出，存成纯文本并去掉颜色和控制字符。文件在所选文件夹里，不进保险库。本机终端不记录。")
 
+						ui.Field(c, "服务器监控", func() {
+							defMon := a.local.DefaultMonitor
+							c.Key("settingsDefaultMonitor")
+							ui.Checkbox(c, &defMon, "新建 SSH 会话时默认开启顶栏监控").OnChange(func() {
+								next := a.local
+								next.DefaultMonitor = defMon
+								if err := a.saveLocal(next); err != nil {
+									p.err = err.Error()
+								}
+							})
+						}).Description("开启后，每次连接 SSH 服务器都会自动探测并展示 CPU、内存等轻量状态。仅保存在本机。")
+
+						ui.Field(c, "系统识别", func() {
+							probeOn := !a.local.DisableDistroProbe
+							c.Key("settingsDistroProbe")
+							ui.Checkbox(c, &probeOn, "首次连接时自动识别操作系统发行版").OnChange(func() {
+								next := a.local
+								next.DisableDistroProbe = !probeOn
+								if err := a.saveLocal(next); err != nil {
+									p.err = err.Error()
+								}
+							})
+						}).Description("连接后会在远端执行一次只读命令读取 /etc/os-release。对审计严格的服务器可关闭此项，改在主机编辑里手动指定。")
+
 						if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
 							ui.Field(c, locales.SetRememberMasterPassword(), func() {
 								c.Key("settingsRemember")
@@ -957,31 +988,63 @@ func themeNote(name string) string {
 	return ""
 }
 
+func (a *app) commitAISettings() {
+	p := &a.settingsPanel
+	baseURL := strings.TrimSpace(p.aiBaseURL)
+	if baseURL == "" {
+		baseURL = ai.DefaultBaseURL
+	}
+	model := strings.TrimSpace(p.aiModel)
+	if model == "" {
+		model = ai.DefaultModel
+	}
+	key := strings.TrimSpace(p.aiKey)
+
+	if baseURL != a.settings.AIBaseURL || model != a.settings.AIModel {
+		next := a.settings
+		next.AIBaseURL = baseURL
+		next.AIModel = model
+		if err := a.saveSettings(next); err != nil {
+			p.err = err.Error()
+		}
+	}
+	if key != a.getAIKey() {
+		a.setAIKey(key)
+	}
+}
+
 func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
 	t := c.Theme()
 
 	ui.Field(c, "API 端点 (Base URL)", func() {
 		c.Key("setAIBaseURL")
-		ui.TextInput(c, &p.aiBaseURL).Placeholder("https://api.openai.com/v1")
+		ui.TextInput(c, &p.aiBaseURL).Placeholder(ai.DefaultBaseURL).OnSubmit(func() {
+			a.commitAISettings()
+		})
 	}).Description("兼容 OpenAI 标准端点，如 DeepSeek、Kimi、通义千问或本地 Ollama (http://localhost:11434/v1)")
 
 	ui.Field(c, "模型名称 (Model)", func() {
 		c.Key("setAIModel")
-		ui.TextInput(c, &p.aiModel).Placeholder("gpt-4o-mini")
+		ui.TextInput(c, &p.aiModel).Placeholder(ai.DefaultModel).OnSubmit(func() {
+			a.commitAISettings()
+		})
 	}).Description("例如：gpt-4o-mini, deepseek-chat, qwen-turbo 等")
 
 	ui.Field(c, "API Key (访问密钥)", func() {
 		c.Key("setAIKey")
-		ui.TextInput(c, &p.aiKey).Password().Placeholder("sk-...")
-	}).Description("密钥加密存储于系统安全存储，不随保险库同步，保证隐私安全。")
+		ui.TextInput(c, &p.aiKey).Password().Placeholder("sk-...").OnSubmit(func() {
+			a.commitAISettings()
+		})
+	}).Description("密钥会加密保存进保险库（随同步），修改后在关闭设置或回车时自动保存。")
 
-	ui.Row(c).Gap(8).Children(func() {
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		label := "测试连接"
 		if p.aiTestBusy {
 			label = "正在测试连接"
 		}
 		ui.Button(c, label).Key("aiTestBtn").Disabled(p.aiTestBusy).OnClick(func() {
+			a.commitAISettings()
 			p.aiTestBusy = true
 			p.aiTestMsg = ""
 			client := ai.NewClient(ai.Config{
@@ -991,40 +1054,18 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 				Timeout: 10 * time.Second,
 			})
 			go func() {
-				_, err := client.Chat(context.Background(), []ai.Message{
-					{Role: "user", Content: "echo test"},
-				})
+				err := client.Probe(context.Background())
 				a.post(func() {
 					p.aiTestBusy = false
 					if err != nil {
 						p.aiTestOK = false
-						p.aiTestMsg = "连接测试失败: " + err.Error()
+						p.aiTestMsg = "连接测试失败：" + friendlyAIError(err)
 					} else {
 						p.aiTestOK = true
-						p.aiTestMsg = "连接测试成功！模型响应正常。"
+						p.aiTestMsg = "连接测试成功，AI 服务响应正常。"
 					}
 				})
 			}()
-		})
-
-		ui.PrimaryButton(c, "保存 AI 配置").Key("aiSaveBtn").OnClick(func() {
-			baseURL := strings.TrimSpace(p.aiBaseURL)
-			if baseURL == "" {
-				baseURL = "https://api.openai.com/v1"
-			}
-			model := strings.TrimSpace(p.aiModel)
-			if model == "" {
-				model = "gpt-4o-mini"
-			}
-			next := a.settings
-			next.AIBaseURL = baseURL
-			next.AIModel = model
-			if err := a.saveSettings(next); err != nil {
-				p.err = err.Error()
-				return
-			}
-			a.setAIKey(strings.TrimSpace(p.aiKey))
-			a.toast(ui.Toast{Title: "AI 助手配置已保存"})
 		})
 	})
 
