@@ -175,6 +175,9 @@ func TestBroadcastProductionConfirm(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
 	tb.host.Production = true
+	if err := h.a.apply(hostChange(tb.host)); err != nil {
+		t.Fatalf("保存生产环境标记失败: %v", err)
+	}
 	h.tt.Frame()
 
 	h.click("搜索主机和操作")
