@@ -1160,7 +1160,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 					if strings.HasPrefix(p.query, "/") && len(p.query) > 1 && !strings.HasPrefix(item.Cmd, strings.TrimSpace(p.query)) {
 						continue
 					}
-					row := ui.ButtonBase(c).Key("aiSlash:"+item.Cmd).Padding(5, 8).Radius(6).Transition(design.Hover)
+					row := ui.ButtonBase(c).Key("aiSlash:"+item.Cmd).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
 					}
@@ -1181,7 +1181,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Padding(6).Gap(2).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.CardBorder).Children(func() {
 				for _, opt := range aiMentionOptions {
 					item := opt
-					row := ui.ButtonBase(c).Key("aiMention:"+item.ID).Padding(5, 8).Radius(6).Transition(design.Hover)
+					row := ui.ButtonBase(c).Key("aiMention:"+item.ID).Padding(5, 8).Radius(6).AlignItems(ui.Stretch).Transition(design.Hover)
 					if row.Hovered() {
 						row.Background(colors.Selected)
 					}
