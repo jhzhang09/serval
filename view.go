@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -697,7 +698,8 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 			ui.Text(c, hint).TextColor(t.TextMuted)
 		})
 		if len(a.connecting) > 0 {
-			for hostID, cancel := range a.connecting {
+			for _, hostID := range slices.Sorted(maps.Keys(a.connecting)) {
+				cancel := a.connecting[hostID]
 				if h, ok := a.hostByID(hostID); ok {
 					phase := a.connectingPhase[hostID]
 					if phase == "" {

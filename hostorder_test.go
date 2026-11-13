@@ -107,3 +107,60 @@ func TestMoveHostOrderAcrossGroups(t *testing.T) {
 		t.Fatalf("拖到空分组标题行后未正确归组: %+v", webHosts)
 	}
 }
+
+func TestRenameAndDeleteGroup(t *testing.T) {
+	h := newHarness(t)
+	h1 := hosts.Host{ID: "h1", Name: "Web-1", Address: "10.0.0.1", Group: "Web"}
+	h2 := hosts.Host{ID: "h2", Name: "DB-1", Address: "10.0.0.2", Group: "Database"}
+	if err := h.a.apply(hostChange(h1), hostChange(h2)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 新建两个空自定义分组并折叠 Web 分组
+	h.a.openNewGroup()
+	h.a.groupSheet.name = "Staging"
+	h.a.submitGroupDialog()
+	h.a.openNewGroup()
+	h.a.groupSheet.name = "TempEmpty"
+	h.a.submitGroupDialog()
+	h.a.toggleGroup("Web")
+	if !h.a.groupCollapsed("Web") {
+		t.Fatal("Web 分组应处于折叠状态")
+	}
+
+	// 重命名包含主机的分组，同时检查折叠状态随分组名更新
+	if err := h.a.renameGroup("Web", "Frontend"); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.a.allHostsInGroup("Web")) != 0 {
+		t.Fatal("重命名后旧分组不应保留主机")
+	}
+	if got := h.a.allHostsInGroup("Frontend"); len(got) != 1 || got[0].ID != "h1" {
+		t.Fatalf("重命名后新分组主机异常: %+v", got)
+	}
+	if !h.a.groupCollapsed("Frontend") || h.a.groupCollapsed("Web") {
+		t.Fatalf("分组折叠状态未随重命名更新: %+v", h.a.local.CollapsedGroups)
+	}
+
+	// 将空分组重命名为已存在的自定义分组时应去重
+	if err := h.a.renameGroup("TempEmpty", "Staging"); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, g := range h.a.customGroups {
+		if g == "Staging" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("合并重命名后 customGroups 存在重复项: %+v", h.a.customGroups)
+	}
+
+	// 删除空分组
+	h.a.deleteEmptyGroup("Staging")
+	for _, g := range h.a.customGroups {
+		if g == "Staging" {
+			t.Fatalf("空分组未删除: %+v", h.a.customGroups)
+		}
+	}
+}

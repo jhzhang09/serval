@@ -357,6 +357,9 @@ func (a *app) lockVault() {
 	a.stopSyncLoop()
 	a.stopSyncDir()
 	a.syncErr = ""
+	a.stopAIRequest()
+	a.ai = aiPanel{}
+	a.lastCopiedText = ""
 	a.closeAll()
 	if a.vault != nil {
 		a.vault.Lock()
@@ -388,6 +391,9 @@ func (a *app) lockVault() {
 	a.settingsPanel = settingsPanel{}
 	a.restore = restorePanel{}
 	a.pal = palette{}
+	a.groupSheet = groupDialogState{}
+	a.customGroups = nil
+	a.connectingPhase = nil
 	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
@@ -879,6 +885,10 @@ func (a *app) connectTelnet(h hosts.Host) {
 	a.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	a.connecting[h.ID] = cancel
+	if a.connectingPhase == nil {
+		a.connectingPhase = make(map[string]string)
+	}
+	a.connectingPhase[h.ID] = "正在连接 Telnet…"
 
 	port := h.Port
 	if port <= 0 {
@@ -891,6 +901,7 @@ func (a *app) connectTelnet(h hosts.Host) {
 		a.post(func() {
 			defer cancel()
 			delete(a.connecting, h.ID)
+			delete(a.connectingPhase, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -914,6 +925,10 @@ func (a *app) connectSerial(h hosts.Host) {
 	a.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	a.connecting[h.ID] = cancel
+	if a.connectingPhase == nil {
+		a.connectingPhase = make(map[string]string)
+	}
+	a.connectingPhase[h.ID] = "正在打开串口…"
 
 	stopBits := serial.StopBits1
 	if h.EffectiveStopBits() == 2 {
@@ -932,6 +947,7 @@ func (a *app) connectSerial(h hosts.Host) {
 		a.post(func() {
 			defer cancel()
 			delete(a.connecting, h.ID)
+			delete(a.connectingPhase, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -2267,7 +2283,7 @@ func (a *app) aiClient() *ai.Client {
 func friendlyAIError(err error) string {
 	switch {
 	case errors.Is(err, ai.ErrNoAPIKey):
-		return "尚未配置 API Key，请点击右上角打开“设置 → AI”填写"
+		return "尚未配置 API Key，请打开「设置 → AI」填写"
 	case errors.Is(err, ai.ErrInvalidEndpoint):
 		return "API 端点地址格式不正确，请检查是否包含 http:// 或 https://"
 	case errors.Is(err, ai.ErrUnauthorized):

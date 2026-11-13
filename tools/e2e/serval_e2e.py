@@ -7,7 +7,7 @@
 
     from serval_e2e import Driver
     d = Driver("/path/to/work")
-    d.press(key="addHost"); d.set("addAddress", "127.0.0.1"); d.shot("form.png")
+    d.press(key="sidebarAddMenu"); d.wait("添加主机"); d.press(label="添加主机"); d.set("addAddress", "127.0.0.1"); d.shot("form.png")
 
 元素用两种方式定位：Key（代码里 c.Key / .Key 设置的，最稳定）和可访问性标签（按钮文字）。
 协议是 MyGo 自动化插件的换行分隔 JSON，见 github.com/egoist/mygo/plugins/automation。
@@ -136,7 +136,7 @@ def smoke(d):
     password = open(os.path.join(d.work, "dev-password")).read().strip()
     port = os.environ.get("PORT", "22222")
     d.wait("连接一台主机")
-    d.press(key="addHost")
+    d.press(key="addFirst")
     d.wait("认证方式")
     for key, value in [("addAddress", "127.0.0.1"), ("addPort", port), ("addUser", os.environ.get("USER", "tester")), ("addName", "smoke")]:
         d.set(key, value)

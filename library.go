@@ -283,6 +283,7 @@ func (a *app) submitSetup() {
 			a.rememberOnDevice(s.remember)
 			then := s.then
 			a.setup = setupSheet{}
+			a.migrateAIKey()
 			a.noteVaultChanged()
 			a.toast(ui.Toast{Title: locales.LibMasterPasswordSet()})
 			if then != nil {
@@ -368,6 +369,7 @@ func (a *app) submitUnlock() {
 			a.rememberOnDevice(u.remember)
 			a.unlock = unlockState{}
 			a.reload()
+			a.migrateAIKey()
 			a.restoreSession()
 			a.onVaultReady()
 		})

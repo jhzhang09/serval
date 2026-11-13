@@ -185,9 +185,9 @@ const (
 
 // settingsPanel 是“设置”浮层面板的状态。
 type settingsPanel struct {
-	open, fresh bool
-	tab         settingsTab
-	err         string
+	open, fresh, active bool
+	tab                 settingsTab
+	err                 string
 
 	rememberDevice bool
 	sessionLog     bool
@@ -459,9 +459,16 @@ func (a *app) submitChangePassword() {
 // settingsDialog 是设置面板。设置主密码面板打开时让位。
 func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
-	if !p.open || a.setup.open || a.restore.open {
+	if a.setup.open || a.restore.open {
 		return
 	}
+	if !p.open {
+		if p.active {
+			a.closeSettings()
+		}
+		return
+	}
+	p.active = true
 	t := c.Theme()
 	mode := max(slices.Index(appearanceModes, a.settings.Appearance), 0)
 	// 标题和“完成”固定，中间的设置项放进滚动区域：设置项越来越多，窗口矮时放不下。
@@ -494,9 +501,15 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
 				ui.Segmented(c, &tabIdx, locales.SetGeneral(), locales.SetTerminal(), "同步", "AI").OnChange(func() {
+					if p.tab == settingsTabAI && settingsTab(tabIdx) != settingsTabAI {
+						a.commitAISettings()
+					}
 					p.tab = settingsTab(tabIdx)
 				})
 				if int(p.tab) != tabIdx {
+					if p.tab == settingsTabAI {
+						a.commitAISettings()
+					}
 					p.tab = settingsTab(tabIdx)
 				}
 			})
@@ -709,13 +722,33 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, p.err).Key("settingsError").TextColor(t.Danger)
 			}
 			ui.Row(c).Justify(ui.End).Children(func() {
-				ui.Button(c, locales.Done()).Key("settingsClose").OnClick(func() { a.settingsPanel = settingsPanel{} })
+				ui.Button(c, locales.Done()).Key("settingsClose").OnClick(a.closeSettings)
 			})
 		})
 	})
 	if !p.open {
-		a.settingsPanel = settingsPanel{}
+		a.closeSettings()
 	}
+}
+
+func (a *app) closeSettings() {
+	p := &a.settingsPanel
+	a.commitAISettings()
+	if a.setup.open {
+		p.open = true
+		p.active = true
+		prevThen := a.setup.then
+		a.setup.then = func() {
+			if prevThen != nil {
+				prevThen()
+			}
+			if a.settingsPanel.err == "" {
+				a.settingsPanel = settingsPanel{}
+			}
+		}
+		return
+	}
+	a.settingsPanel = settingsPanel{}
 }
 
 var (
@@ -1000,7 +1033,16 @@ func (a *app) commitAISettings() {
 	}
 	key := strings.TrimSpace(p.aiKey)
 
-	if baseURL != a.settings.AIBaseURL || model != a.settings.AIModel {
+	curBaseURL := a.settings.AIBaseURL
+	if curBaseURL == "" {
+		curBaseURL = ai.DefaultBaseURL
+	}
+	curModel := a.settings.AIModel
+	if curModel == "" {
+		curModel = ai.DefaultModel
+	}
+
+	if baseURL != curBaseURL || model != curModel {
 		next := a.settings
 		next.AIBaseURL = baseURL
 		next.AIModel = model

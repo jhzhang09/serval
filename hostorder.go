@@ -154,15 +154,36 @@ func (a *app) renameGroup(oldName, newName string) error {
 			changes = append(changes, hostChange(h))
 		}
 	}
-	for i, g := range a.customGroups {
-		if g == oldName {
-			a.customGroups[i] = newName
+	if len(changes) > 0 {
+		if err := a.apply(changes...); err != nil {
+			return err
 		}
 	}
-	if len(changes) == 0 {
-		return nil
+	var updated []string
+	for _, g := range a.customGroups {
+		if g == oldName {
+			g = newName
+		}
+		if g != "" && !slices.Contains(updated, g) {
+			updated = append(updated, g)
+		}
 	}
-	return a.apply(changes...)
+	a.customGroups = updated
+	if slices.Contains(a.local.CollapsedGroups, oldName) {
+		next := a.local
+		var collapsed []string
+		for _, g := range a.local.CollapsedGroups {
+			if g == oldName {
+				g = newName
+			}
+			if g != "" && !slices.Contains(collapsed, g) {
+				collapsed = append(collapsed, g)
+			}
+		}
+		next.CollapsedGroups = collapsed
+		_ = a.saveLocal(next)
+	}
+	return nil
 }
 
 // deleteEmptyGroup 删除没有主机的空分组。

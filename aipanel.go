@@ -27,6 +27,7 @@ type aiPanel struct {
 	query        string
 	loading      bool
 	cancel       context.CancelFunc
+	reqSeq       uint64
 	explanation  string
 	command      string
 	commands     []string
@@ -127,6 +128,8 @@ func (a *app) runAIGenerate() {
 	client := a.aiClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
+	a.ai.reqSeq++
+	seq := a.ai.reqSeq
 	a.ai.loading = true
 	a.ai.cancel = cancel
 	a.ai.err = ""
@@ -146,11 +149,11 @@ func (a *app) runAIGenerate() {
 		a.post(func() {
 			canceled := ctx.Err() == context.Canceled
 			cancel()
-			a.ai.loading = false
-			a.ai.cancel = nil
-			if canceled {
+			if canceled || seq != a.ai.reqSeq {
 				return
 			}
+			a.ai.loading = false
+			a.ai.cancel = nil
 			if err != nil {
 				a.ai.err = friendlyAIError(err)
 				return
@@ -173,6 +176,8 @@ func (a *app) runAIExplain() {
 	client := a.aiClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
+	a.ai.reqSeq++
+	seq := a.ai.reqSeq
 	a.ai.loading = true
 	a.ai.cancel = cancel
 	a.ai.err = ""
@@ -183,11 +188,11 @@ func (a *app) runAIExplain() {
 		a.post(func() {
 			canceled := ctx.Err() == context.Canceled
 			cancel()
-			a.ai.loading = false
-			a.ai.cancel = nil
-			if canceled {
+			if canceled || seq != a.ai.reqSeq {
 				return
 			}
+			a.ai.loading = false
+			a.ai.cancel = nil
 			if err != nil {
 				a.ai.err = friendlyAIError(err)
 				return
@@ -220,6 +225,7 @@ func (a *app) applyAIResult(query string, res *ai.Result) {
 }
 
 func (a *app) stopAIRequest() {
+	a.ai.reqSeq++
 	if a.ai.cancel != nil {
 		a.ai.cancel()
 		a.ai.cancel = nil
@@ -263,10 +269,27 @@ func (a *app) insertCommandToTerminal(cmd string) {
 	a.toast(ui.Toast{Title: "已将命令填入终端，请核对后回车执行"})
 }
 
+func (a *app) submitAIInput() {
+	if a.ai.loading {
+		return
+	}
+	if len(a.ai.turns) == 0 && a.ai.contextError != "" && strings.TrimSpace(a.ai.query) == "" {
+		a.runAIExplain()
+		return
+	}
+	a.runAIGenerate()
+}
+
 // aiDialog 渲染 AI 命令助手浮层。
 func (a *app) aiDialog(c *ui.Context, colors design.Colors) {
 	p := &a.ai
-	if !p.open || a.setup.open {
+	if !p.open {
+		if p.cancel != nil || p.loading {
+			a.stopAIRequest()
+		}
+		return
+	}
+	if a.setup.open {
 		return
 	}
 	t := c.Theme()
@@ -322,11 +345,7 @@ func (a *app) aiDialog(c *ui.Context, colors design.Colors) {
 						ui.TextInput(c, &p.query).
 							Placeholder(placeholder).
 							AutoFocus().
-							OnSubmit(func() {
-								if !p.loading {
-									a.runAIGenerate()
-								}
-							})
+							OnSubmit(a.submitAIInput)
 					})
 
 					// 操作行
@@ -341,13 +360,7 @@ func (a *app) aiDialog(c *ui.Context, colors design.Colors) {
 							} else if p.contextError != "" && strings.TrimSpace(p.query) == "" {
 								label = "分析报错"
 							}
-							ui.PrimaryButton(c, label).Key("aiSubmitBtn").OnClick(func() {
-								if p.contextError != "" && strings.TrimSpace(p.query) == "" {
-									a.runAIExplain()
-								} else {
-									a.runAIGenerate()
-								}
-							})
+							ui.PrimaryButton(c, label).Key("aiSubmitBtn").OnClick(a.submitAIInput)
 							if a.current() != nil {
 								ui.Button(c, locales.AiAnalyzeButton()).Key("aiAnalyzeTermBtn").OnClick(func() {
 									text := a.captureActiveTerminalTail(25)
