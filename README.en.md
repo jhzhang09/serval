@@ -34,15 +34,15 @@ Multi-tab and split-pane terminals, multi-hop jump hosts, SOCKS5 & HTTP proxies,
 | Area | Capabilities |
 |---|---|
 | **Encrypted Vault & Sync** | Per-record XChaCha20-Poly1305 encryption with Argon2id key derivation; optional OS keychain integration (macOS Keychain, Windows Credential Manager, Linux Secret Service) to remember the vault key locally; idle auto-lock and manual lock; conflict-free per-record sync via WebDAV or local sync folder. |
-| **Hosts & Command Palette** | Add, edit, duplicate, group, and filter hosts; mark hosts as **Production** (red border badge + broadcast safety confirmation); renaming a host automatically updates any jump-host chains referencing it; quick-connect to `user@host[:port]` from the Command Palette (`⌘K`) and save connected sessions as hosts with one click. |
-| **Authentication, MFA & Keys** | Auto (private key → `ssh-agent` → password), Password-only, or Key-only modes; built-in Key Manager to import or generate **Ed25519** / **RSA 4096** keys and copy public keys; full `keyboard-interactive` (PAM / OTP) support and automatic **RFC 6238 TOTP** (`otpauth://` or Base32) code fill; optional per-host `ssh-agent` forwarding. |
-| **Multi-Hop Jump Hosts & Proxies** | Chain up to **8 jump hosts** with automatic cycle detection and per-hop fingerprint & credential prompts; manage **SOCKS5** and **HTTP** proxies (with encrypted proxy passwords) reusable across hosts. |
+| **Hosts & Command Palette** | Add, edit, duplicate, group, and filter hosts by search or multi-tags (`#tag`); async host connectivity & RTT latency probe; right-click split open, direct SFTP, SSH command copy, and public-key deploy; mark hosts as **Production** (red border badge + broadcast safety confirmation); renaming a host automatically updates jump-host chains; quick-connect to `user@host[:port]` from the Command Palette (`⌘K`). |
+| **Authentication, MFA & Keys** | Auto (private key → `ssh-agent` → password), Password-only, or Key-only modes; built-in Key Manager to import/generate **Ed25519** / **RSA 4096** keys, import keys directly inside the host form, and idempotently deploy public keys (`ssh-copy-id`) to `~/.ssh/authorized_keys`; `keyboard-interactive` (PAM / OTP) + **RFC 6238 TOTP**; optional per-host `ssh-agent` forwarding and automatic logon scripts. |
+| **Multi-Hop Jump Hosts & Proxies** | Chain up to **8 jump hosts** with rich target previews & automatic cycle detection, plus per-hop fingerprint & credential prompts; manage **SOCKS5** and **HTTP** proxies (with encrypted proxy passwords) reusable across hosts. |
 | **Port Forwarding** | Manage **Local**, **Remote**, and **Dynamic (SOCKS5)** port forwards; bind rules to a host for automatic start/stop with sessions, or toggle them manually with live listener status and byte counters. |
-| **Tabs & Split Panes** | Mix remote SSH tabs and **Local Shell** tabs; split panes horizontally or vertically at any ratio; in-terminal search (`⌘F`); exponential-backoff auto-reconnect on network drop; automatic session & split-layout restore on launch; instant font size, line height, cursor style, scrollback size, and light/dark terminal color presets. |
+| **Tabs & Split Panes** | Mix SSH, Telnet, Serial, and **Local Shell** tabs with drag/keyboard tab reordering; split panes horizontally or vertically; in-terminal search (`⌘F`); exponential-backoff auto-reconnect; session & split-layout restore on launch; instant font, cursor, copy-on-select, right-click behavior, scrollback, and light/dark terminal themes. |
 | **Broadcast Input & Snippets** | **Broadcast Input** mirrors keystrokes from the focused pane to selected panes across tabs (with mandatory confirmation before including Production panes); **Snippets** support `{{variable}}` placeholders prompted before sending and confirmation before multi-line execution. |
-| **Dual-Pane SFTP Drawer** | Toggle with `⌘J`: side-by-side Local and Remote directory panes with full/tail path headers, draggable drawer width, and draggable internal split ratio; drag files or folders between panes or directly from Finder/Explorer to upload/download; transfer queue with progress, speed, and cancellation; new folder, rename, chmod, delete, copy path, and conflict-checked **remote UTF-8 text editing**. |
+| **Dual-Pane SFTP Drawer** | Toggle with `⌘J`: side-by-side Local and Remote panes with click-to-edit path bars, saved remote directory bookmarks, draggable drawer width, and internal split ratio; drag files or folders between panes or from Finder/Explorer to upload/download; transfer queue with progress/cancellation; mkdir, rename, chmod, delete, copy path, and conflict-checked **remote UTF-8 text editing**. |
 | **ZMODEM (`rz` / `sz`) & Logs** | Clean-room pure-Go ZMODEM implementation: run `rz` or `sz` inside any remote shell to open native file/folder pickers with live progress and cancellation; optional plain-text remote session logging. |
-| **AI Agent** | Toggle docked right-hand AI Agent (`⌘I`) with multi-profile switching (DeepSeek, OpenAI, Qwen, Kimi, Ollama, or any OpenAI-compatible API); SSE streaming, collapsible thinking blocks & tool cards, multi-turn `ssh_exec` / SFTP / terminal inspection, 3 permission modes (Auto with dangerous-command guard / Confirm / Observer), native Markdown tables, `@` mentions & `/` slash commands. |
+| **AI Agent** | Toggle docked right-hand AI Agent (`⌘I`) with multi-profile switching (DeepSeek, OpenAI, Qwen, Kimi, Ollama, or any OpenAI-compatible API) and one-click pane error analysis (`⌘E`); SSE streaming, collapsible thinking blocks & tool cards, multi-turn `ssh_exec` / SFTP / terminal inspection, 3 permission modes (Auto with dangerous-command guard / Confirm / Observer), native Markdown tables, `@` mentions & `/` slash commands. |
 
 ## Installation
 
@@ -122,8 +122,11 @@ macOS uses `⌘`; Windows and Linux use `Ctrl+Shift` so terminal control keys (`
 | Split pane right | `⌘D` | `Ctrl+Shift+D` |
 | Split pane down | `⌘⌥D` | `Ctrl+Shift+Alt+D` |
 | Close active pane | `⌘W` | `Ctrl+Shift+W` |
+| Switch previous / next tab | `⌘[` / `⌘]` | `Ctrl+Shift+[` / `]` |
+| Move tab left / right | `⌘⌥[` / `⌘⌥]` | `Ctrl+Shift+Alt+[` / `]` |
 | Toggle dual-pane SFTP drawer | `⌘J` | `Ctrl+Shift+J` |
 | Toggle AI Agent drawer | `⌘I` | `Ctrl+Shift+I` |
+| Analyze terminal output with AI | `⌘E` | `Ctrl+Shift+E` |
 | Toggle host sidebar | `⌘\` | `Ctrl+Shift+\` |
 | Save remote text editor buffer | `⌘S` | `Ctrl+S` |
 
