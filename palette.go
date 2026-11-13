@@ -235,7 +235,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("globe", locales.Proxy(), a.openProxies)
 	action("code", "代码片段", a.openSnippets)
 	action("arrow-left-right", locales.PortForward(), a.openForwards)
-	action("sparkles", "AI 助手：生成命令与错误分析", a.openAI)
+	actionWithShortcut("sparkles", "AI Agent：切换右侧面板", shortcutText("I"), a.toggleAI)
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
 	actionWithShortcut("settings", locales.PaletteOpenSettings(), shortcutText(","), a.openSettings)
 	action("server", locales.KnownHosts(), a.openSettings)

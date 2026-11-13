@@ -42,6 +42,7 @@ Multi-tab and split-pane terminals, multi-hop jump hosts, SOCKS5 & HTTP proxies,
 | **Broadcast Input & Snippets** | **Broadcast Input** mirrors keystrokes from the focused pane to selected panes across tabs (with mandatory confirmation before including Production panes); **Snippets** support `{{variable}}` placeholders prompted before sending and confirmation before multi-line execution. |
 | **Dual-Pane SFTP Drawer** | Toggle with `⌘J`: side-by-side Local and Remote directory panes with full/tail path headers, draggable drawer width, and draggable internal split ratio; drag files or folders between panes or directly from Finder/Explorer to upload/download; transfer queue with progress, speed, and cancellation; new folder, rename, chmod, delete, copy path, and conflict-checked **remote UTF-8 text editing**. |
 | **ZMODEM (`rz` / `sz`) & Logs** | Clean-room pure-Go ZMODEM implementation: run `rz` or `sz` inside any remote shell to open native file/folder pickers with live progress and cancellation; optional plain-text remote session logging. |
+| **AI Agent** | Toggle docked right-hand AI Agent (`⌘I`) with multi-profile switching (DeepSeek, OpenAI, Qwen, Kimi, Ollama, or any OpenAI-compatible API); SSE streaming, collapsible thinking blocks & tool cards, multi-turn `ssh_exec` / SFTP / terminal inspection, 3 permission modes (Auto with dangerous-command guard / Confirm / Observer), native Markdown tables, `@` mentions & `/` slash commands. |
 
 ## Installation
 
@@ -122,6 +123,7 @@ macOS uses `⌘`; Windows and Linux use `Ctrl+Shift` so terminal control keys (`
 | Split pane down | `⌘⌥D` | `Ctrl+Shift+Alt+D` |
 | Close active pane | `⌘W` | `Ctrl+Shift+W` |
 | Toggle dual-pane SFTP drawer | `⌘J` | `Ctrl+Shift+J` |
+| Toggle AI Agent drawer | `⌘I` | `Ctrl+Shift+I` |
 | Toggle host sidebar | `⌘\` | `Ctrl+Shift+\` |
 | Save remote text editor buffer | `⌘S` | `Ctrl+S` |
 

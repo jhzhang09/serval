@@ -423,14 +423,16 @@ func (s *Server) session(conn *ssh.ServerConn, channel ssh.Channel, requests <-c
 		case <-done:
 			// pty 只在这个协程里关闭：window-change 的 Setsize 也在这里执行，
 			// 放到 shell 协程里关会和 Setsize 读文件描述符发生数据竞争。
-			ptmx.Close()
+			if ptmx != nil {
+				ptmx.Close()
+			}
 			return
 		case req, ok := <-requests:
 			if !ok {
 				// 客户端断开时必须主动结束 shell：另一个 goroutine 还阻塞在 PTY 读取上，
 				// 只关闭 PTY 不一定能让 shell 收到 SIGHUP，会留下孤儿进程。
-				if shellCmd != nil {
-					shellCmd.Process.Signal(syscall.SIGHUP)
+				if shellCmd != nil && shellCmd.Process != nil {
+					_ = shellCmd.Process.Signal(syscall.SIGHUP)
 					_ = shellCmd.Process.Kill()
 				}
 				if ptmx != nil {
@@ -485,6 +487,19 @@ func (s *Server) session(conn *ssh.ServerConn, channel ssh.Channel, requests <-c
 				}
 				ptmx, shellCmd = f, cmd
 				req.Reply(true, nil)
+			case "exec":
+				var payload struct{ Command string }
+				if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+					req.Reply(false, nil)
+					return
+				}
+				cmd, err := s.startExec(channel, payload.Command, agentSock, done)
+				if err != nil {
+					req.Reply(false, nil)
+					return
+				}
+				shellCmd = cmd
+				req.Reply(true, nil)
 			case "subsystem":
 				var payload struct{ Name string }
 				if err := ssh.Unmarshal(req.Payload, &payload); err != nil || payload.Name != "sftp" {
@@ -538,6 +553,35 @@ func (s *Server) startShell(channel ssh.Channel, term string, size *pty.Winsize,
 		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{uint32(code)}))
 	}()
 	return ptmx, cmd, nil
+}
+
+func (s *Server) startExec(channel ssh.Channel, command, agentSock string, done chan struct{}) (*exec.Cmd, error) {
+	shell := "/bin/sh"
+	if len(s.opts.Shell) > 0 {
+		shell = s.opts.Shell[0]
+	}
+	cmd := exec.Command(shell, "-c", command)
+	cmd.Dir = s.opts.Dir
+	cmd.Env = shellEnv("xterm-256color", agentSock)
+	cmd.Stdout = channel
+	cmd.Stderr = channel.Stderr()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() {
+		defer close(done)
+		code := 0
+		if err := cmd.Wait(); err != nil {
+			var exit *exec.ExitError
+			code = 1
+			if errors.As(err, &exit) {
+				code = exit.ExitCode()
+			}
+		}
+		_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{uint32(code)}))
+		_ = channel.CloseWrite()
+	}()
+	return cmd, nil
 }
 
 // shellEnv 构造 shell 的环境变量。agentSock 非空时才设置 SSH_AUTH_SOCK。

@@ -7,8 +7,8 @@
 ```mermaid
 flowchart TB
     subgraph app["应用层 package main（只在桌面上运行）"]
-        view["视图<br/>view.go · sheets.go · palette.go<br/>hostform.go · keyspanel.go · snippet.go"]
-        state["状态与流程<br/>app.go（连接、标签、窗格）<br/>library.go（数据层）· knownhosts.go"]
+        view["视图<br/>view.go · sheets.go · palette.go<br/>hostform.go · keyspanel.go · snippet.go · aipanel.go"]
+        state["状态与流程<br/>app.go（连接、标签、窗格）· aiagent.go<br/>library.go（数据层）· knownhosts.go"]
     end
     design["design/<br/>配色 · 字体 · 图标 · 动效 · 斑纹"]
     subgraph core["core/（纯 Go，不依赖 MyGo，可编进移动端）"]
@@ -18,11 +18,12 @@ flowchart TB
         hosts["hosts<br/>主机结构 · 链路解析"]
         totp["totp<br/>RFC 6238 验证码"]
         syncer["syncer<br/>WebDAV 同步"]
+        ai["ai<br/>OpenAI SSE · Agent 循环 · Markdown"]
     end
     mygo["MyGo：窗口、原生 UI、终端插件、玻璃插件、系统安全存储"]
     view --> state
     view --> design
-    state --> sshconn & vault & keys & hosts & totp & syncer
+    state --> sshconn & vault & keys & hosts & totp & syncer & ai
     view --> mygo
     state --> mygo
 ```
@@ -154,7 +155,7 @@ view()
     ├── sidebar                    过滤主机、可折叠分组、添加主机、密钥
     └── Column
         ├── tabBar                 标签放在标题栏里
-        └── workspace              窗格卡片树（paneView）+ 文件抽屉，没有标签时是 emptyState
+        └── workspace              窗格卡片树（paneView）+ 文件抽屉 + AI Agent 抽屉，没有标签时是 emptyState + AI Agent 抽屉
 浮层（按渲染顺序，后面的盖在上面）：
 hostKeyDialog → authDialog → challengeDialog → hostDialog → proxiesDialog → forwardsDialog → keysDialog → snippetsDialog → settingsDialog → setupDialog → deleteDialog → uploadConfirmDialog → folderConflictDialog → lockConfirmDialog → fileOpDialog → fileDeleteDialog → editorDialog → toasts → paletteDialog → broadcastDialog
 ```

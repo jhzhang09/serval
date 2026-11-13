@@ -82,8 +82,12 @@ func NewClient(cfg Config) *Client {
 
 // Message 代表一条聊天消息。
 type Message struct {
-	Role    string `json:"role"` // "system", "user", "assistant"
-	Content string `json:"content"`
+	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
 }
 
 type chatRequest struct {
@@ -323,6 +327,11 @@ func (c *Client) FollowUp(ctx context.Context, osInfo string, history []Message,
 		return nil, err
 	}
 	return parseMarkdownCommand(raw), nil
+}
+
+// ParseCommandText 从包含 Markdown 代码块或 JSON 的文本中提取命令与解释说明。
+func ParseCommandText(text string) *Result {
+	return parseMarkdownCommand(text)
 }
 
 // parseMarkdownCommand 从包含 Markdown 代码块或 JSON 的文本中提取命令与解释说明。

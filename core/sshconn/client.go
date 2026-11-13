@@ -5,6 +5,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -445,4 +446,104 @@ func (c *Client) Output(cmd string) ([]byte, error) {
 	}
 	defer sess.Close()
 	return sess.Output(cmd)
+}
+
+// ExecResult 是远端非交互命令的执行结果。
+type ExecResult struct {
+	Stdout    string
+	Stderr    string
+	ExitCode  int
+	Truncated bool
+}
+
+type limitedWriter struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.limit <= 0 {
+		w.buf.Write(p)
+		return len(p), nil
+	}
+	rem := w.limit - w.buf.Len()
+	if rem > 0 {
+		if len(p) > rem {
+			w.buf.Write(p[:rem])
+			w.truncated = true
+		} else {
+			w.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		w.truncated = true
+	}
+	// 消费全部字节，避免远端因管道阻塞而无法退出。
+	return len(p), nil
+}
+
+// ExecContext 在远端执行一条单次命令，分别收集标准输出与标准错误，并支持超时或取消。
+// 命令成功送达远端并返回非零退出码时，err 为 nil，通过 ExitCode 体现结果。
+func (c *Client) ExecContext(ctx context.Context, cmd string, maxBytes int) (ExecResult, error) {
+	if c == nil || c.conn == nil {
+		return ExecResult{}, errors.New("sshconn: 客户端未连接")
+	}
+	if err := ctx.Err(); err != nil {
+		return ExecResult{}, err
+	}
+	if maxBytes <= 0 {
+		maxBytes = 64 << 10
+	}
+	sess, err := c.conn.NewSession()
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer sess.Close()
+
+	stdout := &limitedWriter{limit: maxBytes}
+	stderr := &limitedWriter{limit: maxBytes}
+	sess.Stdout = stdout
+	sess.Stderr = stderr
+
+	if err := sess.Start(cmd); err != nil {
+		return ExecResult{}, err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.Wait()
+	}()
+
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-ctx.Done():
+		_ = sess.Signal(ssh.SIGTERM)
+		_ = sess.Close()
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
+		return ExecResult{
+			Stdout:    stdout.buf.String(),
+			Stderr:    stderr.buf.String(),
+			ExitCode:  -1,
+			Truncated: stdout.truncated || stderr.truncated,
+		}, ctx.Err()
+	}
+
+	res := ExecResult{
+		Stdout:    stdout.buf.String(),
+		Stderr:    stderr.buf.String(),
+		Truncated: stdout.truncated || stderr.truncated,
+	}
+	if waitErr != nil {
+		var exitErr *ssh.ExitError
+		if errors.As(waitErr, &exitErr) {
+			res.ExitCode = exitErr.ExitStatus()
+			return res, nil
+		}
+		return res, waitErr
+	}
+	return res, nil
 }

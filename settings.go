@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path"
 	"slices"
 	"strings"
@@ -90,9 +91,20 @@ type settings struct {
 	TerminalThemeDark    string `json:"terminalThemeDark,omitempty"`
 
 	// AI 助手设置（随加密保险库同步）
-	AIBaseURL string `json:"aiBaseURL,omitempty"`
-	AIModel   string `json:"aiModel,omitempty"`
-	AIKey     string `json:"aiKey,omitempty"`
+	AIBaseURL       string      `json:"aiBaseURL,omitempty"`
+	AIModel         string      `json:"aiModel,omitempty"`
+	AIKey           string      `json:"aiKey,omitempty"`
+	AIProfiles      []aiProfile `json:"aiProfiles,omitempty"`
+	ActiveAIProfile string      `json:"activeAIProfile,omitempty"`
+}
+
+// aiProfile 保存单个 AI 服务商与模型配置，密钥随保险库加密存储。
+type aiProfile struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	BaseURL string `json:"baseURL"`
+	Model   string `json:"model"`
+	APIKey  string `json:"apiKey,omitempty"`
 }
 
 // deviceSettings 是只属于当前这台设备的设置，保存在配置目录下的 device.json，
@@ -216,12 +228,13 @@ type settingsPanel struct {
 	allowMerge   bool
 
 	// AI 助手页草稿
-	aiBaseURL  string
-	aiModel    string
-	aiKey      string
-	aiTestBusy bool
-	aiTestOK   bool
-	aiTestMsg  string
+	aiProfileName string
+	aiBaseURL     string
+	aiModel       string
+	aiKey         string
+	aiTestBusy    bool
+	aiTestOK      bool
+	aiTestMsg     string
 
 	// WebDAV 专用字段
 	webdavServer   string
@@ -301,15 +314,11 @@ func (a *app) openSettings() {
 			p.syncVendor = "自定义"
 		}
 	}
-	p.aiBaseURL = a.settings.AIBaseURL
-	if p.aiBaseURL == "" {
-		p.aiBaseURL = "https://api.openai.com/v1"
-	}
-	p.aiModel = a.settings.AIModel
-	if p.aiModel == "" {
-		p.aiModel = "gpt-4o-mini"
-	}
-	p.aiKey = a.getAIKey()
+	cfg := a.activeAIConfig()
+	p.aiProfileName = cfg.Name
+	p.aiBaseURL = cfg.BaseURL
+	p.aiModel = cfg.Model
+	p.aiKey = cfg.APIKey
 	a.settingsPanel = p
 }
 
@@ -1021,6 +1030,38 @@ func themeNote(name string) string {
 	return ""
 }
 
+type aiPreset struct {
+	Name    string
+	BaseURL string
+	Model   string
+}
+
+var aiPresets = []aiPreset{
+	{Name: "DeepSeek", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
+	{Name: "OpenAI", BaseURL: "https://api.openai.com/v1", Model: "gpt-4o-mini"},
+	{Name: "通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-plus"},
+	{Name: "Kimi", BaseURL: "https://api.moonshot.cn/v1", Model: "moonshot-v1-8k"},
+	{Name: "Ollama", BaseURL: "http://localhost:11434/v1", Model: "qwen2.5:7b"},
+}
+
+func inferAIProviderName(baseURL string) string {
+	low := strings.ToLower(baseURL)
+	switch {
+	case strings.Contains(low, "deepseek"):
+		return "DeepSeek"
+	case strings.Contains(low, "dashscope") || strings.Contains(low, "aliyuncs"):
+		return "通义千问"
+	case strings.Contains(low, "moonshot"):
+		return "Kimi"
+	case strings.Contains(low, ":11434") || strings.Contains(low, "ollama"):
+		return "Ollama"
+	case strings.Contains(low, "openai"):
+		return "OpenAI"
+	default:
+		return "自定义"
+	}
+}
+
 func (a *app) commitAISettings() {
 	p := &a.settingsPanel
 	baseURL := strings.TrimSpace(p.aiBaseURL)
@@ -1032,6 +1073,45 @@ func (a *app) commitAISettings() {
 		model = ai.DefaultModel
 	}
 	key := strings.TrimSpace(p.aiKey)
+	name := strings.TrimSpace(p.aiProfileName)
+
+	// 若当前选中了某个已保存的多模型配置，优先同步更新该配置与兼容主字段
+	if a.settings.ActiveAIProfile != "" {
+		for i, prof := range a.settings.AIProfiles {
+			if prof.ID != a.settings.ActiveAIProfile {
+				continue
+			}
+			if name == "" {
+				name = prof.Name
+			}
+			if name == "" {
+				name = inferAIProviderName(baseURL)
+			}
+			if prof.BaseURL == baseURL && prof.Model == model && prof.APIKey == key && prof.Name == name {
+				return
+			}
+			if key != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
+				a.requireProtection(func() { a.commitAISettings() })
+				return
+			}
+			next := a.settings
+			next.AIProfiles = append([]aiProfile(nil), a.settings.AIProfiles...)
+			next.AIProfiles[i] = aiProfile{
+				ID:      prof.ID,
+				Name:    name,
+				BaseURL: baseURL,
+				Model:   model,
+				APIKey:  key,
+			}
+			next.AIBaseURL = baseURL
+			next.AIModel = model
+			next.AIKey = key
+			if err := a.saveSettings(next); err != nil {
+				p.err = err.Error()
+			}
+			return
+		}
+	}
 
 	curBaseURL := a.settings.AIBaseURL
 	if curBaseURL == "" {
@@ -1055,9 +1135,157 @@ func (a *app) commitAISettings() {
 	}
 }
 
+func (a *app) saveAsNewAIProfile() {
+	p := &a.settingsPanel
+	baseURL := strings.TrimSpace(p.aiBaseURL)
+	if baseURL == "" {
+		baseURL = ai.DefaultBaseURL
+	}
+	model := strings.TrimSpace(p.aiModel)
+	if model == "" {
+		model = ai.DefaultModel
+	}
+	key := strings.TrimSpace(p.aiKey)
+	name := strings.TrimSpace(p.aiProfileName)
+	if name == "" {
+		name = inferAIProviderName(baseURL)
+	}
+	if key != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
+		a.requireProtection(func() { a.saveAsNewAIProfile() })
+		return
+	}
+	id := fmt.Sprintf("ai-%d", time.Now().UnixNano())
+	next := a.settings
+	next.AIProfiles = append([]aiProfile(nil), a.settings.AIProfiles...)
+	next.AIProfiles = append(next.AIProfiles, aiProfile{
+		ID:      id,
+		Name:    name,
+		BaseURL: baseURL,
+		Model:   model,
+		APIKey:  key,
+	})
+	next.ActiveAIProfile = id
+	next.AIBaseURL = baseURL
+	next.AIModel = model
+	next.AIKey = key
+	if err := a.saveSettings(next); err != nil {
+		p.err = err.Error()
+		return
+	}
+	p.aiProfileName = name
+	p.aiTestMsg = "已保存并切换到配置：" + name + " · " + model
+	p.aiTestOK = true
+}
+
+func (a *app) selectAIProfileInSettings(id string) {
+	for _, prof := range a.settings.AIProfiles {
+		if prof.ID != id {
+			continue
+		}
+		if err := a.switchAIProfile(id); err != nil {
+			a.settingsPanel.err = err.Error()
+			return
+		}
+		a.settingsPanel.aiProfileName = prof.Name
+		a.settingsPanel.aiBaseURL = prof.BaseURL
+		a.settingsPanel.aiModel = prof.Model
+		a.settingsPanel.aiKey = prof.APIKey
+		a.settingsPanel.aiTestMsg = ""
+		return
+	}
+}
+
+func (a *app) deleteAIProfileInSettings(id string) {
+	next := a.settings
+	var kept []aiProfile
+	for _, prof := range a.settings.AIProfiles {
+		if prof.ID != id {
+			kept = append(kept, prof)
+		}
+	}
+	next.AIProfiles = kept
+	if next.ActiveAIProfile == id {
+		if len(kept) > 0 {
+			next.ActiveAIProfile = kept[0].ID
+			next.AIBaseURL = kept[0].BaseURL
+			next.AIModel = kept[0].Model
+			next.AIKey = kept[0].APIKey
+		} else {
+			next.ActiveAIProfile = ""
+		}
+	}
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+		return
+	}
+	cfg := a.activeAIConfig()
+	a.settingsPanel.aiProfileName = cfg.Name
+	a.settingsPanel.aiBaseURL = cfg.BaseURL
+	a.settingsPanel.aiModel = cfg.Model
+	a.settingsPanel.aiKey = cfg.APIKey
+}
+
 func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 	p := &a.settingsPanel
 	t := c.Theme()
+
+	// 服务商快速预设
+	ui.Field(c, "服务商预设", func() {
+		ui.Row(c).Gap(6).Wrap().Children(func() {
+			for _, pr := range aiPresets {
+				preset := pr
+				selected := strings.EqualFold(strings.TrimRight(strings.TrimSpace(p.aiBaseURL), "/"), preset.BaseURL)
+				b := ui.Button(c, preset.Name).Key("aiPreset:"+preset.Name).Height(26).Padding(0, 10)
+				if selected {
+					b.Background(t.Accent.Alpha(0.14)).TextColor(t.Accent)
+				}
+				b.OnClick(func() {
+					p.aiProfileName = preset.Name
+					p.aiBaseURL = preset.BaseURL
+					p.aiModel = preset.Model
+					p.aiTestMsg = ""
+				})
+			}
+		})
+	}).Description("点击服务商自动填充端点与推荐模型；再填入 API Key 即可使用。")
+
+	if len(a.settings.AIProfiles) > 0 {
+		ui.Field(c, "已保存配置", func() {
+			ui.Column(c).Gap(6).Children(func() {
+				for _, prof := range a.settings.AIProfiles {
+					item := prof
+					active := a.settings.ActiveAIProfile == item.ID
+					row := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8).Radius(design.RadiusRow).Background(colors.Hover)
+					if active {
+						row.Background(t.Accent.Alpha(0.12)).Border(1, t.Accent.Alpha(0.35))
+					}
+					row.Children(func() {
+						label := item.Name + " · " + item.Model
+						ui.ButtonBase(c).Key("aiProfileUse:" + item.ID).Grow(1).MinWidth(0).Children(func() {
+							ui.Text(c, label).FontSize(design.TextBody).SingleLine().Ellipsis("…")
+						}).OnClick(func() {
+							a.selectAIProfileInSettings(item.ID)
+						})
+						if active {
+							ui.Text(c, "当前").FontSize(design.TextSmall).TextColor(t.Accent).Shrink(0)
+						}
+						ui.ButtonBase(c).Key("aiProfileDel:"+item.ID).Label("删除配置 "+label).Size(22, 22).Center().Radius(6).Children(func() {
+							ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
+						}).OnClick(func() {
+							a.deleteAIProfileInSettings(item.ID)
+						})
+					})
+				}
+			})
+		}).Description("可在 AI Agent 面板底部栏一键切换这些已保存的模型配置。")
+	}
+
+	ui.Field(c, "配置名称", func() {
+		c.Key("setAIProfileName")
+		ui.TextInput(c, &p.aiProfileName).Placeholder("例如：DeepSeek 生产、OpenAI 主力").OnSubmit(func() {
+			a.commitAISettings()
+		})
+	})
 
 	ui.Field(c, "API 端点 (Base URL)", func() {
 		c.Key("setAIBaseURL")
@@ -1071,7 +1299,7 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 		ui.TextInput(c, &p.aiModel).Placeholder(ai.DefaultModel).OnSubmit(func() {
 			a.commitAISettings()
 		})
-	}).Description("例如：gpt-4o-mini, deepseek-chat, qwen-turbo 等")
+	}).Description("例如：deepseek-chat, gpt-4o-mini, qwen-plus 等")
 
 	ui.Field(c, "API Key (访问密钥)", func() {
 		c.Key("setAIKey")
@@ -1109,6 +1337,7 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 				})
 			}()
 		})
+		ui.Button(c, "存为新配置").Key("aiSaveProfileBtn").OnClick(a.saveAsNewAIProfile)
 	})
 
 	if p.aiTestMsg != "" {

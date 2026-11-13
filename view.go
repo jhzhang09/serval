@@ -69,7 +69,6 @@ func (a *app) view(c *ui.Context) {
 	a.keysDialog(c, colors)
 	a.snippetsDialog(c, colors)
 	a.settingsDialog(c, colors)
-	a.aiDialog(c, colors)
 	a.restoreDialog(c, colors)
 	a.syncMergeDialog(c)
 	a.syncOverwriteDialog(c)
@@ -108,7 +107,7 @@ func backdrop(c *ui.Context, colors design.Colors) {
 func (a *app) shortcuts(c *ui.Context) {
 	mods := chromeShortcut()
 	c.OnShortcut(mods, ui.KeyK, a.openPalette)
-	c.OnShortcut(mods, ui.KeyI, a.openAI)
+	c.OnShortcut(mods, ui.KeyI, a.toggleAI)
 	c.OnShortcut(mods, ui.KeyBackslash, func() { a.sidebarOpen = !a.sidebarOpen })
 	c.OnShortcut(mods, ui.KeyJ, a.toggleFiles)
 	c.OnShortcut(mods, ui.KeyComma, func() {
@@ -579,6 +578,10 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
 			}
 		}
+		aiBtn := iconButton(c, colors, "sparkles", "AI Agent（"+shortcutText("I")+"）", a.toggleAI).Key("tabToggleAI")
+		if a.ai.open {
+			aiBtn.Background(c.Theme().Accent.Alpha(0.14))
+		}
 	})
 }
 
@@ -687,21 +690,26 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 
 func (a *app) workspace(c *ui.Context, colors design.Colors) {
 	t := a.current()
-	if t == nil {
-		a.emptyState(c, colors)
-		return
-	}
 	left := float32(0)
 	if !a.sidebarOpen {
 		left = design.Gap / 2
 	}
 	// 每张卡片自带一半的间距（Margin），这里再补一半，卡片之间和到窗口边缘都是一样的空隙。
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Padding(0, design.Gap/2, design.Gap/2, left).Children(func() {
-		ui.Column(c).Key(t.id).Grow(1).MinWidth(0).Children(func() {
-			a.paneView(c, colors, t, t.root)
-		})
-		if a.filesOpen {
-			a.filesDrawer(c, colors, t)
+		if t == nil {
+			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				a.emptyState(c, colors)
+			})
+		} else {
+			ui.Column(c).Key(t.id).Grow(1).MinWidth(0).Children(func() {
+				a.paneView(c, colors, t, t.root)
+			})
+			if a.filesOpen {
+				a.filesDrawer(c, colors, t)
+			}
+		}
+		if a.ai.open {
+			a.aiDrawer(c, colors)
 		}
 	})
 }

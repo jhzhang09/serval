@@ -790,3 +790,43 @@ func TestOTPPromptIsNotAnsweredWithPassword(t *testing.T) {
 	}
 	client.Close()
 }
+
+func TestExecContext(t *testing.T) {
+	server := startServer(t, devsshd.Options{Dir: t.TempDir()})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+
+	// 1. 正常命令输出与退出码 0
+	res, err := client.ExecContext(context.Background(), "printf 'out-ok'; printf 'err-ok' >&2", 4096)
+	if err != nil {
+		t.Fatalf("ExecContext failed: %v", err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "out-ok" || res.Stderr != "err-ok" || res.Truncated {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+
+	// 2. 非零退出码不视为传输失败，而是如实返回 ExitCode
+	res, err = client.ExecContext(context.Background(), "echo bad >&2; exit 42", 4096)
+	if err != nil {
+		t.Fatalf("non-zero exit should not return error: %v", err)
+	}
+	if res.ExitCode != 42 || !strings.Contains(res.Stderr, "bad") {
+		t.Fatalf("unexpected non-zero result: %+v", res)
+	}
+
+	// 3. 输出截断
+	res, err = client.ExecContext(context.Background(), "printf '0123456789abcdef'", 8)
+	if err != nil {
+		t.Fatalf("truncated exec failed: %v", err)
+	}
+	if !res.Truncated || res.Stdout != "01234567" {
+		t.Fatalf("expected truncated 8 bytes, got %+v", res)
+	}
+
+	// 4. 超时取消
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err = client.ExecContext(ctx, "sleep 5", 4096)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+}
