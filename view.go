@@ -210,6 +210,18 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						header := ui.ButtonBase(c).Key("groupToggle:"+group).Label(action+" "+group).
 							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
 							Radius(design.RadiusRow).Transition(design.Hover)
+						if strings.TrimSpace(a.hostFilter) == "" {
+							if dragged, ok := ui.DragOver[hostDrag](header); ok {
+								if h, ok := a.hostByID(dragged.ID); ok && h.Group != group {
+									header.Border(1, t.Accent)
+								}
+							}
+							if dropped, ok := ui.Drop[hostDrag](header); ok {
+								if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
+									a.notice = "调整主机分组失败：" + err.Error()
+								}
+							}
+						}
 						if header.Hovered() {
 							header.Background(colors.Hover)
 						}
@@ -371,12 +383,25 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	if !selected && hovered {
 		line.Background(colors.Hover)
 	}
+	if strings.TrimSpace(a.hostFilter) == "" {
+		if dragged, ok := ui.DragOver[hostDrag](line); ok && dragged.ID != h.ID {
+			line.Border(1, t.Accent)
+		}
+		if dropped, ok := ui.Drop[hostDrag](line); ok && dropped.ID != h.ID {
+			if err := a.moveHostOrder(dropped.ID, h.ID, h.Group); err != nil {
+				a.notice = "调整主机排序失败：" + err.Error()
+			}
+		}
+	}
 	line.Children(func() {
 		if selected {
 			selectionPill(c, colors, "hosts", colors.Selected, true)
 		}
 		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
+		if strings.TrimSpace(a.hostFilter) == "" {
+			row.Drag(hostDrag{ID: h.ID})
+		}
 		if busy {
 			row.Description(locales.ViewConnecting())
 		}

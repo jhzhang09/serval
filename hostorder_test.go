@@ -1,0 +1,109 @@
+package main
+
+import (
+	"testing"
+
+	"serval/core/hosts"
+)
+
+func TestSortHosts(t *testing.T) {
+	// 测试未指定 SortOrder 时按名称不区分大小写排序
+	list1 := []hosts.Host{
+		{Name: "zebra"},
+		{Name: "Alpha"},
+		{Name: "beta"},
+	}
+	sortHosts(list1)
+	if list1[0].Name != "Alpha" || list1[1].Name != "beta" || list1[2].Name != "zebra" {
+		t.Fatalf("未指定排序权重时应按字母排序: %+v", list1)
+	}
+
+	// 测试显式 SortOrder 优先于字母序
+	list2 := []hosts.Host{
+		{Name: "zebra", SortOrder: 100},
+		{Name: "Alpha", SortOrder: 300},
+		{Name: "beta", SortOrder: 200},
+	}
+	sortHosts(list2)
+	if list2[0].Name != "zebra" || list2[1].Name != "beta" || list2[2].Name != "Alpha" {
+		t.Fatalf("显式排序权重未生效: %+v", list2)
+	}
+
+	// 测试混合：已指定权重的排在未指定（0）的前面
+	list3 := []hosts.Host{
+		{Name: "apple", SortOrder: 0},
+		{Name: "zebra", SortOrder: 50},
+	}
+	sortHosts(list3)
+	if list3[0].Name != "zebra" || list3[1].Name != "apple" {
+		t.Fatalf("已设置权重的主机应优先于未设置权重的主机: %+v", list3)
+	}
+}
+
+func TestMoveHostOrderWithinGroup(t *testing.T) {
+	h := newHarness(t)
+	// 在 harness 中创建三台同组主机
+	h1 := hosts.Host{ID: "h1", Name: "Host-A", Address: "10.0.0.1", Group: "Servers"}
+	h2 := hosts.Host{ID: "h2", Name: "Host-B", Address: "10.0.0.2", Group: "Servers"}
+	h3 := hosts.Host{ID: "h3", Name: "Host-C", Address: "10.0.0.3", Group: "Servers"}
+	if err := h.a.apply(hostChange(h1), hostChange(h2), hostChange(h3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 初始状态下按字母序应该是 A, B, C
+	initHosts := h.a.hostsInGroup("Servers")
+	if len(initHosts) != 3 || initHosts[0].ID != "h1" || initHosts[1].ID != "h2" || initHosts[2].ID != "h3" {
+		t.Fatalf("初始顺序异常: %+v", initHosts)
+	}
+
+	// 将 Host-C 拖到 Host-A 之前
+	if err := h.a.moveHostOrder("h3", "h1", "Servers"); err != nil {
+		t.Fatal(err)
+	}
+
+	reordered := h.a.hostsInGroup("Servers")
+	if len(reordered) != 3 || reordered[0].ID != "h3" || reordered[1].ID != "h1" || reordered[2].ID != "h2" {
+		t.Fatalf("同组拖动重排后顺序错误: %+v", reordered)
+	}
+	if reordered[0].SortOrder >= reordered[1].SortOrder || reordered[1].SortOrder >= reordered[2].SortOrder {
+		t.Fatalf("重排后 SortOrder 未严格递增: %+v", reordered)
+	}
+
+	// 再次测试拖拽自身不做任何改动
+	if err := h.a.moveHostOrder("h3", "h3", "Servers"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMoveHostOrderAcrossGroups(t *testing.T) {
+	h := newHarness(t)
+	h1 := hosts.Host{ID: "h1", Name: "Web-1", Address: "10.0.0.1", Group: "Web"}
+	h2 := hosts.Host{ID: "h2", Name: "DB-1", Address: "10.0.0.2", Group: "Database"}
+	h3 := hosts.Host{ID: "h3", Name: "DB-2", Address: "10.0.0.3", Group: "Database"}
+	if err := h.a.apply(hostChange(h1), hostChange(h2), hostChange(h3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 将 Web-1 拖到 DB-1 之前（跨组移动并插入）
+	if err := h.a.moveHostOrder("h1", "h2", "Database"); err != nil {
+		t.Fatal(err)
+	}
+
+	dbHosts := h.a.hostsInGroup("Database")
+	if len(dbHosts) != 3 || dbHosts[0].ID != "h1" || dbHosts[1].ID != "h2" || dbHosts[2].ID != "h3" {
+		t.Fatalf("跨组插入后目标组主机顺序错误: %+v", dbHosts)
+	}
+	moved, ok := h.a.hostByID("h1")
+	if !ok || moved.Group != "Database" {
+		t.Fatalf("被移动主机的 Group 未更新: %+v", moved)
+	}
+
+	// 将 DB-2 拖到 Web 分组的标题行（targetHostID 为空）
+	if err := h.a.moveHostOrder("h3", "", "Web"); err != nil {
+		t.Fatal(err)
+	}
+	webHosts := h.a.hostsInGroup("Web")
+	if len(webHosts) != 1 || webHosts[0].ID != "h3" || webHosts[0].Group != "Web" {
+		t.Fatalf("拖到空分组标题行后未正确归组: %+v", webHosts)
+	}
+}

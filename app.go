@@ -1837,8 +1837,8 @@ func hostVisible(h hosts.Host, query string) bool {
 	return false
 }
 
-// hostsInGroup 返回这个分组里通过过滤的主机，按名称排序（不区分大小写）。
-// 同名时保持保险库里的相对顺序。手动拖动排序仍待决定，这里不做。
+// hostsInGroup 返回这个分组里通过过滤的主机。
+// 优先按 SortOrder 升序；未排序（0）排在后面；相同权重按名称不区分大小写排序。
 func (a *app) hostsInGroup(group string) []hosts.Host {
 	var list []hosts.Host
 	for _, h := range a.hosts {
@@ -1846,9 +1846,7 @@ func (a *app) hostsInGroup(group string) []hosts.Host {
 			list = append(list, h)
 		}
 	}
-	slices.SortStableFunc(list, func(x, y hosts.Host) int {
-		return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name))
-	})
+	sortHosts(list)
 	return list
 }
 
