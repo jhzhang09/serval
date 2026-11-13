@@ -232,11 +232,16 @@ func (a *app) startTabMonitor(t *tab) {
 		var sample statSample
 		// 首次先采一次基准数据
 		if out, err := client.Output(monitorScript); err == nil {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			now := time.Now()
 			stats, next := parseProcMetrics(string(out), sample, now)
 			sample = next
 			a.post(func() {
-				if t.monitorOpen {
+				if t.monitorOpen && t.monitorStop == stop {
 					t.stats = stats
 				}
 			})
@@ -254,7 +259,7 @@ func (a *app) startTabMonitor(t *tab) {
 				stats, next := parseProcMetrics(string(out), sample, now)
 				sample = next
 				a.post(func() {
-					if t.monitorOpen {
+					if t.monitorOpen && t.monitorStop == stop {
 						t.stats = stats
 					}
 				})

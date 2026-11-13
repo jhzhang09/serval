@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/egoist/mygo/plugins/terminal"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +12,7 @@ import (
 
 	"serval/core/vault"
 
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -547,6 +548,12 @@ func TestTerminalSettingsPersistAndApplyLive(t *testing.T) {
 		t.Fatalf("回滚缓冲区未更新: %v", h.a.settings.TerminalScrollbackMB)
 	}
 
+	// 修改深色与浅色配色主题前先向下滚，保证配色块都在视口内
+	if box, ok := h.tt.Find("终端字号"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 220)
+		h.tt.Frame()
+	}
+
 	// 修改深色配色主题为 Dracula
 	h.click("Dracula")
 	h.tt.Frame()
@@ -694,5 +701,87 @@ func TestSettingsShortcutOpensSettings(t *testing.T) {
 	h.tt.Frame()
 	if h.a.settingsPanel.aiModel != "custom-model" {
 		t.Fatalf("重复按设置快捷键不应重置草稿: %q", h.a.settingsPanel.aiModel)
+	}
+}
+
+func TestTerminalCopyOnSelectAndRightClickPersist(t *testing.T) {
+	h := newHarness(t)
+	h.connectDev()
+	h.tt.Frame()
+
+	if h.a.terminalCopyOnSelect() != terminal.CopyOnSelectNone || h.a.terminalRightClick() != terminal.RightClickContextMenu {
+		t.Fatalf("默认终端交互设置异常: copy=%v rightClick=%v", h.a.terminalCopyOnSelect(), h.a.terminalRightClick())
+	}
+
+	h.click("设置")
+	h.tt.Frame()
+	h.click("终端")
+	h.tt.Frame()
+
+	// 向下滚一点保证选中复制与右键行为在视口内
+	if box, ok := h.tt.Find("字体大小"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 200)
+		h.tt.Frame()
+	}
+	h.click("选中文本时自动复制到剪贴板")
+	h.tt.Frame()
+	h.click("直接粘贴")
+	h.tt.Frame()
+
+	if !h.a.settings.TerminalCopyOnSelect || h.a.terminalCopyOnSelect() != terminal.CopyOnSelectClipboard {
+		t.Fatalf("选中自动复制未生效: %+v", h.a.settings)
+	}
+	if h.a.settings.TerminalRightClick != "paste" || h.a.terminalRightClick() != terminal.RightClickPaste {
+		t.Fatalf("右键行为未生效: %+v", h.a.settings)
+	}
+
+	h.click("完成")
+	h.tt.Frame()
+	h.a.rememberOnDevice(true)
+	h.reopen()
+	if !h.a.settings.TerminalCopyOnSelect || h.a.settings.TerminalRightClick != "paste" {
+		t.Fatalf("重启后终端交互设置丢失: %+v", h.a.settings)
+	}
+}
+
+type unsupportedDevice struct{}
+
+func (unsupportedDevice) Get(string) ([]byte, error) { return nil, errors.ErrUnsupported }
+func (unsupportedDevice) Set(string, []byte) error   { return errors.ErrUnsupported }
+func (unsupportedDevice) Delete(string) error        { return errors.ErrUnsupported }
+
+func TestUnsupportedDeviceSecretsGracefulOnLinux(t *testing.T) {
+	h := newBareHarness(t)
+	h.a.device = unsupportedDevice{}
+	h.a.probeDeviceSecrets()
+	h.tt.Frame()
+
+	if h.a.deviceAvailable() {
+		t.Fatal("系统安全存储返回 ErrUnsupported 时应标记为不可用")
+	}
+
+	// 打开主密码设置弹窗时不应显示“在这台设备上记住主密钥”
+	h.a.setup.open = true
+	h.a.setup.fresh = true
+	h.tt.Frame()
+	if h.tt.HasText("在这台设备上记住主密钥") {
+		t.Fatalf("系统安全存储不可用时 setupDialog 不应提供记住选项: %q", h.tt.Texts())
+	}
+	h.a.setup.open = false
+	h.tt.Frame()
+
+	// 打开设置面板时不应显示“在这台设备上记住主密钥”
+	h.click("设置")
+	h.tt.Frame()
+	if h.tt.HasText("在这台设备上记住主密钥") {
+		t.Fatalf("系统安全存储不可用时设置页不应提供记住选项: %q", h.tt.Texts())
+	}
+	h.click("完成")
+	h.tt.Frame()
+
+	// 即使强行调用 rememberOnDevice(true) 也不应崩溃或写入
+	h.a.rememberOnDevice(true)
+	if h.a.isRememberedOnDevice() {
+		t.Fatal("ErrUnsupported 下不应误认为已记住")
 	}
 }

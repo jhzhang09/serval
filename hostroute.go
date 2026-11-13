@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"serval/core/hosts"
 	"serval/design"
@@ -23,20 +24,29 @@ const pickProxy = "选择代理…"
 // 旧版本允许手填代理，这里原样保留，用户改选独立管理的代理后才替换。
 func legacyProxyLabel(spec string) string { return locales.RouteLegacyProxy(spec) }
 
-// jumpOptions 返回第 i 跳可选的主机：除了正在编辑的主机自己，其余已保存的主机都可选。
-// 旧记录里直接填写的地址（不是主机名称）也放进去，编辑时不会被悄悄丢掉。
-func (a *app) jumpOptions(f *hostForm, i int) []string {
-	options := []string{pickHost()}
+// jumpChoices 返回第 i 跳的规范值切片与展示标签切片：除了正在编辑的主机自己，
+// 其余已保存的主机都展示为“名称 (user@host:port)”，表单字段仍保留规范名称。
+func (a *app) jumpChoices(f *hostForm, i int) (values, labels []string) {
+	values = []string{pickHost()}
+	labels = []string{pickHost()}
 	for _, h := range a.hosts {
 		if f.editing != "" && h.ID == f.editing {
 			continue
 		}
-		options = append(options, h.Name)
+		values = append(values, h.Name)
+		labels = append(labels, fmt.Sprintf("%s (%s)", h.Name, h.Target()))
 	}
-	if cur := f.jumps[i]; !slices.Contains(options, cur) {
-		options = append(options, cur)
+	if cur := f.jumps[i]; !slices.Contains(values, cur) {
+		values = append(values, cur)
+		labels = append(labels, cur)
 	}
-	return options
+	return values, labels
+}
+
+// jumpOptions 返回第 i 跳的规范值列表。
+func (a *app) jumpOptions(f *hostForm, i int) []string {
+	values, _ := a.jumpChoices(f, i)
+	return values
 }
 
 // formProxy 把表单里的代理选择转成主机记录的字段：引用的代理 ID，或旧版直接填写的地址。
@@ -54,19 +64,32 @@ func (a *app) formProxy(f *hostForm) (proxyID, legacy string, err error) {
 	return a.proxies[i].ID, "", nil
 }
 
-// proxyOptions 返回代理下拉框的选项。
-func (a *app) proxyOptions(f *hostForm) []string {
-	var options []string
+// proxyChoices 返回代理下拉框的规范名称与丰富展示标签（名称 + 协议与地址端口）。
+func (a *app) proxyChoices(f *hostForm) (values, labels []string) {
 	if f.proxyName == pickProxy {
-		options = append(options, pickProxy)
+		values = append(values, pickProxy)
+		labels = append(labels, pickProxy)
 	}
 	for _, p := range a.proxies {
-		options = append(options, p.Name)
+		values = append(values, p.Name)
+		kind := strings.ToUpper(p.Kind)
+		if kind == "" {
+			kind = "SOCKS5"
+		}
+		labels = append(labels, fmt.Sprintf("%s (%s %s:%d)", p.Name, kind, p.Address, p.Port))
 	}
 	if f.legacyProxy != "" {
-		options = append(options, legacyProxyLabel(f.legacyProxy))
+		legacy := legacyProxyLabel(f.legacyProxy)
+		values = append(values, legacy)
+		labels = append(labels, legacy)
 	}
-	return options
+	return values, labels
+}
+
+// proxyOptions 返回代理下拉框的规范名称列表。
+func (a *app) proxyOptions(f *hostForm) []string {
+	values, _ := a.proxyChoices(f)
+	return values
 }
 
 // routeFields 是表单里的跳板机和代理。两者都默认收起，只显示两个“添加”按钮：
@@ -95,11 +118,18 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 		ui.Field(c, locales.RouteJump(), func() {
 			ui.Column(c).Gap(6).Children(func() {
 				for i := range f.jumps {
+					values, labels := a.jumpChoices(f, i)
+					curIdx := indexOr(values, f.jumps[i], 0)
+					selectedLabel := labels[curIdx]
 					ui.Row(c).Key(fmt.Sprintf("jumpRow:%d", i)).Gap(6).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, fmt.Sprintf("%d", i+1)).FontSize(design.TextSmall).TextColor(colors.TextFaint).Width(14)
 						ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 							c.Key(fmt.Sprintf("addJump:%d", i))
-							ui.Select(c, &f.jumps[i], a.jumpOptions(f, i))
+							if ui.Select(c, &selectedLabel, labels).Changed() {
+								if idx := slices.Index(labels, selectedLabel); idx >= 0 {
+									f.jumps[i] = values[idx]
+								}
+							}
 						})
 						label := locales.RouteRemoveJump(i + 1)
 						c.Key(fmt.Sprintf("removeJump:%d", i))
@@ -111,6 +141,33 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 						})
 					})
 				}
+				targetLabel := strings.TrimSpace(f.name)
+				if targetLabel == "" {
+					targetLabel = strings.TrimSpace(f.address)
+				}
+				if targetLabel == "" {
+					targetLabel = "目标主机"
+				}
+				chainNodes := []string{"本机"}
+				for _, j := range f.jumps {
+					if trimmed := strings.TrimSpace(j); trimmed != "" && trimmed != pickHost() {
+						chainNodes = append(chainNodes, trimmed)
+					}
+				}
+				chainNodes = append(chainNodes, targetLabel)
+				ui.Row(c).Key("jumpChainPreview").Gap(4).Wrap().AlignItems(ui.Center).
+					Padding(4, 8).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
+					for i, node := range chainNodes {
+						if i > 0 {
+							ui.Text(c, "→").FontSize(design.TextSmall - 1).TextColor(colors.TextFaint)
+						}
+						color := t.TextMuted
+						if i == len(chainNodes)-1 {
+							color = t.Accent
+						}
+						ui.Text(c, node).FontSize(design.TextSmall - 1).FontWeight(500).TextColor(color)
+					}
+				})
 				ui.Row(c).Children(func() {
 					ui.Button(c, locales.RouteAddAnother()).Key("addJumpMore").OnClick(func() {
 						f.jumps = append(f.jumps, pickHost())
@@ -123,13 +180,19 @@ func (a *app) routeFields(c *ui.Context, colors design.Colors, f *hostForm) {
 	if f.showProxy {
 		ui.Field(c, locales.Proxy(), func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				if options := a.proxyOptions(f); len(options) > 0 {
-					if !slices.Contains(options, f.proxyName) {
-						f.proxyName = options[0]
+				if values, labels := a.proxyChoices(f); len(values) > 0 {
+					if !slices.Contains(values, f.proxyName) {
+						f.proxyName = values[0]
 					}
+					curIdx := indexOr(values, f.proxyName, 0)
+					selectedLabel := labels[curIdx]
 					ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 						c.Key("addProxySelect")
-						ui.Select(c, &f.proxyName, options)
+						if ui.Select(c, &selectedLabel, labels).Changed() {
+							if idx := slices.Index(labels, selectedLabel); idx >= 0 {
+								f.proxyName = values[idx]
+							}
+						}
 					})
 				} else {
 					ui.Text(c, locales.RouteNoProxyYet()).FontSize(design.TextSmall).TextColor(t.TextMuted).Grow(1)

@@ -246,6 +246,21 @@ type setupSheet struct {
 	then func()
 }
 
+// deviceAvailable 报告系统安全存储当前是否可用（部分无 Secret Service 的 Linux 桌面会返回 ErrUnsupported）。
+func (a *app) deviceAvailable() bool {
+	return a.device != nil && a.deviceSupported
+}
+
+// probeDeviceSecrets 探测系统安全存储是否受当前桌面环境支持。
+func (a *app) probeDeviceSecrets() {
+	if a.device == nil {
+		a.deviceSupported = false
+		return
+	}
+	_, err := a.device.Get("serval-secrets-probe")
+	a.deviceSupported = !errors.Is(err, errors.ErrUnsupported)
+}
+
 // requireProtection 保证保险库已加密后再执行 then。还没设置主密码时先请用户设置，
 // 取消则什么都不做，原来的面板保持打开，用户可以去掉要保存的秘密。
 func (a *app) requireProtection(then func()) {
@@ -253,7 +268,7 @@ func (a *app) requireProtection(then func()) {
 		then()
 		return
 	}
-	a.setup = setupSheet{open: true, fresh: true, remember: a.device != nil, then: then}
+	a.setup = setupSheet{open: true, fresh: true, remember: a.deviceAvailable(), then: then}
 }
 
 // submitSetup 在后台派生主密码并加密保险库，避免 Argon2id 阻塞主线程。
@@ -295,35 +310,49 @@ func (a *app) submitSetup() {
 
 // rememberOnDevice 按用户的选择在系统安全存储里保存或删除保险库密钥。
 func (a *app) rememberOnDevice(remember bool) {
-	if a.device == nil {
+	if !a.deviceAvailable() {
 		return
 	}
 	name := rememberedKeyName(a.vault.ID())
 	if !remember {
-		a.device.Delete(name) // 本来就没有也不算错
+		if err := a.device.Delete(name); errors.Is(err, errors.ErrUnsupported) {
+			a.deviceSupported = false
+		}
 		return
 	}
 	if err := a.device.Set(name, a.vault.Key()); err != nil {
+		if errors.Is(err, errors.ErrUnsupported) {
+			a.deviceSupported = false
+			return
+		}
 		a.toast(ui.Toast{Title: locales.LibRememberMasterFailed(), Description: err.Error(), Type: "error"})
 	}
 }
 
 // isRememberedOnDevice 检查这台设备的安全存储里是否记住了保险库密钥。
 func (a *app) isRememberedOnDevice() bool {
-	if a.device == nil || a.vault == nil {
+	if !a.deviceAvailable() || a.vault == nil {
 		return false
 	}
 	key, err := a.device.Get(rememberedKeyName(a.vault.ID()))
+	if errors.Is(err, errors.ErrUnsupported) {
+		a.deviceSupported = false
+		return false
+	}
 	return err == nil && len(key) > 0
 }
 
 // unlockWithRemembered 启动时用本机记住的密钥自动解锁。没有记住或者密钥失效时返回 false，
 // 由界面请用户输入主密码。
 func (a *app) unlockWithRemembered() bool {
-	if a.vault.State() != vault.Locked || a.device == nil {
+	if a.vault.State() != vault.Locked || !a.deviceAvailable() {
 		return false
 	}
 	key, err := a.device.Get(rememberedKeyName(a.vault.ID()))
+	if errors.Is(err, errors.ErrUnsupported) {
+		a.deviceSupported = false
+		return false
+	}
 	if err != nil || len(key) == 0 {
 		return false
 	}

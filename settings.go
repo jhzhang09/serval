@@ -43,6 +43,12 @@ func cursorStyleLabels() []string {
 	return []string{locales.SetCursorBlock(), locales.SetCursorBar(), locales.SetCursorUnderline()}
 }
 
+var rightClickModes = []string{"", "paste", "copy_or_paste"}
+
+func rightClickModeLabels() []string {
+	return []string{"右键菜单", "直接粘贴", "有选中则复制/否则粘贴"}
+}
+
 // 回滚缓冲区按容量设置：终端插件的 Scrollback 单位是字节，一行占多少字节取决于内容，
 // 按“行数”标注会误导。0 表示插件默认的 10 MB。
 var scrollbackMB = []int{5, 10, 50, 100}
@@ -89,6 +95,8 @@ type settings struct {
 	TerminalScrollbackMB int    `json:"terminalScrollbackMB,omitempty"`
 	TerminalThemeLight   string `json:"terminalThemeLight,omitempty"`
 	TerminalThemeDark    string `json:"terminalThemeDark,omitempty"`
+	TerminalCopyOnSelect bool   `json:"terminalCopyOnSelect,omitempty"`
+	TerminalRightClick   string `json:"terminalRightClick,omitempty"`
 
 	// AI 助手设置（随加密保险库同步）
 	AIBaseURL       string      `json:"aiBaseURL,omitempty"`
@@ -403,6 +411,28 @@ func (a *app) setTerminalThemeLight(theme string) {
 	}
 }
 
+func (a *app) setTerminalCopyOnSelect(enabled bool) {
+	if a.settings.TerminalCopyOnSelect == enabled {
+		return
+	}
+	next := a.settings
+	next.TerminalCopyOnSelect = enabled
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
+func (a *app) setTerminalRightClick(mode string) {
+	if a.settings.TerminalRightClick == mode {
+		return
+	}
+	next := a.settings
+	next.TerminalRightClick = mode
+	if err := a.saveSettings(next); err != nil {
+		a.settingsPanel.err = err.Error()
+	}
+}
+
 // recordRecentHost 在本机设置里记下最近打开的主机。
 func (a *app) recordRecentHost(id string) {
 	if id == "" {
@@ -504,6 +534,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 	scrollIdx := indexOr(scrollbackMB, curScroll, 1)
 	darkThemeIdx := indexOr(popularDarkThemes, a.settings.TerminalThemeDark, 0)
 	lightThemeIdx := indexOr(popularLightThemes, a.settings.TerminalThemeLight, 0)
+	rightClickIdx := indexOr(rightClickModes, a.settings.TerminalRightClick, 0)
 
 	sheet(c, colors, &p.open, &p.fresh, 560, 22, func() {
 		ui.Column(c).Gap(14).Children(func() {
@@ -607,7 +638,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 							})
 						}).Description("连接后会在远端执行一次只读命令读取 /etc/os-release。对审计严格的服务器可关闭此项，改在主机编辑里手动指定。")
 
-						if a.device != nil && a.vault != nil && a.vault.State() != vault.Unprotected {
+						if a.deviceAvailable() && a.vault != nil && a.vault.State() != vault.Unprotected {
 							ui.Field(c, locales.SetRememberMasterPassword(), func() {
 								c.Key("settingsRemember")
 								ui.Checkbox(c, &p.rememberDevice, locales.SetRememberOnDevice()).OnChange(func() {
@@ -715,6 +746,21 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 							a.setTerminalScrollbackMB(scrollbackMB[scrollIdx])
 						})
 					}).Description(locales.SetScrollbackHint())
+					ui.Field(c, "鼠标选中", func() {
+						copyOnSelect := a.settings.TerminalCopyOnSelect
+						c.Key("settingsCopyOnSelect")
+						ui.Checkbox(c, &copyOnSelect, "选中文本时自动复制到剪贴板").OnChange(func() {
+							p.err = ""
+							a.setTerminalCopyOnSelect(copyOnSelect)
+						})
+					}).Description("开启后，在终端里鼠标拖选文字松开即自动复制；同时也会更新 AI 的“最近复制”上下文。")
+					ui.Field(c, "右键点击行为", func() {
+						c.Key("settingsRightClick")
+						ui.Segmented(c, &rightClickIdx, rightClickModeLabels()...).OnChange(func() {
+							p.err = ""
+							a.setTerminalRightClick(rightClickModes[rightClickIdx])
+						})
+					}).Description("选择“右键菜单”可进行复制、粘贴等操作；更改将在新打开的标签页生效。")
 					ui.Field(c, locales.SetDarkTheme(), func() {
 						c.Key("settingsDarkTheme")
 						ui.Segmented(c, &darkThemeIdx, popularDarkThemeLabels()...).OnChange(func() {

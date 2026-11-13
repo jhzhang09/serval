@@ -47,6 +47,8 @@ type keyPanel struct {
 	rename     string
 	deleting   *keys.Key
 	addingMode int // Segmented 的选中项，和 generate 对应
+	// fromHostForm 表示从主机表单行内发起导入，保存后自动选中并返回主机表单。
+	fromHostForm bool
 }
 
 // openKeys 打开密钥面板。
@@ -201,6 +203,16 @@ func (a *app) storeNewKey(k keys.Key, generated bool) {
 		return
 	}
 	a.toast(ui.Toast{Title: locales.KeyAdded(k.Name)})
+	if a.form.open {
+		a.form.keyName = k.Name
+		if a.form.auth == 1 {
+			a.form.auth = 0
+		}
+		if a.keyPanel.fromHostForm {
+			a.keyPanel = keyPanel{}
+			return
+		}
+	}
 	if generated {
 		a.showKey(k.ID) // 新生成的钥匙要先把公钥放到服务器上，直接打开详情方便复制
 		return
@@ -326,6 +338,16 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 	})
 }
 
+func (a *app) sshHosts() []hosts.Host {
+	var out []hosts.Host
+	for _, h := range a.hosts {
+		if h.EffectiveProtocol() == hosts.ProtocolSSH {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 	t := c.Theme()
 	menu := func(m *ui.Menu) {
@@ -334,6 +356,18 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 		}
 		if m.Item(locales.CopyPublicKey()).Chosen() {
 			a.copyPublicKey(c, k)
+		}
+		if k.PublicKey != "" {
+			if sshHosts := a.sshHosts(); len(sshHosts) > 0 {
+				m.Submenu("部署到主机", func(sub *ui.Menu) {
+					for _, h := range sshHosts {
+						host := h
+						if sub.Item(host.Name).Chosen() {
+							a.deployKeyToHost(host, k)
+						}
+					}
+				})
+			}
 		}
 		m.Separator()
 		if m.Item(locales.Delete()).Danger().Chosen() {
@@ -420,7 +454,13 @@ func (a *app) keyAddPage(c *ui.Context) {
 			ui.Text(c, p.err).Key("keyError").TextColor(t.Danger)
 		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() { p.page, p.err = keyList, "" })
+			ui.Button(c, locales.Back()).Key("keyBack").OnClick(func() {
+				if p.fromHostForm {
+					a.keyPanel = keyPanel{}
+					return
+				}
+				p.page, p.err = keyList, ""
+			})
 			label := locales.Add()
 			switch {
 			case p.busy:
@@ -458,8 +498,20 @@ func (a *app) keyDetailPage(c *ui.Context, colors design.Colors) {
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Text(c, k.PublicKey).Key("keyPublic").Font(design.FontTerminal).FontSize(design.TextSmall).
 					Padding(8, 10).Radius(design.RadiusRow).Background(colors.Chip).Selectable()
-				ui.Row(c).Children(func() {
+				ui.Row(c).Gap(8).Children(func() {
 					ui.Button(c, locales.CopyPublicKey()).Key("keyCopyDetail").OnClick(func() { a.copyPublicKey(c, k) })
+					if k.PublicKey != "" {
+						if sshHosts := a.sshHosts(); len(sshHosts) > 0 {
+							ui.Button(c, "部署到主机").Key("keyDeployDetail").PopoverMenuButton(func(m *ui.Menu) {
+								for _, h := range sshHosts {
+									host := h
+									if m.Item(host.Name).Chosen() {
+										a.deployKeyToHost(host, k)
+									}
+								}
+							})
+						}
+					}
 				})
 			})
 		}).Description(locales.KeyPublicKeyHint())

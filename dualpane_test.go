@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestDualPaneDragsBothWays(t *testing.T) {
@@ -209,4 +213,107 @@ func dragOnto(t *testing.T, h *harness, from, to string) {
 	h.tt.Move(dst.X+dst.W/2, dst.Y+min(dst.H/2, 8))
 	h.tt.Release(dst.X+dst.W/2, dst.Y+min(dst.H/2, 8))
 	h.tt.Frame()
+}
+
+func TestDualPaneEditablePathsAndBookmarks(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("打开文件抽屉", func() bool { return tb.dir != "" })
+
+	origRemote := tb.dir
+	subRemote := filepath.Join(origRemote, "jump-sub")
+	if err := os.MkdirAll(subRemote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subRemote, "marker.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subLocal := filepath.Join(h.a.localDir, "local-sub")
+	if err := os.MkdirAll(subLocal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subLocal, "local-marker.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 点击远端路径栏进入编辑，按 Esc 取消编辑
+	h.click("编辑远程路径")
+	h.tt.Frame()
+	if !h.a.editingRemotePath {
+		t.Fatal("点击编辑远程路径后应进入编辑状态")
+	}
+	h.tt.Key(0, ui.KeyEscape)
+	h.tt.Frame()
+	if h.a.editingRemotePath || tb.dir != origRemote {
+		t.Fatalf("按 Esc 后应取消编辑并保持原目录: editing=%v dir=%q", h.a.editingRemotePath, tb.dir)
+	}
+
+	// 2. 再次进入远端路径编辑，填入子目录并回车跳转
+	h.click("编辑远程路径")
+	h.tt.Frame()
+	h.a.remotePathDraft = filepath.ToSlash(subRemote)
+	h.tt.Frame()
+	h.tt.Key(0, ui.KeyEnter)
+	h.pump("远端路径跳转", func() bool {
+		return tb.dir == filepath.ToSlash(subRemote) && h.tt.HasText("marker.txt")
+	})
+
+	// 3. 收藏当前远程目录，验证写进保险库且重编主机不丢失
+	h.click("远程目录书签")
+	if err := h.tt.ChooseMenuItem("收藏当前目录"); err != nil {
+		t.Fatalf("收藏当前目录失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.tt.Frame()
+	if !slices.Contains(h.host("dev").Bookmarks, filepath.ToSlash(subRemote)) {
+		t.Fatalf("保险库主机记录未保存书签: %+v", h.host("dev").Bookmarks)
+	}
+	// 编辑主机信息后保存，已保存的书签必须保留
+	h.a.openEdit(h.host("dev"))
+	h.tt.Frame()
+	h.click("保存")
+	h.tt.Frame()
+	if !slices.Contains(h.host("dev").Bookmarks, filepath.ToSlash(subRemote)) {
+		t.Fatalf("编辑主机后书签丢失: %+v", h.host("dev").Bookmarks)
+	}
+
+	// 4. 返回上一级目录，然后通过书签菜单直达，再删除书签
+	h.click("上一级")
+	h.pump("返回上级目录", func() bool { return tb.dir == filepath.ToSlash(origRemote) })
+	h.click("远程目录书签")
+	if err := h.tt.ChooseMenuItem(filepath.ToSlash(subRemote)); err != nil {
+		t.Fatalf("点击书签跳转失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.pump("书签跳转到子目录", func() bool {
+		return tb.dir == filepath.ToSlash(subRemote) && h.tt.HasText("marker.txt")
+	})
+	h.click("远程目录书签")
+	if err := h.tt.ChooseMenuItem("删除书签", filepath.ToSlash(subRemote)); err != nil {
+		t.Fatalf("删除书签失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.tt.Frame()
+	if len(h.host("dev").Bookmarks) != 0 {
+		t.Fatalf("删除后书签应为空: %+v", h.host("dev").Bookmarks)
+	}
+
+	// 5. 点击本地路径栏输入本地子目录并回车跳转
+	h.click("编辑本地路径")
+	h.tt.Frame()
+	h.a.localPathDraft = subLocal
+	h.tt.Frame()
+	h.tt.Key(0, ui.KeyEnter)
+	h.pump("本地路径跳转", func() bool {
+		return h.a.localDir == subLocal && h.tt.HasText("本地 local-marker.txt")
+	})
+}
+
+func TestShortPathCrossPlatform(t *testing.T) {
+	gotWin := shortPath(`C:\Users\alice\projects\serval`)
+	if strings.Contains(gotWin, `\`) || gotWin != "…/alice/projects/serval" {
+		t.Fatalf("Windows 路径缩写应使用正斜杠并保留末三级: got=%q", gotWin)
+	}
+	gotPOSIX := shortPath("/var/log/nginx/access")
+	if gotPOSIX != "…/log/nginx/access" {
+		t.Fatalf("POSIX 路径缩写不符合预期: got=%q", gotPOSIX)
+	}
 }

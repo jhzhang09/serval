@@ -9,10 +9,10 @@ import (
 	"net"
 	"net/http"
 	"path"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,10 +49,23 @@ type app struct {
 	local      deviceSettings
 	devicePath string
 	// device 是系统安全存储，只用来“在这台设备上记住”保险库密钥。
-	device     deviceStore
-	knownHosts []string
+	device          deviceStore
+	deviceSupported bool
+	knownHosts      []string
 	// localUser 是本机用户名。主机和跳板机没写用户名时用它，和 OpenSSH 一致。
 	localUser string
+
+	// activeTag 是侧栏选中的标签过滤条件，空表示不过滤。
+	activeTag string
+	// health 记录各主机最近的异步连通性探测状态；probeCancel 取消尚未完成的批量探测。
+	health      map[string]hostHealth
+	probeCancel context.CancelFunc
+	// 文件抽屉当前是否处于行内路径编辑模式，以及“仅打开 SFTP”连接完成后待展开的主机 ID。
+	editingRemotePath bool
+	remotePathDraft   string
+	editingLocalPath  bool
+	localPathDraft    string
+	openFilesOnHostID string
 
 	// syncDelay、syncEvery 用于测试缩短去抖和周期，零值使用 3 秒和 5 分钟。
 	// syncTimer、syncLoopStop、syncing 只在主线程读写；同步本身在后台做。
@@ -332,14 +345,16 @@ type pane struct {
 
 func newApp() *app {
 	a := &app{
-		sidebarOpen: true,
-		filesWidth:  560,
-		filesSplit:  50,
-		connecting:  map[string]context.CancelFunc{},
-		arrived:     map[int]bool{},
-		tunnels:     map[string]*liveTunnel{},
-		forwardErr:  map[string]string{},
-		updateURL:   defaultUpdateURL,
+		sidebarOpen:     true,
+		filesWidth:      560,
+		filesSplit:      50,
+		deviceSupported: true,
+		health:          map[string]hostHealth{},
+		connecting:      map[string]context.CancelFunc{},
+		arrived:         map[int]bool{},
+		tunnels:         map[string]*liveTunnel{},
+		forwardErr:      map[string]string{},
+		updateURL:       defaultUpdateURL,
 	}
 	return a
 }
@@ -375,6 +390,10 @@ func (a *app) lockVault() {
 	a.stopAIRequest()
 	a.ai = aiPanel{}
 	a.lastCopiedText = ""
+	if a.probeCancel != nil {
+		a.probeCancel()
+		a.probeCancel = nil
+	}
 	a.closeAll()
 	if a.vault != nil {
 		a.vault.Lock()
@@ -392,6 +411,11 @@ func (a *app) lockVault() {
 	a.settings = settings{}
 	a.hostsError = ""
 	a.notice = ""
+	a.activeTag = ""
+	a.health = map[string]hostHealth{}
+	a.editingRemotePath, a.remotePathDraft = false, ""
+	a.editingLocalPath, a.localPathDraft = false, ""
+	a.openFilesOnHostID = ""
 	a.auth = authSheet{}
 	a.form = hostForm{}
 	a.deleting = nil
@@ -747,6 +771,9 @@ func choose(keep bool, value string) string {
 }
 
 func (a *app) cancelConnect(id string) {
+	if a.openFilesOnHostID == id {
+		a.openFilesOnHostID = ""
+	}
 	if cancel, ok := a.connecting[id]; ok {
 		cancel()
 	}
@@ -772,16 +799,19 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 		a.notice = locales.AppHostKeyNotTrusted(who.Name)
 	case errors.Is(err, sshconn.ErrKeyEncrypted):
 		a.askSecret(h, who, hop, creds, true, locales.AppKeyEncryptedContinue())
+		return
 	case errors.Is(err, sshconn.ErrBadPassphrase):
 		message := locales.AppPassphraseWrong()
 		if c.storedPassphrase {
 			message = locales.AppSavedPassphraseWrong()
 		}
 		a.askSecret(h, who, hop, creds, true, message)
+		return
 	case errors.Is(err, errChallengeCancelled):
 		a.notice = locales.AppChallengeIncomplete(who.Name)
 	case errors.Is(err, sshconn.ErrNoAuthMethod):
 		a.askSecret(h, who, hop, creds, false, "")
+		return
 	case errors.Is(err, sshconn.ErrAgentUnavailable):
 		a.notice = fmt.Sprintf("没有连接 %s：这台主机开启了转发 ssh-agent，但本机没有可用的 ssh-agent。先启动 ssh-agent，或编辑这台主机关掉转发。", who.Name)
 	case errors.Is(err, sshconn.ErrAgentForwardDenied):
@@ -796,8 +826,12 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 			message = locales.AppPasswordWrong()
 		}
 		a.askSecret(h, who, hop, creds, false, message)
+		return
 	default:
 		a.notice = err.Error()
+	}
+	if a.openFilesOnHostID == h.ID {
+		a.openFilesOnHostID = ""
 	}
 }
 
@@ -859,6 +893,10 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 		a.recordRecentHost(h.ID)
 	}
 	go a.watchLatency(ctx, t, t.client, a.pingInterval)
+	if a.openFilesOnHostID != "" && a.openFilesOnHostID == h.ID {
+		a.openFilesOnHostID = ""
+		a.filesOpen = true
+	}
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
@@ -1022,6 +1060,24 @@ func (a *app) terminalScrollback() int {
 	return 0
 }
 
+func (a *app) terminalCopyOnSelect() terminal.CopyOnSelect {
+	if a.settings.TerminalCopyOnSelect {
+		return terminal.CopyOnSelectClipboard
+	}
+	return terminal.CopyOnSelectNone
+}
+
+func (a *app) terminalRightClick() terminal.RightClickAction {
+	switch a.settings.TerminalRightClick {
+	case "paste":
+		return terminal.RightClickPaste
+	case "copy_or_paste":
+		return terminal.RightClickCopyOrPaste
+	default:
+		return terminal.RightClickContextMenu
+	}
+}
+
 func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*sshconn.Shell, layout *savedPane, slot int) {
 	a.nextID++
 	ctx, stop := context.WithCancel(context.Background())
@@ -1047,6 +1103,10 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 		a.recordRecentHost(h.ID)
 	}
 	go a.watchLatency(ctx, t, t.client, a.pingInterval)
+	if a.openFilesOnHostID != "" && a.openFilesOnHostID == h.ID {
+		a.openFilesOnHostID = ""
+		a.filesOpen = true
+	}
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
@@ -1142,12 +1202,14 @@ func (a *app) openLocalTerminal() {
 // createTerminal 创建终端控件。conn 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
 func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.Shell) (*terminal.Terminal, error) {
 	opts := terminal.Options{
-		Font:       a.terminalFont(),
-		Theme:      a.terminalTheme(false),
-		DarkTheme:  a.terminalTheme(true),
-		Cursor:     a.terminalCursor(),
-		Scrollback: a.terminalScrollback(),
-		Padding:    terminal.Padding{X: 10, Y: 8},
+		Font:         a.terminalFont(),
+		Theme:        a.terminalTheme(false),
+		DarkTheme:    a.terminalTheme(true),
+		Cursor:       a.terminalCursor(),
+		Scrollback:   a.terminalScrollback(),
+		CopyOnSelect: a.terminalCopyOnSelect(),
+		RightClick:   a.terminalRightClick(),
+		Padding:      terminal.Padding{X: 10, Y: 8},
 		OnExit: func(int) {
 			a.post(func() { a.paneEnded(t, p, shell) })
 		},
@@ -1175,7 +1237,31 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 			a.post(func() { a.startZmodem(t, p, z, s) })
 		})
 		p.prompt = newPromptTracker()
+		var sendLogon func()
+		if shell != nil && strings.TrimSpace(t.host.LogonScript) != "" {
+			script := strings.ReplaceAll(strings.TrimRight(t.host.LogonScript, "\r\n"), "\r\n", "\n") + "\n"
+			var logonOnce sync.Once
+			sendLogon = func() {
+				logonOnce.Do(func() {
+					time.AfterFunc(120*time.Millisecond, func() {
+						if a.post == nil {
+							return
+						}
+						a.post(func() {
+							if p.term == nil || p.ended || !slices.Contains(a.tabs, t) {
+								return
+							}
+							p.term.Send([]byte(script))
+						})
+					})
+				})
+			}
+			time.AfterFunc(400*time.Millisecond, sendLogon)
+		}
 		z.onOutput = func(b []byte) {
+			if sendLogon != nil && len(b) > 0 {
+				sendLogon()
+			}
 			if p.prompt != nil {
 				if u, d, changed := p.prompt.feed(b); changed {
 					a.post(func() {
@@ -1257,15 +1343,17 @@ func (a *app) terminalTheme(windowDark bool) *terminal.Theme {
 	return design.Terminal(dark)
 }
 
-// refreshTerminals 让所有运行中的终端应用最新的字体与配色设置。
+// refreshTerminals 让所有运行中的终端应用最新的字体、配色与选中复制设置。
 func (a *app) refreshTerminals() {
 	font := a.terminalFont()
 	light := a.terminalTheme(false)
 	dark := a.terminalTheme(true)
+	copyOnSelect := a.terminalCopyOnSelect()
 	for _, t := range a.tabs {
 		t.root.each(func(p *pane) {
 			p.term.SetTheme(light, dark)
 			p.term.SetFont(font)
+			p.term.SetCopyOnSelect(copyOnSelect)
 		})
 	}
 }
@@ -1567,6 +1655,10 @@ func (t *tab) close() {
 
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
 func (a *app) closeAll() {
+	if a.probeCancel != nil {
+		a.probeCancel()
+		a.probeCancel = nil
+	}
 	a.clearDragOut()
 	a.saveSessionLayout()
 	byTab := map[int][]*liveTunnel{}
@@ -1589,6 +1681,7 @@ func (a *app) closeAll() {
 		cancel()
 	}
 	for _, t := range a.tabs {
+		a.stopTabMonitor(t)
 		lives := byTab[t.id]
 		go func() {
 			closeLiveTunnels(lives)
@@ -1743,6 +1836,10 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 	ctx, stop := context.WithCancel(context.Background())
 	t.stop = stop
 	go a.watchLatency(ctx, t, t.client, a.pingInterval)
+	if t.monitorOpen {
+		a.stopTabMonitor(t)
+		a.startTabMonitor(t)
+	}
 
 	t.root.each(func(p *pane) {
 		cols, rows := 80, 24
@@ -2062,7 +2159,7 @@ func (a *app) groups() []string {
 
 // groupCollapsed 报告这个分组在本机侧栏里是否折叠。正在过滤时不折叠，否则匹配的主机会被藏起来。
 func (a *app) groupCollapsed(name string) bool {
-	return strings.TrimSpace(a.hostFilter) == "" && slices.Contains(a.local.CollapsedGroups, name)
+	return strings.TrimSpace(a.hostFilter) == "" && a.activeTag == "" && slices.Contains(a.local.CollapsedGroups, name)
 }
 
 // toggleGroup 折叠或展开一个分组，并把结果写入本机设置。
@@ -2078,7 +2175,7 @@ func (a *app) toggleGroup(name string) {
 	}
 }
 
-// hostVisible 判断主机是否匹配侧栏过滤。空过滤匹配全部。名称、用户、地址和分组都参与，不区分大小写。
+// hostVisible 判断主机是否匹配侧栏过滤。空过滤匹配全部。名称、用户、地址、分组和标签都参与，不区分大小写。
 func hostVisible(h hosts.Host, query string) bool {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
@@ -2086,6 +2183,11 @@ func hostVisible(h hosts.Host, query string) bool {
 	}
 	for _, field := range []string{h.Name, h.User, h.Address, h.Group, h.Target()} {
 		if strings.Contains(strings.ToLower(field), query) {
+			return true
+		}
+	}
+	for _, tag := range h.Tags {
+		if strings.Contains(strings.ToLower(tag), query) {
 			return true
 		}
 	}
@@ -2097,9 +2199,13 @@ func hostVisible(h hosts.Host, query string) bool {
 func (a *app) hostsInGroup(group string) []hosts.Host {
 	var list []hosts.Host
 	for _, h := range a.hosts {
-		if h.Group == group && hostVisible(h, a.hostFilter) {
-			list = append(list, h)
+		if h.Group != group || !hostVisible(h, a.hostFilter) {
+			continue
 		}
+		if a.activeTag != "" && !slices.Contains(h.Tags, a.activeTag) {
+			continue
+		}
+		list = append(list, h)
 	}
 	sortHosts(list)
 	return list
@@ -2107,14 +2213,15 @@ func (a *app) hostsInGroup(group string) []hosts.Host {
 
 func (t *tab) title() string { return t.host.Name }
 
-// shortPath 把远程路径缩短到适合状态栏显示的长度。
+// shortPath 把远程路径缩短到适合状态栏显示的长度（始终使用 POSIX 正斜杠）。
 func shortPath(p string) string {
 	const limit = 3
-	parts := strings.Split(strings.Trim(p, "/"), "/")
+	norm := strings.ReplaceAll(p, "\\", "/")
+	parts := strings.Split(strings.Trim(norm, "/"), "/")
 	if len(parts) <= limit {
 		return p
 	}
-	return "…/" + filepath.Join(parts[len(parts)-limit:]...)
+	return "…/" + path.Join(parts[len(parts)-limit:]...)
 }
 
 func formatLatency(d time.Duration) string {

@@ -126,7 +126,7 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 				c.Key("setupConfirm")
 				confirm = ui.TextInput(c, &s.confirm).Password()
 			})
-			if a.device != nil {
+			if a.deviceAvailable() {
 				c.Key("setupRemember")
 				ui.Checkbox(c, &s.remember, locales.SheetRememberDeviceUnlock())
 			}
@@ -248,7 +248,7 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 				c.Key("unlockPassword")
 				input = ui.TextInput(c, &u.password).Password().AutoFocus()
 			}).Error(u.err)
-			if a.device != nil {
+			if a.deviceAvailable() {
 				c.Key("unlockRemember")
 				ui.Checkbox(c, &u.remember, locales.SheetRememberDevice())
 			}
