@@ -42,14 +42,15 @@ func init() {
 // harness 让视图在没有窗口的情况下跑完真实的 SSH 连接流程。
 // post 把后台结果放入队列，由 pump 在测试线程（相当于主线程）里执行。
 type harness struct {
-	t      *testing.T
-	a      *app
-	tt     *ui.Tester
-	mu     sync.Mutex
-	queue  []func()
-	server *devsshd.Server
-	device *memDevice
-	dir    string
+	t          *testing.T
+	a          *app
+	tt         *ui.Tester
+	mu         sync.Mutex
+	queue      []func()
+	server     *devsshd.Server
+	device     *memDevice
+	dir        string
+	openedURLs []string
 }
 
 // memDevice 是测试用的系统安全存储。
@@ -142,6 +143,13 @@ func newBareHarness(t *testing.T, extra ...hosts.Host) *harness {
 	h.a.chooseLogDir = func() (string, error) { return "", errors.New("测试没有设置 chooseLogDir") }
 	h.a.chooseUploadFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseUploadFolder") }
 	h.a.chooseDownloadFolder = func() (string, error) { return "", errors.New("测试没有设置 chooseDownloadFolder") }
+	h.a.openURL = func(url string) error {
+		h.mu.Lock()
+		h.openedURLs = append(h.openedURLs, url)
+		h.mu.Unlock()
+		return nil
+	}
+	h.a.updateURL = ""
 	h.a.post = func(fn func()) {
 		h.mu.Lock()
 		h.queue = append(h.queue, fn)
@@ -1374,11 +1382,11 @@ func TestSystemDialogsAreWired(t *testing.T) {
 	installSystemDialogs(a)
 	if a.chooseKeyFile == nil || a.chooseUploadFile == nil || a.chooseSavePath == nil ||
 		a.chooseUploadFiles == nil || a.chooseFolder == nil || a.chooseLogDir == nil ||
-		a.chooseUploadFolder == nil || a.chooseDownloadFolder == nil {
-		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v uploadFiles=%v folder=%v log=%v uploadFolder=%v downloadFolder=%v",
+		a.chooseUploadFolder == nil || a.chooseDownloadFolder == nil || a.openURL == nil {
+		t.Fatalf("有系统对话框没有接上: key=%v upload=%v save=%v uploadFiles=%v folder=%v log=%v uploadFolder=%v downloadFolder=%v openURL=%v",
 			a.chooseKeyFile != nil, a.chooseUploadFile != nil, a.chooseSavePath != nil,
 			a.chooseUploadFiles != nil, a.chooseFolder != nil, a.chooseLogDir != nil,
-			a.chooseUploadFolder != nil, a.chooseDownloadFolder != nil)
+			a.chooseUploadFolder != nil, a.chooseDownloadFolder != nil, a.openURL != nil)
 	}
 }
 

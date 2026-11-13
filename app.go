@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"net/http"
 	"path"
 	"path/filepath"
 	"slices"
@@ -128,6 +129,9 @@ type app struct {
 	forwardErr    map[string]string
 	settingsPanel settingsPanel
 	ai            aiPanel
+	updateURL     string
+	httpClient    *http.Client
+	update        updateModel
 	// lastCopiedText 记录最近一次从终端复制的文字，供 AI 报错分析直接引用。
 	lastCopiedText string
 	restore        restorePanel
@@ -160,6 +164,8 @@ type app struct {
 	chooseSavePath       func(defaultName string) (string, error)
 	// chooseLogDir 选会话日志存放的文件夹。和 sz 的选择框分开，标题不能混用。
 	chooseLogDir func() (string, error)
+	// openURL 打开外部链接。正式运行时由 installSystemDialogs 设置为 mygo.Shell.OpenExternal，测试里替换掉。
+	openURL func(url string) error
 	// sessionLogNoted 避免每个输出包都弹出同一次写入失败。
 	sessionLogNoted bool
 	// sessionLogPicking 表示文件夹选择框还开着，忽略重复点击。
@@ -333,6 +339,7 @@ func newApp() *app {
 		arrived:     map[int]bool{},
 		tunnels:     map[string]*liveTunnel{},
 		forwardErr:  map[string]string{},
+		updateURL:   defaultUpdateURL,
 	}
 	return a
 }

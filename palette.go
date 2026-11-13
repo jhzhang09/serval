@@ -237,6 +237,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("arrow-left-right", locales.PortForward(), a.openForwards)
 	actionWithShortcut("sparkles", "AI Agent：切换右侧面板", shortcutText("I"), a.toggleAI)
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
+	action("refresh-cw", "检查更新", func() { a.checkForUpdates(true) })
 	actionWithShortcut("settings", locales.PaletteOpenSettings(), shortcutText(","), a.openSettings)
 	action("server", locales.KnownHosts(), a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {

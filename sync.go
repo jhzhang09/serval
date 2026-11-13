@@ -481,6 +481,9 @@ func (a *app) onVaultReady() {
 		a.syncNow(false)
 	}
 	a.startSyncDir()
+	if !a.local.DisableAutoCheckUpdate {
+		a.checkForUpdates(false)
+	}
 }
 
 // noteVaultChanged 在本地写入成功后调用。短时间里的连续修改合成一次同步。

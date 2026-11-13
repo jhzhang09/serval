@@ -359,15 +359,22 @@
 
 - **范围**：同 R1。重点：没有 Secret Service 时“记住”选项隐藏、每次输入主密码；Wayland 与 X11。
 
-### R3 签名与公证（S，需决策）
+### R3 签名与公证（S，需决策：暂时不做）
 
-- **需决策**：Apple Developer ID、Windows 代码签名证书。
-- **范围**：`mygo.json` 的签名、公证配置；发布流程文档。
+- **决策结果**：经评估与项目所有者确认，因需每年支付 Apple Developer Program（$99/年）与商业代码签名证书费用，现阶段暂不采购开发者账号与商业证书，签名与公证暂时不做。主推免签名的开源分发与 Homebrew Cask 升级通道。
+- **范围**：若未来启动商业分发或上架需求再行采购配置；暂不排期。
 
-### R4 自动更新（M）
+### R4 版本检查与更新提示（M，已完成：`feat/R4-update-check`）
 
-- **范围**：用 MyGo 的 updater 插件；更新包签名（`mygo keygen`）；设置里可关闭。
-- **依赖**：R3。
+- **背景**：在未购买商业代码签名证书及 Apple 公证的情况下，客户端就地二进制文件覆写与原地重启容易受到 macOS Gatekeeper 拦截或损坏钥匙串凭据；因此采用主流开源实践：应用内检测 GitHub Releases 最新版本与发布日志，并联动已有 Homebrew Cask 渠道升级。
+- **范围**：
+  - 纯 Go 实现语义化版本比对（`compareVersion`、`isNewerVersion`），支持 `vX.Y.Z` 及预发布版本比对。
+  - 异步请求 GitHub Releases latest API 获取最新 Release 版本、发布说明、下载网页与发布时间。
+  - 设置面板（“通用”标签页）新增“关于与更新”区块：展示当前版本号（`appVersion`）、“检查更新”按钮、检查状态提示，以及“启动时自动检查更新”开关（写入本机 `device.json`，默认开启）。
+  - 发现新版本时弹出冷调毛玻璃浮层（`updateDialog`），展示版本号、发布日期与更新日志摘要，提供一键“复制升级命令”（`brew upgrade serval`，自动避开 Gatekeeper 拦截）与“前往 GitHub 下载”（通过 `openURL` 唤起系统浏览器）。
+  - 命令面板（`⌘K`）支持搜索“检查更新”并直接触发。
+  - 系统链接调用函数 `a.openURL` 接入 `mygo.Shell.OpenExternal` 并在 `dialogs.go` / `main_test.go` 接线检验。
+- **验收**：单元测试与全流程界面测试全覆盖（`update_test.go`，覆盖版本比较边界、API 响应解析、手动检查最新状态、发现新版本弹窗交互、剪贴板复制命令、浏览器链接唤起、设置自动检查持久化与命令面板触发）。
 
 ### R5 英文界面（M，已完成：`feat/R5-english`）
 

@@ -84,6 +84,7 @@ func (a *app) view(c *ui.Context) {
 	a.flushToasts(c)
 	a.paletteDialog(c, colors)
 	a.broadcastDialog(c)
+	a.updateDialog(c, colors)
 	// 焦点可能在这一帧才从窗格里的 FocusWithin 改过来，镜像源要跟着重算。
 	a.syncBroadcastSource()
 }
