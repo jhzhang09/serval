@@ -405,6 +405,15 @@
   - 交互界面：侧栏快捷按钮与快捷键（⌘I / Ctrl+Shift+I）呼出玻璃浮层；命令面板支持一键唤起；提供一键复制与“填入终端（需确认）”。
 - **验收**：单元测试与界面测试全覆盖（`aipanel_test.go`、`core/ai/client_test.go`）。
 
+### A2 AI Agent 助手（L，已完成：`feat/A2-ai-agent`）
+
+- **范围**：将运维助手升级为右侧可调宽度停靠式 AI Agent（支持直接连入当前 SSH / 本机终端进行多轮自动排查），配备三级权限控制（自动执行 / 确认执行 / 只读观察），自动执行模式下高危指令仍强制拦截确认。支持 OpenAI SSE 流式输出、Thinking 思考过程折叠展示、工具执行卡片、原生 Markdown 表格与代码块渲染、Token 消耗统计、多配置切换与 `@` 上下文 / `/` 斜杠命令。
+- **实现**：
+  - `core/sshconn/client.go`：新增 `ExecContext`（非交互 exec 通道，独立捕获 stdout/stderr、输出截断保护与上下文取消 SIGTERM）。
+  - `core/ai`：新增 `agent.go`（OpenAI SSE 流式解析、`reasoning_content` / `<think>` 思考耗时解析、多轮 `tools`/`tool_calls` Agent 循环、`stream_options` 兼容回退）与 `markdown.go`（区块/行内 Markdown 及 GFM 表格解析）。
+  - 应用层（`aiagent.go`、`aipanel.go`、`settings.go`）：新增 `host_info`、`terminal_read`、`ssh_exec`、`sftp_list`、`sftp_read`、`terminal_insert` 工具集；右侧可拖曳改宽停靠抽屉（`⌘I` / `Ctrl+Shift+I` 切换显隐并保留会话）；支持 DeepSeek / OpenAI / 通义千问 / Kimi / Ollama 多配置管理与即时切换。
+- **验收**：单元测试（`core/ai/agent_test.go`、`core/ai/markdown_test.go`、`core/sshconn/sshconn_test.go`）与真实 SSH Agent 界面流程测试（`aipanel_test.go`）全覆盖。
+
 ---
 
 ## 需决策（暂不排期）
