@@ -726,6 +726,19 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		if !compact {
 			ui.Textf(c, "%d × %d", cols, rows).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 		}
+		if t.monitorOpen && !t.local && !p.ended && !tiny {
+			a.paneMonitorMetrics(c, colors, t, compact)
+		}
+		if !t.local {
+			monitorLabel := "开启服务器监控"
+			if t.monitorOpen {
+				monitorLabel = "收起服务器监控"
+			}
+			btn := iconButton(c, colors, "activity", monitorLabel, func() { a.toggleMonitor(t) }).Disabled(p.ended)
+			if t.monitorOpen {
+				btn.Background(theme.Accent.Alpha(0.12))
+			}
+		}
 		if a.broadcast[p.id] {
 			fg, bg := theme.Accent, theme.Accent.Alpha(0.14)
 			if t.host.Production {
@@ -1025,4 +1038,65 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 		})
 	}
 	p.fileDrag = over
+}
+
+// paneMonitorMetrics 在窗格状态栏内显示轻量服务器监控指标。
+func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, compact bool) {
+	s := t.stats
+	if s.UpdatedAt.IsZero() {
+		ui.Text(c, "正在探测…").TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
+		return
+	}
+	tTheme := c.Theme()
+	cpuColor := colors.TextFaint
+	if s.CPUPercent >= 85 {
+		cpuColor = colors.Danger
+	}
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+		// CPU
+		ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "CPU").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
+			ui.Textf(c, "%.0f%%", s.CPUPercent).TextColor(cpuColor).FontFeatures("tnum")
+		})
+
+		// 内存
+		if s.MemTotalBytes > 0 {
+			memPercent := float32(s.MemUsedBytes) * 100.0 / float32(s.MemTotalBytes)
+			memColor := colors.TextFaint
+			if memPercent >= 85 {
+				memColor = colors.Danger
+			}
+			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "RAM").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
+				if compact {
+					ui.Textf(c, "%.0f%%", memPercent).TextColor(memColor).FontFeatures("tnum")
+				} else {
+					ui.Textf(c, "%s (%.0f%%)", formatBytes(s.MemUsedBytes), memPercent).TextColor(memColor).FontFeatures("tnum")
+				}
+			})
+		}
+
+		// 磁盘 (仅非紧凑模式显示)
+		if !compact && s.DiskTotalBytes > 0 {
+			diskPercent := float32(s.DiskUsedBytes) * 100.0 / float32(s.DiskTotalBytes)
+			diskColor := colors.TextFaint
+			if diskPercent >= 90 {
+				diskColor = colors.Danger
+			}
+			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "Disk").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
+				ui.Textf(c, "%.0f%%", diskPercent).TextColor(diskColor).FontFeatures("tnum")
+			})
+		}
+
+		// 实时网络速率 (非紧凑模式显示)
+		if !compact && (s.NetRxBytesPerSec > 0 || s.NetTxBytesPerSec > 0) {
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, design.Icon("arrow-up")).FontSize(10).TextColor(tTheme.Accent)
+				ui.Text(c, formatRate(s.NetTxBytesPerSec)).TextColor(colors.TextFaint).FontFeatures("tnum")
+				ui.Icon(c, design.Icon("arrow-down")).FontSize(10).TextColor(tTheme.Accent)
+				ui.Text(c, formatRate(s.NetRxBytesPerSec)).TextColor(colors.TextFaint).FontFeatures("tnum")
+			})
+		}
+	})
 }

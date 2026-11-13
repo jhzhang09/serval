@@ -264,6 +264,10 @@ type tab struct {
 	listGen int
 
 	transfers []*fileTransfer
+
+	monitorOpen bool
+	monitorStop chan struct{}
+	stats       ServerStats
 }
 
 // pane 是窗格树的节点：叶子节点持有一个终端，内部节点持有两个子窗格。
@@ -1314,6 +1318,7 @@ func (a *app) closeTab(t *tab) {
 		return
 	}
 	a.dropTabBroadcast(t)
+	a.stopTabMonitor(t)
 	hostID := t.host.ID
 	a.tabs = slices.Delete(a.tabs, i, i+1)
 	if a.active >= len(a.tabs) {
