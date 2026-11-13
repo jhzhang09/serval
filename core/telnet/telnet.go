@@ -5,11 +5,40 @@ package telnet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
+
+var (
+	// ErrRefused 表示目标端口拒绝连接。
+	ErrRefused = errors.New("目标主机拒绝连接")
+	// ErrTimeout 表示连接超时。
+	ErrTimeout = errors.New("连接超时")
+	// ErrUnreachable 表示网络或主机不可达。
+	ErrUnreachable = errors.New("无法连接到目标主机")
+)
+
+func mapDialError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTimeout
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return ErrTimeout
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(err.Error(), "connection refused") {
+		return ErrRefused
+	}
+	if errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) {
+		return ErrUnreachable
+	}
+	return err
+}
 
 // Telnet 控制命令代码 (RFC 854)
 const (
@@ -59,7 +88,7 @@ func Dial(addr string, timeout time.Duration) (*Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	raw, err := d.Dial("tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil, mapDialError(err)
 	}
 	return Wrap(raw), nil
 }
@@ -69,7 +98,7 @@ func DialContext(ctx context.Context, addr string) (*Conn, error) {
 	var d net.Dialer
 	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil, mapDialError(err)
 	}
 	return Wrap(raw), nil
 }

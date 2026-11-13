@@ -13,6 +13,12 @@ var (
 	ErrUnsupportedBaudRate = errors.New("不支持的波特率")
 	// ErrInvalidConfig 表示串口参数无效。
 	ErrInvalidConfig = errors.New("无效的串口配置")
+	// ErrPermission 表示没有权限打开串口设备。
+	ErrPermission = errors.New("没有权限打开串口设备")
+	// ErrNotFound 表示串口设备不存在。
+	ErrNotFound = errors.New("串口设备不存在")
+	// ErrBusy 表示串口设备已被其他程序占用。
+	ErrBusy = errors.New("串口设备正被占用")
 )
 
 // Parity 奇偶校验类型
