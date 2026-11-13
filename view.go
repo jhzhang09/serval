@@ -66,6 +66,7 @@ func (a *app) view(c *ui.Context) {
 	a.keysDialog(c, colors)
 	a.snippetsDialog(c, colors)
 	a.settingsDialog(c, colors)
+	a.aiDialog(c, colors)
 	a.restoreDialog(c, colors)
 	a.syncMergeDialog(c)
 	a.syncOverwriteDialog(c)
@@ -104,6 +105,7 @@ func backdrop(c *ui.Context, colors design.Colors) {
 func (a *app) shortcuts(c *ui.Context) {
 	mods := chromeShortcut()
 	c.OnShortcut(mods, ui.KeyK, a.openPalette)
+	c.OnShortcut(mods, ui.KeyI, a.openAI)
 	c.OnShortcut(mods, ui.KeyBackslash, func() { a.sidebarOpen = !a.sidebarOpen })
 	c.OnShortcut(mods, ui.KeyJ, a.toggleFiles)
 	if t := a.current(); t != nil {
@@ -302,6 +304,15 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
 				}
 			}).OnClick(a.openForwards)
+			aiButton := ui.ButtonBase(c).Key("openAI").Label("AI 助手").Height(30).Padding(0, 10).Gap(8).
+				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
+			if aiButton.Hovered() {
+				aiButton.Background(colors.Hover)
+			}
+			aiButton.Children(func() {
+				ui.Icon(c, design.Icon("sparkles")).FontSize(14).TextColor(t.TextMuted)
+				ui.Text(c, "AI 助手").TextColor(t.TextMuted).Grow(1)
+			}).OnClick(a.openAI)
 			settingsButton := ui.ButtonBase(c).Key("openSettings").Label(locales.Settings()).Height(30).Padding(0, 10).Gap(8).
 				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 			if settingsButton.Hovered() {

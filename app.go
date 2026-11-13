@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"serval/core/ai"
 	"serval/core/hosts"
 	"serval/core/keys"
 	"serval/core/serial"
@@ -121,6 +122,7 @@ type app struct {
 	tunnels       map[string]*liveTunnel
 	forwardErr    map[string]string
 	settingsPanel settingsPanel
+	ai            aiPanel
 	restore       restorePanel
 	setup         setupSheet
 	unlock        unlockState
@@ -1094,6 +1096,10 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 			a.post(func() { p.searchStatus = s })
 		},
 	}
+	// 避免 typed nil (*sshconn.Shell)(nil) 赋给 interface 导致 conn != nil 误判
+	if s, ok := conn.(*sshconn.Shell); ok && s == nil {
+		conn = nil
+	}
 	// 只在有远程字符流时设置 Conn：值为 nil 的接口并不是 nil，
 	// 终端插件会以为有连接，本地终端就打不开了。远程字符流外面套一层 zmodemConn 处理 rz/sz。
 	if conn != nil {
@@ -1135,7 +1141,11 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 }
 
 func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
-	return a.newPaneWithConn(t, shell, shell)
+	var conn shellConn
+	if shell != nil {
+		conn = shell
+	}
+	return a.newPaneWithConn(t, shell, conn)
 }
 
 func (a *app) newPaneWithConn(t *tab, shell *sshconn.Shell, conn shellConn) (*pane, error) {
@@ -2128,4 +2138,42 @@ func (p *pane) contains(target *pane) bool {
 	found := false
 	p.each(func(q *pane) { found = found || q == target })
 	return found
+}
+
+func (a *app) getAIKey() string {
+	if a.device != nil {
+		if b, err := a.device.Get("ai-api-key"); err == nil && len(b) > 0 {
+			return string(b)
+		}
+	}
+	return a.local.AIKey
+}
+
+func (a *app) setAIKey(k string) {
+	if a.device != nil {
+		if k == "" {
+			_ = a.device.Delete("ai-api-key")
+		} else {
+			_ = a.device.Set("ai-api-key", []byte(k))
+		}
+	}
+	next := a.local
+	next.AIKey = k
+	_ = a.saveLocal(next)
+}
+
+func (a *app) aiClient() *ai.Client {
+	baseURL := a.settings.AIBaseURL
+	if baseURL == "" {
+		baseURL = ai.DefaultBaseURL
+	}
+	model := a.settings.AIModel
+	if model == "" {
+		model = ai.DefaultModel
+	}
+	return ai.NewClient(ai.Config{
+		BaseURL: baseURL,
+		APIKey:  a.getAIKey(),
+		Model:   model,
+	})
 }

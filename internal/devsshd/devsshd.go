@@ -431,6 +431,7 @@ func (s *Server) session(conn *ssh.ServerConn, channel ssh.Channel, requests <-c
 				// 只关闭 PTY 不一定能让 shell 收到 SIGHUP，会留下孤儿进程。
 				if shellCmd != nil {
 					shellCmd.Process.Signal(syscall.SIGHUP)
+					_ = shellCmd.Process.Kill()
 				}
 				if ptmx != nil {
 					ptmx.Close()

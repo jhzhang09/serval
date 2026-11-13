@@ -212,6 +212,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("globe", locales.Proxy(), a.openProxies)
 	action("code", "代码片段", a.openSnippets)
 	action("arrow-left-right", "端口转发", a.openForwards)
+	action("sparkles", "AI 助手：生成命令与错误分析", a.openAI)
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
 	action("settings", locales.PaletteOpenSettings(), a.openSettings)
 	action("server", locales.KnownHosts(), a.openSettings)

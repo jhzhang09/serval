@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"path"
 	"slices"
 	"strings"
+	"time"
 
+	"serval/core/ai"
 	"serval/core/syncer"
 	"serval/core/vault"
 	"serval/design"
@@ -85,6 +88,10 @@ type settings struct {
 	TerminalScrollbackMB int    `json:"terminalScrollbackMB,omitempty"`
 	TerminalThemeLight   string `json:"terminalThemeLight,omitempty"`
 	TerminalThemeDark    string `json:"terminalThemeDark,omitempty"`
+
+	// AI 助手设置（随同步，APIKey 单独存设备）
+	AIBaseURL string `json:"aiBaseURL,omitempty"`
+	AIModel   string `json:"aiModel,omitempty"`
 }
 
 // deviceSettings 是只属于当前这台设备的设置，保存在配置目录下的 device.json，
@@ -117,6 +124,8 @@ type deviceSettings struct {
 	SyncOn bool `json:"syncOn,omitempty"`
 	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
 	SyncDir string `json:"syncDir,omitempty"`
+	// AIKey 是当前设备保存的 AI 接口访问密钥。
+	AIKey string `json:"aiKey,omitempty"`
 }
 
 // savedPane 保存一个窗格或窗格拆分。叶子窗格（终端）时 First 和 Second 为空。
@@ -164,6 +173,7 @@ const (
 	settingsTabGeneral settingsTab = iota
 	settingsTabTerminal
 	settingsTabSync
+	settingsTabAI
 )
 
 // settingsPanel 是“设置”浮层面板的状态。
@@ -197,6 +207,14 @@ type settingsPanel struct {
 	probeMsg     string
 	askSyncMerge bool
 	allowMerge   bool
+
+	// AI 助手页草稿
+	aiBaseURL  string
+	aiModel    string
+	aiKey      string
+	aiTestBusy bool
+	aiTestOK   bool
+	aiTestMsg  string
 
 	// WebDAV 专用字段
 	webdavServer   string
@@ -276,6 +294,15 @@ func (a *app) openSettings() {
 			p.syncVendor = "自定义"
 		}
 	}
+	p.aiBaseURL = a.settings.AIBaseURL
+	if p.aiBaseURL == "" {
+		p.aiBaseURL = "https://api.openai.com/v1"
+	}
+	p.aiModel = a.settings.AIModel
+	if p.aiModel == "" {
+		p.aiModel = "gpt-4o-mini"
+	}
+	p.aiKey = a.getAIKey()
 	a.settingsPanel = p
 }
 
@@ -459,7 +486,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.Settings()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
-				ui.Segmented(c, &tabIdx, locales.SetGeneral(), locales.SetTerminal(), "同步").OnChange(func() {
+				ui.Segmented(c, &tabIdx, locales.SetGeneral(), locales.SetTerminal(), "同步", "AI").OnChange(func() {
 					p.tab = settingsTab(tabIdx)
 				})
 				if int(p.tab) != tabIdx {
@@ -597,6 +624,10 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 					}
 					if p.tab == settingsTabSync {
 						a.syncSettingsSection(c, colors)
+						return
+					}
+					if p.tab == settingsTabAI {
+						a.aiSettingsSection(c, colors)
 						return
 					}
 					ui.Field(c, locales.SetFontSize(), func() {
@@ -924,4 +955,84 @@ func themeNote(name string) string {
 		return locales.SetThemeMissing(name)
 	}
 	return ""
+}
+
+func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	t := c.Theme()
+
+	ui.Field(c, "API 端点 (Base URL)", func() {
+		c.Key("setAIBaseURL")
+		ui.TextInput(c, &p.aiBaseURL).Placeholder("https://api.openai.com/v1")
+	}).Description("兼容 OpenAI 标准端点，如 DeepSeek、Kimi、通义千问或本地 Ollama (http://localhost:11434/v1)")
+
+	ui.Field(c, "模型名称 (Model)", func() {
+		c.Key("setAIModel")
+		ui.TextInput(c, &p.aiModel).Placeholder("gpt-4o-mini")
+	}).Description("例如：gpt-4o-mini, deepseek-chat, qwen-turbo 等")
+
+	ui.Field(c, "API Key (访问密钥)", func() {
+		c.Key("setAIKey")
+		ui.TextInput(c, &p.aiKey).Password().Placeholder("sk-...")
+	}).Description("密钥加密存储于系统安全存储，不随保险库同步，保证隐私安全。")
+
+	ui.Row(c).Gap(8).Children(func() {
+		label := "测试连接"
+		if p.aiTestBusy {
+			label = "正在测试连接"
+		}
+		ui.Button(c, label).Key("aiTestBtn").Disabled(p.aiTestBusy).OnClick(func() {
+			p.aiTestBusy = true
+			p.aiTestMsg = ""
+			client := ai.NewClient(ai.Config{
+				BaseURL: p.aiBaseURL,
+				Model:   p.aiModel,
+				APIKey:  p.aiKey,
+				Timeout: 10 * time.Second,
+			})
+			go func() {
+				_, err := client.Chat(context.Background(), []ai.Message{
+					{Role: "user", Content: "echo test"},
+				})
+				a.post(func() {
+					p.aiTestBusy = false
+					if err != nil {
+						p.aiTestOK = false
+						p.aiTestMsg = "连接测试失败: " + err.Error()
+					} else {
+						p.aiTestOK = true
+						p.aiTestMsg = "连接测试成功！模型响应正常。"
+					}
+				})
+			}()
+		})
+
+		ui.PrimaryButton(c, "保存 AI 配置").Key("aiSaveBtn").OnClick(func() {
+			baseURL := strings.TrimSpace(p.aiBaseURL)
+			if baseURL == "" {
+				baseURL = "https://api.openai.com/v1"
+			}
+			model := strings.TrimSpace(p.aiModel)
+			if model == "" {
+				model = "gpt-4o-mini"
+			}
+			next := a.settings
+			next.AIBaseURL = baseURL
+			next.AIModel = model
+			if err := a.saveSettings(next); err != nil {
+				p.err = err.Error()
+				return
+			}
+			a.setAIKey(strings.TrimSpace(p.aiKey))
+			a.toast(ui.Toast{Title: "AI 助手配置已保存"})
+		})
+	})
+
+	if p.aiTestMsg != "" {
+		col := t.Accent
+		if !p.aiTestOK {
+			col = colors.Danger
+		}
+		ui.Text(c, p.aiTestMsg).Key("aiTestResult").FontSize(design.TextSmall).TextColor(col)
+	}
 }

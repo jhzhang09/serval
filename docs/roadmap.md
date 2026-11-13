@@ -394,11 +394,23 @@
 
 ---
 
+## A AI 助手
+
+### A1 运维 AI 助手（M，已完成：`feat/A1-ai-assistant`）
+
+- **范围**：面向运维的 AI 智能助手，支持自然语言需求生成针对当前操作系统的精准 Shell 命令、终端报错自动分析诊断。支持 OpenAI 兼容 API（自定义 BaseURL、APIKey、Model），安全红线：命令绝不自动执行（只填入终端缓冲区，且高危指令弹窗二次核对确认）。
+- **实现**：
+  - `core/ai`：纯 Go 标准库实现 OpenAI 兼容客户端（Chat Completions API），支持 Markdown 代码块与 JSON 双模式命令解析、高危指令模式识别（`IsDangerousCommand`）。
+  - 设置面板：增加“AI”标签页，支持配置 BaseURL、Model、API Key，提供即时连通性测试；API Key 存储于设备安全存储，不入公网同步。
+  - 交互界面：侧栏快捷按钮与快捷键（⌘I / Ctrl+Shift+I）呼出玻璃浮层；命令面板支持一键唤起；提供一键复制与“填入终端（需确认）”。
+- **验收**：单元测试与界面测试全覆盖（`aipanel_test.go`、`core/ai/client_test.go`）。
+
+---
+
 ## 需决策（暂不排期）
 
 | 事项 | 说明 |
 |---|---|
-| AI 助手 | Netcatty 的主打功能之一（自然语言执行命令、终端报错分析）。支持 OpenAI 兼容 API 自定义 BaseURL/Key/Model，执行命令前需确认 |
 | Mosh | 移动网络下抗漫游弱网，需远端预装 mosh-server 与 UDP 端口放行，暂不排期 |
 
 ## 待整理
