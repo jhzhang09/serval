@@ -4225,3 +4225,313 @@ func SetThemeMissing(name string) string { return In(i18n.Locale()).SetThemeMiss
 func (msgs Messages) SetThemeMissing(name string) string {
 	return Catalog.Format(msgs.locale, "setThemeMissing", map[string]any{"name": name})
 }
+
+// AiAssistant says "AI 助手"
+// in the language the app shows.
+func AiAssistant() string { return In(i18n.Locale()).AiAssistant() }
+
+// AiAssistant says "AI 助手"
+// in the language of msgs.
+func (msgs Messages) AiAssistant() string {
+	return Catalog.Format(msgs.locale, "aiAssistant", nil)
+}
+
+// AiAssistantTitle says "AI 命令助手"
+// in the language the app shows.
+func AiAssistantTitle() string { return In(i18n.Locale()).AiAssistantTitle() }
+
+// AiAssistantTitle says "AI 命令助手"
+// in the language of msgs.
+func (msgs Messages) AiAssistantTitle() string {
+	return Catalog.Format(msgs.locale, "aiAssistantTitle", nil)
+}
+
+// AiAnalyzeOutput says "用 AI 分析终端输出"
+// in the language the app shows.
+func AiAnalyzeOutput() string { return In(i18n.Locale()).AiAnalyzeOutput() }
+
+// AiAnalyzeOutput says "用 AI 分析终端输出"
+// in the language of msgs.
+func (msgs Messages) AiAnalyzeOutput() string {
+	return Catalog.Format(msgs.locale, "aiAnalyzeOutput", nil)
+}
+
+// AiAnalyzeButton says "分析当前终端输出"
+// in the language the app shows.
+func AiAnalyzeButton() string { return In(i18n.Locale()).AiAnalyzeButton() }
+
+// AiAnalyzeButton says "分析当前终端输出"
+// in the language of msgs.
+func (msgs Messages) AiAnalyzeButton() string {
+	return Catalog.Format(msgs.locale, "aiAnalyzeButton", nil)
+}
+
+// AiClearChat says "清空对话"
+// in the language the app shows.
+func AiClearChat() string { return In(i18n.Locale()).AiClearChat() }
+
+// AiClearChat says "清空对话"
+// in the language of msgs.
+func (msgs Messages) AiClearChat() string {
+	return Catalog.Format(msgs.locale, "aiClearChat", nil)
+}
+
+// AiStop says "停止"
+// in the language the app shows.
+func AiStop() string { return In(i18n.Locale()).AiStop() }
+
+// AiStop says "停止"
+// in the language of msgs.
+func (msgs Messages) AiStop() string {
+	return Catalog.Format(msgs.locale, "aiStop", nil)
+}
+
+// AiSend says "生成命令"
+// in the language the app shows.
+func AiSend() string { return In(i18n.Locale()).AiSend() }
+
+// AiSend says "生成命令"
+// in the language of msgs.
+func (msgs Messages) AiSend() string {
+	return Catalog.Format(msgs.locale, "aiSend", nil)
+}
+
+// MonitorTitle says "服务器监控"
+// in the language the app shows.
+func MonitorTitle() string { return In(i18n.Locale()).MonitorTitle() }
+
+// MonitorTitle says "服务器监控"
+// in the language of msgs.
+func (msgs Messages) MonitorTitle() string {
+	return Catalog.Format(msgs.locale, "monitorTitle", nil)
+}
+
+// MonitorToggleOpen says "开启服务器监控"
+// in the language the app shows.
+func MonitorToggleOpen() string { return In(i18n.Locale()).MonitorToggleOpen() }
+
+// MonitorToggleOpen says "开启服务器监控"
+// in the language of msgs.
+func (msgs Messages) MonitorToggleOpen() string {
+	return Catalog.Format(msgs.locale, "monitorToggleOpen", nil)
+}
+
+// MonitorToggleClose says "收起服务器监控"
+// in the language the app shows.
+func MonitorToggleClose() string { return In(i18n.Locale()).MonitorToggleClose() }
+
+// MonitorToggleClose says "收起服务器监控"
+// in the language of msgs.
+func (msgs Messages) MonitorToggleClose() string {
+	return Catalog.Format(msgs.locale, "monitorToggleClose", nil)
+}
+
+// MonitorProbing says "正在探测…"
+// in the language the app shows.
+func MonitorProbing() string { return In(i18n.Locale()).MonitorProbing() }
+
+// MonitorProbing says "正在探测…"
+// in the language of msgs.
+func (msgs Messages) MonitorProbing() string {
+	return Catalog.Format(msgs.locale, "monitorProbing", nil)
+}
+
+// MonitorCPU says "CPU"
+// in the language the app shows.
+func MonitorCPU() string { return In(i18n.Locale()).MonitorCPU() }
+
+// MonitorCPU says "CPU"
+// in the language of msgs.
+func (msgs Messages) MonitorCPU() string {
+	return Catalog.Format(msgs.locale, "monitorCPU", nil)
+}
+
+// MonitorMemory says "内存"
+// in the language the app shows.
+func MonitorMemory() string { return In(i18n.Locale()).MonitorMemory() }
+
+// MonitorMemory says "内存"
+// in the language of msgs.
+func (msgs Messages) MonitorMemory() string {
+	return Catalog.Format(msgs.locale, "monitorMemory", nil)
+}
+
+// MonitorDisk says "根分区磁盘"
+// in the language the app shows.
+func MonitorDisk() string { return In(i18n.Locale()).MonitorDisk() }
+
+// MonitorDisk says "根分区磁盘"
+// in the language of msgs.
+func (msgs Messages) MonitorDisk() string {
+	return Catalog.Format(msgs.locale, "monitorDisk", nil)
+}
+
+// MonitorLoad says "系统负载 (1m / 5m)"
+// in the language the app shows.
+func MonitorLoad() string { return In(i18n.Locale()).MonitorLoad() }
+
+// MonitorLoad says "系统负载 (1m / 5m)"
+// in the language of msgs.
+func (msgs Messages) MonitorLoad() string {
+	return Catalog.Format(msgs.locale, "monitorLoad", nil)
+}
+
+// MonitorNetUp says "网络上传"
+// in the language the app shows.
+func MonitorNetUp() string { return In(i18n.Locale()).MonitorNetUp() }
+
+// MonitorNetUp says "网络上传"
+// in the language of msgs.
+func (msgs Messages) MonitorNetUp() string {
+	return Catalog.Format(msgs.locale, "monitorNetUp", nil)
+}
+
+// MonitorNetDown says "网络下载"
+// in the language the app shows.
+func MonitorNetDown() string { return In(i18n.Locale()).MonitorNetDown() }
+
+// MonitorNetDown says "网络下载"
+// in the language of msgs.
+func (msgs Messages) MonitorNetDown() string {
+	return Catalog.Format(msgs.locale, "monitorNetDown", nil)
+}
+
+// ProtoSerial says "串口"
+// in the language the app shows.
+func ProtoSerial() string { return In(i18n.Locale()).ProtoSerial() }
+
+// ProtoSerial says "串口"
+// in the language of msgs.
+func (msgs Messages) ProtoSerial() string {
+	return Catalog.Format(msgs.locale, "protoSerial", nil)
+}
+
+// ProtoTelnetWarning says "Telnet 不加密，密码和内容会以明文传输，只建议在内网设备上使用"
+// in the language the app shows.
+func ProtoTelnetWarning() string { return In(i18n.Locale()).ProtoTelnetWarning() }
+
+// ProtoTelnetWarning says "Telnet 不加密，密码和内容会以明文传输，只建议在内网设备上使用"
+// in the language of msgs.
+func (msgs Messages) ProtoTelnetWarning() string {
+	return Catalog.Format(msgs.locale, "protoTelnetWarning", nil)
+}
+
+// GroupNew says "新建分组"
+// in the language the app shows.
+func GroupNew() string { return In(i18n.Locale()).GroupNew() }
+
+// GroupNew says "新建分组"
+// in the language of msgs.
+func (msgs Messages) GroupNew() string {
+	return Catalog.Format(msgs.locale, "groupNew", nil)
+}
+
+// GroupRename says "重命名分组"
+// in the language the app shows.
+func GroupRename() string { return In(i18n.Locale()).GroupRename() }
+
+// GroupRename says "重命名分组"
+// in the language of msgs.
+func (msgs Messages) GroupRename() string {
+	return Catalog.Format(msgs.locale, "groupRename", nil)
+}
+
+// GroupDeleteEmpty says "删除空分组"
+// in the language the app shows.
+func GroupDeleteEmpty() string { return In(i18n.Locale()).GroupDeleteEmpty() }
+
+// GroupDeleteEmpty says "删除空分组"
+// in the language of msgs.
+func (msgs Messages) GroupDeleteEmpty() string {
+	return Catalog.Format(msgs.locale, "groupDeleteEmpty", nil)
+}
+
+// HostMoveUp says "上移"
+// in the language the app shows.
+func HostMoveUp() string { return In(i18n.Locale()).HostMoveUp() }
+
+// HostMoveUp says "上移"
+// in the language of msgs.
+func (msgs Messages) HostMoveUp() string {
+	return Catalog.Format(msgs.locale, "hostMoveUp", nil)
+}
+
+// HostMoveDown says "下移"
+// in the language the app shows.
+func HostMoveDown() string { return In(i18n.Locale()).HostMoveDown() }
+
+// HostMoveDown says "下移"
+// in the language of msgs.
+func (msgs Messages) HostMoveDown() string {
+	return Catalog.Format(msgs.locale, "hostMoveDown", nil)
+}
+
+// HostMoveToGroup says "移到分组"
+// in the language the app shows.
+func HostMoveToGroup() string { return In(i18n.Locale()).HostMoveToGroup() }
+
+// HostMoveToGroup says "移到分组"
+// in the language of msgs.
+func (msgs Messages) HostMoveToGroup() string {
+	return Catalog.Format(msgs.locale, "hostMoveToGroup", nil)
+}
+
+// HostFilterSortHint says "清空过滤后可以拖动排序"
+// in the language the app shows.
+func HostFilterSortHint() string { return In(i18n.Locale()).HostFilterSortHint() }
+
+// HostFilterSortHint says "清空过滤后可以拖动排序"
+// in the language of msgs.
+func (msgs Messages) HostFilterSortHint() string {
+	return Catalog.Format(msgs.locale, "hostFilterSortHint", nil)
+}
+
+// EmptyRecentHosts says "最近连接"
+// in the language the app shows.
+func EmptyRecentHosts() string { return In(i18n.Locale()).EmptyRecentHosts() }
+
+// EmptyRecentHosts says "最近连接"
+// in the language of msgs.
+func (msgs Messages) EmptyRecentHosts() string {
+	return Catalog.Format(msgs.locale, "emptyRecentHosts", nil)
+}
+
+// PaneDisconnected says "连接已断开"
+// in the language the app shows.
+func PaneDisconnected() string { return In(i18n.Locale()).PaneDisconnected() }
+
+// PaneDisconnected says "连接已断开"
+// in the language of msgs.
+func (msgs Messages) PaneDisconnected() string {
+	return Catalog.Format(msgs.locale, "paneDisconnected", nil)
+}
+
+// PaneCloseTab says "关闭标签"
+// in the language the app shows.
+func PaneCloseTab() string { return In(i18n.Locale()).PaneCloseTab() }
+
+// PaneCloseTab says "关闭标签"
+// in the language of msgs.
+func (msgs Messages) PaneCloseTab() string {
+	return Catalog.Format(msgs.locale, "paneCloseTab", nil)
+}
+
+// PaneMoreActions says "窗格操作"
+// in the language the app shows.
+func PaneMoreActions() string { return In(i18n.Locale()).PaneMoreActions() }
+
+// PaneMoreActions says "窗格操作"
+// in the language of msgs.
+func (msgs Messages) PaneMoreActions() string {
+	return Catalog.Format(msgs.locale, "paneMoreActions", nil)
+}
+
+// PortForward says "端口转发"
+// in the language the app shows.
+func PortForward() string { return In(i18n.Locale()).PortForward() }
+
+// PortForward says "端口转发"
+// in the language of msgs.
+func (msgs Messages) PortForward() string {
+	return Catalog.Format(msgs.locale, "portForward", nil)
+}

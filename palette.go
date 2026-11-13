@@ -19,9 +19,10 @@ import (
 
 // palette 是命令面板的状态。它是连接主机和执行操作的主要入口：两三个按键就能到达任何地方。
 type palette struct {
-	open     bool
-	query    string
-	selected int
+	open          bool
+	query         string
+	selected      int
+	recentActions []string
 	// fresh 表示面板刚打开，这一帧从起始姿态弹出。
 	fresh bool
 }
@@ -29,6 +30,7 @@ type palette struct {
 // paletteItem 是命令面板里的一行。host 为空时是操作。
 type paletteItem struct {
 	key      string
+	section  string
 	title    string
 	subtitle string
 	icon     string
@@ -37,7 +39,20 @@ type paletteItem struct {
 }
 
 func (a *app) openPalette() {
-	a.pal = palette{open: true, fresh: true}
+	a.pal = palette{open: true, fresh: true, recentActions: a.pal.recentActions}
+}
+
+func (a *app) recordPaletteAction(key string) {
+	if key == "" {
+		return
+	}
+	next := []string{key}
+	for _, k := range a.pal.recentActions {
+		if k != key && len(next) < 20 {
+			next = append(next, k)
+		}
+	}
+	a.pal.recentActions = next
 }
 
 // fuzzyScore 判断 query 的字符是否按顺序出现在 text 里，并给出分数；不匹配时返回 -1。
@@ -163,7 +178,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	}
 	for i := range a.hosts {
 		h := &a.hosts[i]
-		add(paletteItem{key: "host:" + h.ID, title: h.Name, subtitle: h.Target(), host: h, run: func() { a.open(*h) }},
+		add(paletteItem{key: "host:" + h.ID, section: "主机", title: h.Name, subtitle: h.Target(), host: h, run: func() { a.open(*h) }},
 			h.Name+" "+h.Target())
 	}
 	// 同类内按分数稳定排序。查询为空时最近连接过的主机排在前面（本机记录，不同步），其余保持原有顺序。
@@ -186,32 +201,37 @@ func (a *app) paletteItems(query string) []paletteItem {
 	var actions []scored
 	action := func(icon, title string, run func()) {
 		if s := fuzzyScore(query, title); s >= 0 {
-			actions = append(actions, scored{paletteItem{key: "action:" + title, title: title, icon: icon, run: run}, s})
+			actions = append(actions, scored{paletteItem{key: "action:" + title, section: "操作", title: title, icon: icon, run: run}, s})
 		}
 	}
 	if t := a.current(); t != nil {
 		action("terminal", locales.PaletteDuplicateTab(), func() { a.duplicateTab(t) })
 		action("search", locales.PaletteFindInTerminal(), func() { a.openSearch(t) })
-		action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
-		action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
+		if t.local || t.client != nil {
+			action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
+			action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
+		}
 		action("x", locales.PaletteClosePane(), func() { a.closeFocused(t) })
 		if len(a.tabs) > 1 {
 			action("x", locales.PaletteCloseOtherTabs(), func() { a.closeOtherTabs(t) })
 		}
+		action("sparkles", locales.AiAnalyzeOutput(), a.openAIExplainFromActivePane)
 	}
 	if a.broadcastOn {
 		action("radio", "关闭广播", a.toggleBroadcast)
 	} else {
 		action("radio", "广播输入", a.toggleBroadcast)
 	}
-	action("folder", locales.PaletteToggleFiles(), a.toggleFiles)
+	if t := a.current(); t != nil && !t.local && t.client != nil {
+		action("folder", locales.PaletteToggleFiles(), a.toggleFiles)
+	}
 	action("terminal", locales.PaletteNewLocalTerminal(), a.openLocalTerminal)
 	action("panel-left", locales.PaletteToggleSidebar(), func() { a.sidebarOpen = !a.sidebarOpen })
 	action("plus", locales.AddHost(), func() { a.openAdd() })
 	action("key-round", locales.ViewKeys(), a.openKeys)
 	action("globe", locales.Proxy(), a.openProxies)
 	action("code", "代码片段", a.openSnippets)
-	action("arrow-left-right", "端口转发", a.openForwards)
+	action("arrow-left-right", locales.PortForward(), a.openForwards)
 	action("sparkles", "AI 助手：生成命令与错误分析", a.openAI)
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
 	action("settings", locales.PaletteOpenSettings(), a.openSettings)
@@ -222,7 +242,18 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("sun-moon", locales.PaletteAppearanceSystem(), func() { a.setAppearance(appearanceSystem) })
 	action("sun-moon", locales.PaletteAppearanceLight(), func() { a.setAppearance(appearanceLight) })
 	action("sun-moon", locales.PaletteAppearanceDark(), func() { a.setAppearance(appearanceDark) })
-	slices.SortStableFunc(actions, func(x, y scored) int { return cmp.Compare(y.score, x.score) })
+	recentActionRank := func(key string) int {
+		if i := slices.Index(a.pal.recentActions, key); i >= 0 {
+			return i
+		}
+		return len(a.pal.recentActions)
+	}
+	slices.SortStableFunc(actions, func(x, y scored) int {
+		if c := cmp.Compare(y.score, x.score); c != 0 || query != "" {
+			return c
+		}
+		return cmp.Compare(recentActionRank(x.key), recentActionRank(y.key))
+	})
 
 	// 片段按名称排好再按分数稳定排序：查询为空时按名称，有查询时匹配高的在前，同分仍按名称。
 	ordered := a.sortedSnippets()
@@ -232,6 +263,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 		if sc := fuzzyScore(query, s.Name+" "+s.Body); sc >= 0 {
 			snippetHits = append(snippetHits, scored{paletteItem{
 				key:      "snippet:" + s.ID,
+				section:  "片段",
 				title:    s.Name,
 				subtitle: snippetSubtitle(s.Body),
 				icon:     "code",
@@ -266,6 +298,7 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 	}
 	run := func(item paletteItem) {
 		a.pal.open = false
+		a.recordPaletteAction(item.key)
 		item.run()
 	}
 	// 打开时从略小、半透明弹出，和新窗格用同一套姿态，整个应用的“出现”是一种语言。
@@ -295,7 +328,13 @@ func (a *app) paletteDialog(c *ui.Context, colors design.Colors) {
 					if len(items) == 0 {
 						ui.Text(c, locales.PaletteNotFound(before)).TextColor(t.TextMuted).Padding(10, 8)
 					}
+					lastSection := ""
 					for i, item := range items {
+						if item.section != "" && item.section != lastSection {
+							lastSection = item.section
+							ui.Text(c, item.section).FontSize(design.TextSmall-1).FontWeight(600).
+								TextColor(colors.TextFaint).Padding(6, 10, 2, 10)
+						}
 						a.paletteRow(c, colors, i, item, func() { run(item) })
 					}
 				})

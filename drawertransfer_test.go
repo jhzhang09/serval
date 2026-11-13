@@ -8,6 +8,7 @@ import (
 
 	"serval/core/hosts"
 	"serval/internal/devsshd"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -20,7 +21,7 @@ func TestDrawerDropUploadsIntoListedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	setTerminalDir(t, h, tb, remote)
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("抽屉跟随终端目录", func() bool { return tb.dir == remote })
 
 	inbox := filepath.Join(remote, "inbox")
@@ -62,7 +63,7 @@ func TestDrawerDropUploadsIntoListedDir(t *testing.T) {
 func TestUploadFolderFromButton(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	local := filepath.Join(t.TempDir(), "bundle")
@@ -85,7 +86,7 @@ func TestUploadFolderFromButton(t *testing.T) {
 func TestDownloadFolderToChosenDir(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	remote := filepath.Join(tb.dir, "pack-dl")
@@ -132,7 +133,7 @@ func TestDownloadFolderToChosenDir(t *testing.T) {
 func TestDragOutOffersFileAfterDownload(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	name := "drag-me.txt"
@@ -212,7 +213,7 @@ func TestDragOutSeparatesTabs(t *testing.T) {
 	}
 
 	tb1 := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开第一个标签的文件列表", func() bool { return tb1.dir != "" })
 	first := filepath.Join(tb1.dir, "same.txt")
 	if err := os.WriteFile(first, []byte("AAAA-first"), 0o644); err != nil {

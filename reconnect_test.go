@@ -38,9 +38,9 @@ func TestReconnectRetryable(t *testing.T) {
 // 服务器换了主机密钥（可能被冒充）时，自动重连立即停止并说明原因，不会一直重试。
 func TestAutoReconnectStopsOnHostKeyChange(t *testing.T) {
 	h := newHarness(t)
-	tb := h.connectDev()
 	h.a.pingInterval = 50 * time.Millisecond
 	h.a.reconnectBaseDelay = 50 * time.Millisecond
+	tb := h.connectDev()
 
 	addr := h.server.Addr().String()
 	h.server.Close()

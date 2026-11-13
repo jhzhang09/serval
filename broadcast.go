@@ -74,7 +74,7 @@ func isTerminalReply(p []byte) bool {
 // localBroadcastBytes 把本机终端认得出的按键编成 shell 能读的字节。
 // 带 Command、Super、Alt 的组合留给应用或输入法，这里不猜编码。
 func localBroadcastBytes(mods ui.Modifiers, key ui.Key) []byte {
-	if mods&(ui.Cmd|ui.Super|ui.Alt) != 0 {
+	if mods&(ui.Super|ui.Alt) != 0 || (ui.Cmd != ui.Ctrl && mods&ui.Cmd != 0) {
 		return nil
 	}
 	if mods&ui.Ctrl != 0 {
