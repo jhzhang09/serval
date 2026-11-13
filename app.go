@@ -491,10 +491,45 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 				return
 			}
 			a.rememberCredentials(chain, used)
+			if h.Distro == "" {
+				a.probeDistroAsync(h, client)
+			}
 			if layout != nil {
 				a.addTabWithLayout(h, client, shells, layout, slot)
 			} else {
 				a.addTab(h, client, shells[0])
+			}
+		})
+	}()
+}
+
+// probeDistroAsync 在后台探测目标主机的系统/发行版，并在识别到之后静默更新保险库记录与标签。
+func (a *app) probeDistroAsync(h hosts.Host, client *sshconn.Client) {
+	if client == nil || h.ID == "" {
+		return
+	}
+	go func() {
+		out, err := client.Output("cat /etc/os-release 2>/dev/null; echo '---SERV-OS---'; uname -s 2>/dev/null")
+		if err != nil || len(out) == 0 {
+			return
+		}
+		raw := string(out)
+		osRelease, unameStr, _ := strings.Cut(raw, "---SERV-OS---")
+		distro := hosts.DetectDistro(strings.TrimSpace(osRelease), strings.TrimSpace(unameStr))
+		if distro == "" {
+			return
+		}
+		a.post(func() {
+			cur, ok := a.hostByID(h.ID)
+			if !ok || cur.Distro != "" {
+				return
+			}
+			cur.Distro = distro
+			_ = a.apply(hostChange(cur))
+			for _, tb := range a.tabs {
+				if tb.host.ID == cur.ID {
+					tb.host.Distro = distro
+				}
 			}
 		})
 	}()

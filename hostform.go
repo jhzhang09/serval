@@ -37,6 +37,7 @@ type hostForm struct {
 	tempHostID string
 
 	name, address, port, user, group string
+	distro                           string // 操作系统或发行版标识
 	auth                             int    // authModes 的下标
 	keyName                          string // 选中的私钥名称，noKey 表示不用
 	production                       bool
@@ -78,6 +79,7 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 	f := hostForm{
 		open: true, fresh: true,
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
+		distro:        h.Distro,
 		production:    h.Production,
 		forwardAgent:  h.ForwardAgent,
 		passwordSaved: h.Password != "", keyName: noKey(),
@@ -206,6 +208,7 @@ func (a *app) saveForm() {
 		Name: name, Address: address, Port: port, User: user, Auth: auth, KeyID: keyID,
 		Group: group, Production: f.production, ForwardAgent: f.forwardAgent,
 		ProxyJump: strings.Join(jumps, ","), ProxyID: proxyID, Proxy: legacyProxy,
+		Distro: f.distro,
 	}
 	// 密码：新输入的覆盖；要求清除的清除；密码以外的登录方式也保留已有密码（自动模式会用到），
 	// 只有“私钥”模式用不上密码，清掉。复制来的主机沿用来源的密码。
@@ -238,6 +241,10 @@ func (a *app) saveForm() {
 	}
 	if f.editing != "" {
 		h.ID = f.editing
+		h.SortOrder = previous.SortOrder
+		if h.Distro == "" {
+			h.Distro = previous.Distro
+		}
 	} else {
 		h.ID = vault.NewID()
 	}
@@ -427,6 +434,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							})
 						})
 					})
+					a.distroField(c, f)
 
 					descriptions := []string{
 						locales.HostAuthAutoHint(),
@@ -553,4 +561,28 @@ func (a *app) passwordField(c *ui.Context, f *hostForm) {
 			})
 		}
 	})
+}
+
+// distroField 是操作系统或发行版下拉选择框。
+func (a *app) distroField(c *ui.Context, f *hostForm) {
+	options := hosts.SupportedDistros()
+	labels := make([]string, len(options))
+	currentLabel := options[0].Label
+	for i, opt := range options {
+		labels[i] = opt.Label
+		if opt.Key == f.distro {
+			currentLabel = opt.Label
+		}
+	}
+	ui.Field(c, "系统 / 发行版", func() {
+		c.Key("addDistro")
+		if ui.Select(c, &currentLabel, labels).Changed() {
+			for _, opt := range options {
+				if opt.Label == currentLabel {
+					f.distro = opt.Key
+					break
+				}
+			}
+		}
+	}).Description("用于展示系统徽标。留空或选择“自动识别”将在连接后自动探测。")
 }

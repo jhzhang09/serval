@@ -433,3 +433,16 @@ func loadKey(data []byte, path, passphrase string) (ssh.Signer, error) {
 	}
 	return signer, nil
 }
+
+// Output 在远端执行一条单次命令并返回其标准输出（适用于探针等非交互请求）。
+func (c *Client) Output(cmd string) ([]byte, error) {
+	if c == nil || c.conn == nil {
+		return nil, errors.New("sshconn: 客户端未连接")
+	}
+	sess, err := c.conn.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	return sess.Output(cmd)
+}

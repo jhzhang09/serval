@@ -320,7 +320,7 @@ func (a *app) paletteRow(c *ui.Context, colors design.Colors, i int, item palett
 			selectionPill(c, colors, "palette", t.Accent.Alpha(0.12), false)
 		}
 		if item.host != nil {
-			design.CoatView(c, item.host.ID, item.host.Production, 22)
+			design.DistroCoatView(c, item.host.ID, item.host.Distro, item.host.Production, 22)
 		} else {
 			ui.Box(c).Size(22, 22).Center().Shrink(0).Children(func() {
 				ui.Icon(c, design.Icon(item.icon)).FontSize(15).TextColor(t.TextMuted)

@@ -406,7 +406,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 			row.Description(locales.ViewConnecting())
 		}
 		row.Children(func() {
-			coat := design.CoatView(c, h.ID, h.Production, 26)
+			coat := design.DistroCoatView(c, h.ID, h.Distro, h.Production, 26)
 			if busy {
 				// 连接中斑纹轻轻呼吸，代替转圈图标：状态就落在这台主机自己的标识上。
 				coat.Opacity(coat.Keyframes("breathe", design.Breathe, design.BreatheOptions))
@@ -528,7 +528,7 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 		if selected {
 			selectionPill(c, colors, "tabs", colors.Selected, true)
 		}
-		design.CoatView(c, t.host.ID, t.host.Production, 14)
+		design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
 		color := theme.TextMuted
 		if selected {
 			color = theme.Text
@@ -671,11 +671,11 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 
 		multiPane := t.root.leaves() > 1
 		if multiPane {
-			design.CoatView(c, t.host.ID, t.host.Production, 14)
+			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
 			ui.Text(c, tabLabel(t)).FontWeight(600).FontSize(design.TextBody).SingleLine().MinWidth(0).Shrink(1)
 		} else {
 			// 单窗格时主机名已在上方标签页清晰显示，此处仅展示主机专属斑纹，避免信息冗余
-			design.CoatView(c, t.host.ID, t.host.Production, 14)
+			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
 		}
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {

@@ -40,6 +40,8 @@ type Host struct {
 	TOTPAlgorithm string `json:"totpAlgorithm,omitempty"`
 	// SortOrder 是侧栏手动拖动排序权重，默认 0 表示未手动排序（按名称字母排）。
 	SortOrder int `json:"sortOrder,omitempty"`
+	// Distro 是操作系统或发行版标识（如 ubuntu, debian, alpine, macos, windows 等）。
+	Distro string `json:"distro,omitempty"`
 }
 
 // Proxy 是一条独立管理的代理配置，供多台主机复用，整条记录（包括密码）加密存进保险库。

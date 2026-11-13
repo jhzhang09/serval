@@ -120,6 +120,12 @@
 - **实现**：`hosts.Host` 新增 `SortOrder int`（`json:"sortOrder,omitempty"`），登记进 `docs/storage.md`。使用 MyGo 的 `Drag`、`DragOver` 与 `Drop` 实现窗口内拖拽与边框高亮反馈；拖到同组目标行调整前后顺序，拖到其他分组行或折叠标题行跨组归类并更新排序权重，写入保险库。
 - **依赖**：F7。
 
+### F9 主机发行版识别图标（S，已完成：`feat/F9-distro-icons`）
+
+- **范围**：识别并展示 Linux 主流发行版（Ubuntu、Debian、CentOS、RHEL、Fedora、Arch、Alpine、openSUSE、Rocky 等）以及 macOS、Windows、FreeBSD 的系统矢量徽标；保留主机专属几何渐变底，无识别时平滑降级为纯斑点图案。
+- **实现**：`hosts.Host` 新增 `Distro string`（登记进 `docs/storage.md`）；主机表单提供下拉选择；连接建立后异步轻量探针（`/etc/os-release` 与 `uname -s`）自动识别并静默回写保险库；`design.DistroCoatView` 支持在各处（侧栏、标签页、窗格卡片、命令面板、密码弹窗）统一展示。
+- **依赖**：无。
+
 ---
 
 ## C 连接
@@ -379,7 +385,6 @@
 | AI 助手 | Netcatty 的主打功能之一（自然语言执行命令、多主机编排）。涉及模型服务选择、费用、命令执行的安全确认，需要单独设计 |
 | Telnet、串口、Mosh | Netcatty 支持；用户群需求不明确 |
 | 服务器监控视图 | CPU、内存、磁盘的实时面板 |
-| 主机图标与发行版识别 | 现在用斑纹图案区分主机 |
 
 ## 待整理
 

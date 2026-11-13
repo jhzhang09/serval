@@ -59,7 +59,7 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 	sheet(c, colors, &a.auth.open, &a.auth.fresh, 380, 22, func() {
 		ui.Column(c).Gap(16).Children(func() {
 			ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-				design.CoatView(c, a.auth.host.ID, a.auth.host.Production, 36)
+				design.DistroCoatView(c, a.auth.host.ID, a.auth.host.Distro, a.auth.host.Production, 36)
 				ui.Column(c).Gap(2).MinWidth(0).Children(func() {
 					ui.Text(c, a.auth.host.Name).FontSize(design.TextHeading).FontWeight(600)
 					ui.Text(c, a.auth.host.Target()).TextColor(t.TextMuted).FontSize(design.TextSmall)
@@ -300,7 +300,7 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 	sheet(c, colors, &ch.open, &ch.fresh, 400, 20, func() {
 		ui.Column(c).Key("challengeBody").Gap(16).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				design.CoatView(c, ch.host.ID, ch.host.Production, 28)
+				design.DistroCoatView(c, ch.host.ID, ch.host.Distro, ch.host.Production, 28)
 				ui.Column(c).Gap(2).Grow(1).Children(func() {
 					ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
 					ui.Text(c, subtitle).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)

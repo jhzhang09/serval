@@ -391,3 +391,24 @@ func TestForwardAgentOptionWarnsAndPersists(t *testing.T) {
 		t.Fatal("再次编辑应保持开启并继续提示风险")
 	}
 }
+
+func TestHostFormDistroPersistsAndDisplays(t *testing.T) {
+	h := newHarness(t)
+	h.a.openEdit(h.devHost())
+	h.tt.Frame()
+	h.a.form.distro = hosts.DistroUbuntu
+	h.click("保存")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("保存失败: %s", h.a.form.err)
+	}
+	saved := h.devHost()
+	if saved.Distro != hosts.DistroUbuntu {
+		t.Fatalf("Distro 未正确写入主机: %+v", saved)
+	}
+	h.a.openEdit(saved)
+	h.tt.Frame()
+	if h.a.form.distro != hosts.DistroUbuntu {
+		t.Fatalf("再次编辑时 Distro 未保留: %q", h.a.form.distro)
+	}
+}

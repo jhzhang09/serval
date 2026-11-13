@@ -3,6 +3,7 @@ package design
 import (
 	"hash/fnv"
 	"math"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -139,4 +140,62 @@ func coatBox(c *ui.Context, coat Coat, size float32) ui.Element {
 	return ui.Box(c).Size(size, size).Radius(radius).Shrink(0).AccessHidden(true).Draw(func(p *ui.Painter, r ui.Rect) {
 		coat.Paint(p, r, radius)
 	})
+}
+
+// DistroIconName 返回发行版对应的图标名称。无法识别或无图标时返回空串。
+func DistroIconName(distro string) string {
+	switch strings.ToLower(strings.TrimSpace(distro)) {
+	case "ubuntu":
+		return "distro-ubuntu"
+	case "debian":
+		return "distro-debian"
+	case "centos":
+		return "distro-centos"
+	case "redhat", "rhel":
+		return "distro-redhat"
+	case "fedora":
+		return "distro-fedora"
+	case "arch":
+		return "distro-arch"
+	case "alpine":
+		return "distro-alpine"
+	case "rocky", "alma":
+		return "distro-centos"
+	case "opensuse", "suse":
+		return "distro-opensuse"
+	case "macos", "darwin":
+		return "distro-macos"
+	case "windows":
+		return "distro-windows"
+	case "freebsd", "openbsd":
+		return "distro-freebsd"
+	case "linux":
+		return "distro-linux"
+	default:
+		return ""
+	}
+}
+
+// DistroCoatView 返回带发行版徽标或原生斑纹的主机标识。
+func DistroCoatView(c *ui.Context, seed, distro string, production bool, size float32) ui.Element {
+	iconName := DistroIconName(distro)
+	if iconName == "" {
+		return CoatView(c, seed, production, size)
+	}
+	coat := NewCoat(seed, production)
+	radius := size * 0.28
+	iconSize := size * 0.62
+	box := ui.Box(c).Size(size, size).Radius(radius).Shrink(0).AccessHidden(true).
+		Justify(ui.Center).AlignItems(ui.Center).
+		Draw(func(p *ui.Painter, r ui.Rect) {
+			p.FillGradient(r, ui.LinearGradient{
+				Angle: 135,
+				Oklab: true,
+				Stops: []ui.GradientStop{{Color: coat.From, At: 0}, {Color: coat.To, At: 1}},
+			}, radius)
+		})
+	box.Children(func() {
+		ui.Icon(c, Icon(iconName)).FontSize(iconSize).TextColor(ui.RGBA(255, 255, 255, 0.92))
+	})
+	return box
 }
