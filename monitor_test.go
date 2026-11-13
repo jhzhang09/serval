@@ -94,3 +94,21 @@ func TestToggleMonitor(t *testing.T) {
 		t.Fatal("本地终端不应开启服务器监控")
 	}
 }
+
+func TestDefaultMonitorEnabledByDefault(t *testing.T) {
+	h := newHarness(t)
+	if !h.a.shouldAutoMonitor("any-host") {
+		t.Fatal("新配置默认应开启服务器监控")
+	}
+
+	h.a.openSettings()
+	h.tt.Frame()
+	h.click("新建 SSH 会话时默认开启顶栏监控")
+	h.tt.Frame()
+	if !h.a.local.DisableDefaultMonitor {
+		t.Fatal("取消勾选后应保存 DisableDefaultMonitor=true")
+	}
+	if h.a.shouldAutoMonitor("any-host") {
+		t.Fatal("关闭默认开启后 shouldAutoMonitor 应返回 false")
+	}
+}

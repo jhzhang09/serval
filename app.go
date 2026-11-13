@@ -311,6 +311,12 @@ type pane struct {
 	lastCols, lastRows int
 	sizeChangedAt      time.Time
 
+	promptUser    string
+	promptDir     string
+	lastTermDir   string
+	lastTermTitle string
+	prompt        *promptTracker
+
 	first, second *pane
 	vertical      bool
 	percent       float32
@@ -1037,6 +1043,10 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 	}
 	a.saveSessionLayout()
 	a.syncHostForwards(h.ID)
+	if a.shouldAutoMonitor(h.ID) {
+		t.monitorOpen = true
+		a.startTabMonitor(t)
+	}
 }
 
 // insertRestoredTab 把标签放进标签栏。恢复会话的连接是并行建立的，先连上的不一定排在前面：
@@ -1155,7 +1165,15 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 		z = newZmodemConn(conn, func(s *zmodemSession) {
 			a.post(func() { a.startZmodem(t, p, z, s) })
 		})
+		p.prompt = newPromptTracker()
 		z.onOutput = func(b []byte) {
+			if p.prompt != nil {
+				if u, d, changed := p.prompt.feed(b); changed {
+					a.post(func() {
+						p.promptUser, p.promptDir = u, d
+					})
+				}
+			}
 			if p.log == nil {
 				return
 			}
@@ -2261,7 +2279,39 @@ func (a *app) shouldAutoMonitor(hostID string) bool {
 			return v
 		}
 	}
-	return a.local.DefaultMonitor
+	return !a.local.DisableDefaultMonitor
+}
+
+// paneUserAndDir 返回窗格当前登录用户和工作目录。
+// 优先采用终端上报或提示符解析的实时状态，未识别到用户时回退到会话初始登录用户。
+func paneUserAndDir(t *tab, p *pane) (user, dir string) {
+	if p != nil && p.term != nil {
+		if termDir := p.term.Dir(); termDir != p.lastTermDir {
+			p.lastTermDir = termDir
+			if termDir != "" {
+				p.promptDir = termDir
+			}
+		}
+		if termTitle := p.term.Title(); termTitle != p.lastTermTitle {
+			p.lastTermTitle = termTitle
+			if u, d, ok := parsePromptTitle(termTitle); ok {
+				userChanged := u != p.promptUser
+				p.promptUser = u
+				if d != "" && (p.lastTermDir == "" || userChanged) {
+					p.promptDir = d
+				}
+			}
+		}
+		user, dir = p.promptUser, p.promptDir
+	}
+	if user == "" && t != nil {
+		if t.local {
+			user = localUsername()
+		} else {
+			user = t.host.User
+		}
+	}
+	return user, dir
 }
 
 func (a *app) aiClient() *ai.Client {
