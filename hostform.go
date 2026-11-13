@@ -8,6 +8,7 @@ import (
 
 	"serval/core/hosts"
 	"serval/core/keys"
+	"serval/core/serial"
 	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
@@ -28,6 +29,9 @@ var authModes = []string{hosts.AuthAuto, hosts.AuthPassword, hosts.AuthKey}
 
 // serialBaudRates 是串口常见波特率选项。
 var serialBaudRates = []string{"9600", "19200", "38400", "57600", "115200", "230400"}
+var serialDataBits = []string{"8", "7", "6", "5"}
+var serialParities = []string{"N (无校验)", "O (奇校验)", "E (偶校验)"}
+var serialStopBits = []string{"1", "2"}
 
 // hostForm 是添加、编辑和复制主机共用的表单。
 type hostForm struct {
@@ -40,11 +44,17 @@ type hostForm struct {
 	tempHostID string
 
 	name, address, port, user, group string
-	distro                           string // 操作系统或发行版标识
-	protoIdx                         int    // 0: SSH, 1: Telnet, 2: Serial
-	baudRateText                     string // 串口波特率字符串
-	auth                             int    // authModes 的下标
-	keyName                          string // 选中的私钥名称，noKey 表示不用
+	distro                           string   // 操作系统或发行版标识
+	protoIdx                         int      // 0: SSH, 1: Telnet, 2: 串口
+	baudRateText                     string   // 串口波特率字符串
+	dataBitsText                     string   // 数据位: 5/6/7/8
+	parityText                       string   // 校验位: N/O/E 选项文本
+	stopBitsText                     string   // 停止位: 1/2
+	showSerialAdv                    bool     // 是否展开高级串口参数
+	serialPorts                      []string // 扫描到的可用串口
+	serialPortPick                   string   // 下拉框当前选中的串口
+	auth                             int      // authModes 的下标
+	keyName                          string   // 选中的私钥名称，noKey 表示不用
 	production                       bool
 	forwardAgent                     bool
 
@@ -71,9 +81,36 @@ type hostForm struct {
 	err string
 }
 
+func parityOption(p string) string {
+	switch strings.ToUpper(strings.TrimSpace(p)) {
+	case "O":
+		return serialParities[1]
+	case "E":
+		return serialParities[2]
+	default:
+		return serialParities[0]
+	}
+}
+
+func parseParityOption(opt string) string {
+	switch {
+	case strings.HasPrefix(opt, "O"):
+		return "O"
+	case strings.HasPrefix(opt, "E"):
+		return "E"
+	default:
+		return "N"
+	}
+}
+
 // openAdd 打开空白的添加主机表单。
 func (a *app) openAdd() {
-	a.form = hostForm{open: true, fresh: true, keyName: noKey(), baudRateText: "115200"}
+	ports := serial.ListPorts()
+	a.form = hostForm{
+		open: true, fresh: true, keyName: noKey(),
+		baudRateText: "115200", dataBitsText: "8", parityText: serialParities[0], stopBitsText: "1",
+		serialPorts: ports, serialPortPick: "手动输入",
+	}
 	if len(a.keys) == 1 {
 		a.form.keyName = a.keys[0].Name // 只有一把私钥时直接选上，添加完私钥就能用
 	}
@@ -81,6 +118,11 @@ func (a *app) openAdd() {
 
 // formFrom 用已有主机的信息填好表单。
 func (a *app) formFrom(h hosts.Host) hostForm {
+	ports := serial.ListPorts()
+	pick := "手动输入"
+	if slices.Contains(ports, h.Address) {
+		pick = h.Address
+	}
 	f := hostForm{
 		open: true, fresh: true,
 		name: h.Name, address: h.Address, user: h.User, group: h.Group,
@@ -88,9 +130,17 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 		production:    h.Production,
 		forwardAgent:  h.ForwardAgent,
 		passwordSaved: h.Password != "", keyName: noKey(),
-		totpSaved:    h.TOTPSecret != "",
-		jumps:        hosts.SplitJumps(h.ProxyJump),
-		baudRateText: strconv.Itoa(h.EffectiveBaudRate()),
+		totpSaved:      h.TOTPSecret != "",
+		jumps:          hosts.SplitJumps(h.ProxyJump),
+		baudRateText:   strconv.Itoa(h.EffectiveBaudRate()),
+		dataBitsText:   strconv.Itoa(h.EffectiveDataBits()),
+		parityText:     parityOption(h.EffectiveParity()),
+		stopBitsText:   strconv.Itoa(h.EffectiveStopBits()),
+		serialPorts:    ports,
+		serialPortPick: pick,
+	}
+	if h.DataBits != 0 && h.DataBits != 8 || (h.Parity != "" && h.Parity != "N") || (h.StopBits != 0 && h.StopBits != 1) {
+		f.showSerialAdv = true
 	}
 	switch h.EffectiveProtocol() {
 	case hosts.ProtocolTelnet:
@@ -260,12 +310,23 @@ func (a *app) saveForm() {
 		}
 	}
 
+	dataBits, _ := strconv.Atoi(f.dataBitsText)
+	if dataBits < 5 || dataBits > 8 {
+		dataBits = 8
+	}
+	stopBits, _ := strconv.Atoi(f.stopBitsText)
+	if stopBits != 2 {
+		stopBits = 1
+	}
+	parity := parseParityOption(f.parityText)
+
 	h := hosts.Host{
 		Name: name, Address: address, Port: port, User: user, Auth: auth, KeyID: keyID,
 		Group: group, Production: f.production, ForwardAgent: f.forwardAgent,
 		ProxyJump: strings.Join(jumps, ","), ProxyID: proxyID, Proxy: legacyProxy,
 		Distro:   f.distro,
 		Protocol: proto, BaudRate: baudRate,
+		DataBits: dataBits, Parity: parity, StopBits: stopBits,
 	}
 	// 密码：新输入的覆盖；要求清除的清除；密码以外的登录方式也保留已有密码（自动模式会用到），
 	// 只有“私钥”模式用不上密码，清掉。复制来的主机沿用来源的密码。
@@ -402,6 +463,33 @@ func (a *app) hostMenu(h hosts.Host) func(m *ui.Menu) {
 		if m.Item(locales.HostDuplicate()).Chosen() {
 			a.openDuplicate(h)
 		}
+		groupHosts := a.allHostsInGroup(h.Group)
+		idx := slices.IndexFunc(groupHosts, func(x hosts.Host) bool { return x.ID == h.ID })
+		if len(groupHosts) > 1 {
+			m.Separator()
+			if m.Item(locales.HostMoveUp()).Disabled(idx <= 0).Chosen() {
+				if err := a.moveHostStep(h, -1); err != nil {
+					a.notice = "调整主机排序失败：" + err.Error()
+				}
+			}
+			if m.Item(locales.HostMoveDown()).Disabled(idx < 0 || idx >= len(groupHosts)-1).Chosen() {
+				if err := a.moveHostStep(h, 1); err != nil {
+					a.notice = "调整主机排序失败：" + err.Error()
+				}
+			}
+		}
+		otherGroups := slices.DeleteFunc(slices.Clone(a.groups()), func(g string) bool { return g == h.Group })
+		if len(otherGroups) > 0 {
+			m.Submenu(locales.HostMoveToGroup(), func(sub *ui.Menu) {
+				for _, g := range otherGroups {
+					if sub.Item(g).Chosen() {
+						if err := a.moveHostToGroup(h, g); err != nil {
+							a.notice = "移动主机分组失败：" + err.Error()
+						}
+					}
+				}
+			})
+		}
 		// 服务器重装、换了密钥时用。没有信任记录时没什么可重置的。
 		if m.Item(locales.HostResetKey()).Disabled(!a.hasTrustRecord(h)).Chosen() {
 			a.resetHostKey(h)
@@ -458,11 +546,33 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 				ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
 					ui.Field(c, "协议", func() {
 						c.Key("addProtocol")
-						ui.Segmented(c, &f.protoIdx, "SSH", "Telnet", "串口 Serial")
+						ui.Segmented(c, &f.protoIdx, "SSH", "Telnet", locales.ProtoSerial())
 					})
 
+					if f.protoIdx == 1 {
+						ui.Text(c, locales.ProtoTelnetWarning()).
+							FontSize(design.TextSmall).TextColor(colors.Danger)
+					}
+
 					if f.protoIdx == 2 {
-						// 串口 Serial
+						// 串口
+						portOpts := append([]string{"手动输入"}, f.serialPorts...)
+						if !slices.Contains(portOpts, f.serialPortPick) {
+							f.serialPortPick = "手动输入"
+						}
+						ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
+							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+								ui.Field(c, "可用串口", func() {
+									c.Key("addSerialPortPick")
+									if ui.Select(c, &f.serialPortPick, portOpts).Changed() && f.serialPortPick != "手动输入" {
+										f.address = f.serialPortPick
+									}
+								})
+							})
+							ui.Button(c, "刷新端口").Key("refreshSerialPorts").OnClick(func() {
+								f.serialPorts = serial.ListPorts()
+							})
+						})
 						ui.Row(c).Gap(10).Children(func() {
 							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 								ui.Field(c, "设备路径", func() {
@@ -477,6 +587,35 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 								})
 							})
 						})
+						advTitle := "▸ 高级串口参数"
+						if f.showSerialAdv {
+							advTitle = "▾ 高级串口参数"
+						}
+						ui.Button(c, advTitle).Key("toggleSerialAdv").Height(26).Padding(0, 8).OnClick(func() {
+							f.showSerialAdv = !f.showSerialAdv
+						})
+						if f.showSerialAdv {
+							ui.Row(c).Gap(8).Children(func() {
+								ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+									ui.Field(c, "数据位", func() {
+										c.Key("addDataBits")
+										ui.Select(c, &f.dataBitsText, serialDataBits)
+									})
+								})
+								ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+									ui.Field(c, "校验", func() {
+										c.Key("addParity")
+										ui.Select(c, &f.parityText, serialParities)
+									})
+								})
+								ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+									ui.Field(c, "停止位", func() {
+										c.Key("addStopBits")
+										ui.Select(c, &f.stopBitsText, serialStopBits)
+									})
+								})
+							})
+						}
 					} else {
 						// 网络协议 (SSH 或 Telnet)
 						defaultPort := "22"

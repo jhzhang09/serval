@@ -106,3 +106,130 @@ func (a *app) moveHostOrder(draggedID, targetHostID, targetGroup string) error {
 	}
 	return a.apply(changes...)
 }
+
+// moveHostStep 在当前分组内将主机向上（delta < 0）或向下（delta > 0）移动一位。
+func (a *app) moveHostStep(h hosts.Host, delta int) error {
+	list := a.allHostsInGroup(h.Group)
+	idx := slices.IndexFunc(list, func(x hosts.Host) bool { return x.ID == h.ID })
+	if idx < 0 {
+		return nil
+	}
+	targetIdx := idx + delta
+	if targetIdx < 0 || targetIdx >= len(list) {
+		return nil
+	}
+	list[idx], list[targetIdx] = list[targetIdx], list[idx]
+	var changes []vault.Change
+	for i, item := range list {
+		desired := (i + 1) * 1000
+		if item.SortOrder != desired {
+			item.SortOrder = desired
+			changes = append(changes, hostChange(item))
+		}
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	return a.apply(changes...)
+}
+
+// moveHostToGroup 将主机移动到目标分组末尾。
+func (a *app) moveHostToGroup(h hosts.Host, targetGroup string) error {
+	if targetGroup == "" || h.Group == targetGroup {
+		return nil
+	}
+	return a.moveHostOrder(h.ID, "", targetGroup)
+}
+
+// renameGroup 重命名分组，批量更新该分组下所有主机。
+func (a *app) renameGroup(oldName, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" || newName == oldName {
+		return nil
+	}
+	var changes []vault.Change
+	for _, h := range a.hosts {
+		if h.Group == oldName {
+			h.Group = newName
+			changes = append(changes, hostChange(h))
+		}
+	}
+	for i, g := range a.customGroups {
+		if g == oldName {
+			a.customGroups[i] = newName
+		}
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	return a.apply(changes...)
+}
+
+// deleteEmptyGroup 删除没有主机的空分组。
+func (a *app) deleteEmptyGroup(name string) {
+	a.customGroups = slices.DeleteFunc(a.customGroups, func(g string) bool { return g == name })
+}
+
+type tabDrag struct {
+	ID int
+}
+
+// moveTab 拖动标签调整顺序，并保持当前激活标签索引同步。
+func (a *app) moveTab(draggedID, targetID int) {
+	if draggedID == targetID {
+		return
+	}
+	from := slices.IndexFunc(a.tabs, func(t *tab) bool { return t.id == draggedID })
+	to := slices.IndexFunc(a.tabs, func(t *tab) bool { return t.id == targetID })
+	if from < 0 || to < 0 || from == to {
+		return
+	}
+	var activeTab *tab
+	if a.active >= 0 && a.active < len(a.tabs) {
+		activeTab = a.tabs[a.active]
+	}
+	moved := a.tabs[from]
+	a.tabs = slices.Delete(a.tabs, from, from+1)
+	if from < to {
+		to--
+	}
+	a.tabs = slices.Insert(a.tabs, to, moved)
+	if activeTab != nil {
+		if idx := slices.Index(a.tabs, activeTab); idx >= 0 {
+			a.active = idx
+		}
+	}
+	a.saveSessionLayout()
+}
+
+type groupDialogState struct {
+	open, fresh, rename bool
+	oldName, name, err  string
+}
+
+func (a *app) openNewGroup() {
+	a.groupSheet = groupDialogState{open: true, fresh: true}
+}
+
+func (a *app) openRenameGroup(oldName string) {
+	a.groupSheet = groupDialogState{open: true, fresh: true, rename: true, oldName: oldName, name: oldName}
+}
+
+func (a *app) submitGroupDialog() {
+	name := strings.TrimSpace(a.groupSheet.name)
+	if name == "" {
+		a.groupSheet.err = "请填写分组名称"
+		return
+	}
+	if a.groupSheet.rename {
+		if err := a.renameGroup(a.groupSheet.oldName, name); err != nil {
+			a.groupSheet.err = err.Error()
+			return
+		}
+	} else {
+		if !slices.Contains(a.groups(), name) {
+			a.customGroups = append(a.customGroups, name)
+		}
+	}
+	a.groupSheet = groupDialogState{}
+}

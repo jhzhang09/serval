@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"serval/core/hosts"
 	"serval/core/sshconn"
 )
 
@@ -196,10 +197,20 @@ const monitorScript = `cat /proc/stat /proc/meminfo /proc/loadavg /proc/net/dev 
 
 // toggleMonitor 开启或关闭指定标签的实时服务器监控。
 func (a *app) toggleMonitor(t *tab) {
-	if t == nil || t.local {
+	if t == nil || t.local || t.host.EffectiveProtocol() != hosts.ProtocolSSH {
 		return
 	}
 	t.monitorOpen = !t.monitorOpen
+	if t.host.ID != "" {
+		next := a.local
+		m := make(map[string]bool, len(next.HostMonitor)+1)
+		for k, v := range next.HostMonitor {
+			m[k] = v
+		}
+		m[t.host.ID] = t.monitorOpen
+		next.HostMonitor = m
+		_ = a.saveLocal(next)
+	}
 	if t.monitorOpen {
 		a.startTabMonitor(t)
 	} else {
