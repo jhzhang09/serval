@@ -38,6 +38,8 @@ func (h *harness) vaultFileContains(s string) bool {
 // 添加主机时选择密码登录并填写密码：密码加密存进保险库，连接时不再询问。
 func TestPasswordHostUsesSavedPassword(t *testing.T) {
 	h := newHarness(t)
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	f := &h.a.form
 	f.address, f.user, f.name = "127.0.0.1", "tester", "pw-host"
@@ -77,6 +79,8 @@ func TestFirstSecretAsksForMasterPassword(t *testing.T) {
 	if !h.vaultFileContains("tester") {
 		t.Fatal("还没设置主密码时，主机信息以明文保存（不含任何秘密）")
 	}
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	f := &h.a.form
 	f.address, f.user, f.name, f.auth, f.password = "10.0.0.5", "ops", "db", 1, "db-secret"
@@ -372,6 +376,10 @@ func TestForwardAgentOptionWarnsAndPersists(t *testing.T) {
 	if h.tt.HasText("只在信任这台机器时保持开启。") {
 		t.Fatal("未开启时不应展示风险提示")
 	}
+	if box, ok := h.tt.Find("协议"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 400)
+		h.tt.Frame()
+	}
 	h.click("转发 ssh-agent")
 	h.tt.Frame()
 	if !h.a.form.forwardAgent || !h.tt.HasText("只在信任这台机器时保持开启。") {
@@ -417,6 +425,8 @@ func TestHostFormProtocolTelnetAndSerial(t *testing.T) {
 	h := newHarness(t)
 
 	// 1. 添加 Telnet 主机
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	h.tt.Frame()
 	f := &h.a.form
@@ -435,16 +445,21 @@ func TestHostFormProtocolTelnetAndSerial(t *testing.T) {
 		t.Fatalf("Telnet 属性异常: %+v", telnetHost)
 	}
 
-	// 编辑 Telnet 主机，确认表单回显
+	// 编辑 Telnet 主机，确认表单回显与安全提示
 	h.a.openEdit(telnetHost)
 	h.tt.Frame()
 	if h.a.form.protoIdx != 1 {
 		t.Fatalf("编辑时 protoIdx 应为 1, 得到 %d", h.a.form.protoIdx)
 	}
+	if !h.tt.HasText("Telnet 不加密") {
+		t.Fatal("选择 Telnet 时应显示明文安全提示")
+	}
 	h.click("取消")
 	h.tt.Frame()
 
-	// 2. 添加 串口 Serial 主机
+	// 2. 添加串口主机并设置高级参数 7E2
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	h.tt.Frame()
 	f = &h.a.form
@@ -453,20 +468,67 @@ func TestHostFormProtocolTelnetAndSerial(t *testing.T) {
 	f.address = "/dev/ttyUSB0"
 	f.baudRateText = "57600"
 	h.tt.Frame()
+	h.click("▸ 高级串口参数")
+	h.tt.Frame()
+	f.dataBitsText = "7"
+	f.parityText = parityOption("E")
+	f.stopBitsText = "2"
+	h.tt.Frame()
 	h.click("添加")
 	h.tt.Frame()
 	if h.a.form.open {
 		t.Fatalf("Serial 保存失败: %s", h.a.form.err)
 	}
 	serialHost := h.host("my-serial")
-	if serialHost.Protocol != hosts.ProtocolSerial || serialHost.BaudRate != 57600 {
+	if serialHost.Protocol != hosts.ProtocolSerial || serialHost.BaudRate != 57600 ||
+		serialHost.DataBits != 7 || serialHost.Parity != "E" || serialHost.StopBits != 2 {
 		t.Fatalf("Serial 属性异常: %+v", serialHost)
 	}
 
 	// 编辑 Serial 主机，确认表单回显
 	h.a.openEdit(serialHost)
 	h.tt.Frame()
-	if h.a.form.protoIdx != 2 || h.a.form.baudRateText != "57600" {
-		t.Fatalf("编辑时 Serial 回显异常: protoIdx=%d, baud=%s", h.a.form.protoIdx, h.a.form.baudRateText)
+	if h.a.form.protoIdx != 2 || h.a.form.baudRateText != "57600" ||
+		h.a.form.dataBitsText != "7" || h.a.form.stopBitsText != "2" {
+		t.Fatalf("编辑时 Serial 回显异常: %+v", h.a.form)
+	}
+}
+
+// TestNonSSHTabCapabilitiesSafety 验证非 SSH（Telnet/串口）标签不会因拆分崩溃，且隐藏文件/监控/拆分按钮。
+func TestNonSSHTabCapabilitiesSafety(t *testing.T) {
+	h := newHarness(t)
+	h.click("新建")
+	h.tt.Frame()
+	h.click("本地终端")
+	h.tt.Frame()
+	if len(h.a.tabs) != 1 {
+		t.Fatalf("预期 1 个标签，实际 %d", len(h.a.tabs))
+	}
+	tb := h.a.tabs[0]
+	// 模拟 Telnet/串口会话（非本地、无 SSH client）
+	tb.local = false
+	tb.client = nil
+	tb.host = hosts.Host{ID: "telnet-1", Name: "switch-telnet", Address: "10.0.0.1", Port: 23, Protocol: hosts.ProtocolTelnet}
+	h.tt.Frame()
+
+	for _, txt := range h.tt.Texts() {
+		if strings.Contains(txt, "向右拆分") || strings.Contains(txt, "向下拆分") ||
+			strings.Contains(txt, "文件（") || strings.Contains(txt, "服务器监控") {
+			t.Fatalf("非 SSH 标签不应显示拆分、文件或监控按钮，界面出现: %q", txt)
+		}
+	}
+
+	// 直接调用 split、toggleFiles、toggleMonitor 不得崩溃或打开无效抽屉
+	h.a.split(tb, false)
+	if tb.root.leaves() != 1 {
+		t.Fatalf("非 SSH 标签不应拆分窗格: leaves=%d", tb.root.leaves())
+	}
+	h.a.toggleFiles()
+	if h.a.filesOpen {
+		t.Fatal("非 SSH 标签不应打开文件抽屉")
+	}
+	h.a.toggleMonitor(tb)
+	if tb.monitorOpen {
+		t.Fatal("非 SSH 标签不应开启服务器监控")
 	}
 }

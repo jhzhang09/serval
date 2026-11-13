@@ -278,6 +278,8 @@ func TestSessionLogSettingAndRemoteOutput(t *testing.T) {
 		t.Fatal("终端输出不应写进保险库")
 	}
 
+	h.click("新建")
+	h.tt.Frame()
 	h.click("本地终端")
 	h.pump("本地终端", func() bool { return len(h.a.tabs) == 2 && h.a.tabs[1].local })
 	local := h.a.tabs[1].focus

@@ -94,7 +94,10 @@ type app struct {
 	arrived map[int]bool
 
 	// connecting 记录正在连接的主机和取消函数，同一台主机不重复发起连接。
-	connecting map[string]context.CancelFunc
+	connecting      map[string]context.CancelFunc
+	connectingPhase map[string]string
+	customGroups    []string
+	groupSheet      groupDialogState
 	// notice 显示最近一次连接失败的原因。
 	notice string
 
@@ -123,11 +126,13 @@ type app struct {
 	forwardErr    map[string]string
 	settingsPanel settingsPanel
 	ai            aiPanel
-	restore       restorePanel
-	setup         setupSheet
-	unlock        unlockState
-	pal           palette
-	askingLock    bool
+	// lastCopiedText 记录最近一次从终端复制的文字，供 AI 报错分析直接引用。
+	lastCopiedText string
+	restore        restorePanel
+	setup          setupSheet
+	unlock         unlockState
+	pal            palette
+	askingLock     bool
 	// broadcastOn 为真时，当前焦点窗格的键盘输入会同时发到 broadcast 里的其他窗格。
 	broadcastOn bool
 	// broadcast 是参与广播的窗格 id，只在主线程读写。
@@ -270,9 +275,10 @@ type tab struct {
 
 	transfers []*fileTransfer
 
-	monitorOpen bool
-	monitorStop chan struct{}
-	stats       ServerStats
+	monitorOpen        bool
+	monitorPopoverOpen bool
+	monitorStop        chan struct{}
+	stats              ServerStats
 
 	// conn 是非 SSH（如 Telnet、串口）连接的底层资源，关闭标签时释放。
 	conn io.Closer
@@ -301,6 +307,9 @@ type pane struct {
 	searchStatus           terminal.SearchStatus
 	// fileDrag 表示上一帧有文件从别的程序拖到这个窗格上方，这时铺一层接收拖放的透明层。
 	fileDrag bool
+
+	lastCols, lastRows int
+	sizeChangedAt      time.Time
 
 	first, second *pane
 	vertical      bool
@@ -468,6 +477,10 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		return
 	}
 	a.connecting[h.ID] = cancel
+	if a.connectingPhase == nil {
+		a.connectingPhase = make(map[string]string)
+	}
+	a.connectingPhase[h.ID] = "正在建立连接与验证身份…"
 
 	leafCount := 1
 	if layout != nil {
@@ -483,6 +496,11 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		client, err := sshconn.Dial(ctx, cfg)
 		var shells []*sshconn.Shell
 		if err == nil {
+			a.post(func() {
+				if _, ok := a.connecting[h.ID]; ok {
+					a.connectingPhase[h.ID] = "正在打开远程终端…"
+				}
+			})
 			shells = make([]*sshconn.Shell, leafCount)
 			for i := 0; i < leafCount; i++ {
 				shells[i], err = client.OpenShell(80, 24)
@@ -499,6 +517,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 		a.post(func() {
 			defer cancel()
 			delete(a.connecting, h.ID)
+			delete(a.connectingPhase, h.ID)
 			if err != nil {
 				a.connectFailed(ctx, h, route, used, err)
 				return
@@ -514,7 +533,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 				return
 			}
 			a.rememberCredentials(chain, used)
-			if h.Distro == "" {
+			if !a.local.DisableDistroProbe && h.Distro == "" {
 				a.probeDistroAsync(h, client)
 			}
 			if layout != nil {
@@ -818,12 +837,16 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	if _, ok := a.hostByID(h.ID); ok {
 		a.recordRecentHost(h.ID)
 	}
-	go a.watchLatency(ctx, t, t.client)
+	go a.watchLatency(ctx, t, t.client, a.pingInterval)
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
 	a.saveSessionLayout()
 	a.syncHostForwards(h.ID)
+	if a.shouldAutoMonitor(h.ID) {
+		t.monitorOpen = true
+		a.startTabMonitor(t)
+	}
 }
 
 func (a *app) addTabWithConn(h hosts.Host, conn shellConn, closer io.Closer) {
@@ -872,7 +895,7 @@ func (a *app) connectTelnet(h hosts.Host) {
 				if ctx.Err() != nil {
 					return
 				}
-				a.notice = fmt.Sprintf("Telnet 连接失败: %v", err)
+				a.notice = friendlyTelnetError(err)
 				return
 			}
 			if ctx.Err() != nil {
@@ -892,12 +915,16 @@ func (a *app) connectSerial(h hosts.Host) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.connecting[h.ID] = cancel
 
+	stopBits := serial.StopBits1
+	if h.EffectiveStopBits() == 2 {
+		stopBits = serial.StopBits2
+	}
 	cfg := serial.Config{
 		Name:     h.Address,
 		BaudRate: h.EffectiveBaudRate(),
-		DataBits: 8,
-		Parity:   serial.ParityNone,
-		StopBits: serial.StopBits1,
+		DataBits: h.EffectiveDataBits(),
+		Parity:   serial.Parity(h.EffectiveParity()),
+		StopBits: stopBits,
 	}
 
 	go func() {
@@ -909,7 +936,7 @@ func (a *app) connectSerial(h hosts.Host) {
 				if ctx.Err() != nil {
 					return
 				}
-				a.notice = fmt.Sprintf("打开串口失败: %v", err)
+				a.notice = friendlySerialError(err, h.Address)
 				return
 			}
 			if ctx.Err() != nil {
@@ -988,7 +1015,7 @@ func (a *app) addTabWithLayout(h hosts.Host, client *sshconn.Client, shells []*s
 	if _, ok := a.hostByID(h.ID); ok {
 		a.recordRecentHost(h.ID)
 	}
-	go a.watchLatency(ctx, t, t.client)
+	go a.watchLatency(ctx, t, t.client, a.pingInterval)
 	if a.filesOpen {
 		a.ensureFiles(t)
 	}
@@ -1089,8 +1116,13 @@ func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.She
 		OnExit: func(int) {
 			a.post(func() { a.paneEnded(t, p, shell) })
 		},
-		OnCopy: func(_ string, by terminal.CopySource) {
-			a.post(func() { a.copied(by) })
+		OnCopy: func(text string, by terminal.CopySource) {
+			a.post(func() {
+				if strings.TrimSpace(text) != "" {
+					a.lastCopiedText = text
+				}
+				a.copied(by)
+			})
 		},
 		OnSearch: func(s terminal.SearchStatus) {
 			a.post(func() { p.searchStatus = s })
@@ -1201,10 +1233,10 @@ func (a *app) refreshTerminals() {
 // 实测 2 个会话每 5 秒各通知一次，空闲 CPU 从 0.15% 涨到 1.15%，而延迟显示其实一直没变。
 //
 // client 由调用方在主线程上传入：t.client 会在重连时被主线程替换，后台不能读它。
-func (a *app) watchLatency(ctx context.Context, t *tab, client *sshconn.Client) {
+func (a *app) watchLatency(ctx context.Context, t *tab, client *sshconn.Client, pingInterval time.Duration) {
 	interval := 5 * time.Second
-	if a.pingInterval > 0 {
-		interval = a.pingInterval
+	if pingInterval > 0 {
+		interval = pingInterval
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1269,15 +1301,17 @@ func (p *pane) leaves() int {
 // 同一个标签同时只处理一个拆分请求：连点按钮不应一下子多出好几个窗格，
 // 而且上一个新窗格还没出现时，“当前窗格”也还没确定。
 func (a *app) split(t *tab, vertical bool) {
-	if t.splitting {
+	if t == nil || (!t.local && t.client == nil) || t.splitting {
 		return
 	}
+	client := t.client
+	isLocal := t.local
 	t.splitting = true
 	go func() {
 		var shell *sshconn.Shell
 		var err error
-		if !t.local {
-			shell, err = t.client.OpenShell(80, 24)
+		if !isLocal && client != nil {
+			shell, err = client.OpenShell(80, 24)
 		}
 		a.post(func() {
 			t.splitting = false
@@ -1665,7 +1699,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 	t.stop()
 	ctx, stop := context.WithCancel(context.Background())
 	t.stop = stop
-	go a.watchLatency(ctx, t, t.client)
+	go a.watchLatency(ctx, t, t.client, a.pingInterval)
 
 	t.root.each(func(p *pane) {
 		cols, rows := 80, 24
@@ -1881,8 +1915,13 @@ func (a *app) cancelChallenge() {
 
 // toggleFiles 打开或收起文件抽屉。SFTP 通道到需要时才打开，不用文件的会话不占这份资源。
 func (a *app) toggleFiles() {
+	t := a.current()
+	if t == nil || t.local || t.client == nil {
+		a.filesOpen = false
+		return
+	}
 	a.filesOpen = !a.filesOpen
-	if t := a.current(); a.filesOpen && t != nil {
+	if a.filesOpen {
 		a.ensureFiles(t)
 	}
 }
@@ -1962,12 +2001,17 @@ func (a *app) followCwd(t *tab) {
 	a.openDir(t, cwd)
 }
 
-// groups 按主机出现的顺序返回分组。
+// groups 按主机出现的顺序返回分组（包含新建的空分组）。
 func (a *app) groups() []string {
 	var names []string
 	for _, h := range a.hosts {
 		if !slices.Contains(names, h.Group) {
 			names = append(names, h.Group)
+		}
+	}
+	for _, g := range a.customGroups {
+		if g != "" && !slices.Contains(names, g) {
+			names = append(names, g)
 		}
 	}
 	return names
@@ -2141,25 +2185,67 @@ func (p *pane) contains(target *pane) bool {
 }
 
 func (a *app) getAIKey() string {
-	if a.device != nil {
-		if b, err := a.device.Get("ai-api-key"); err == nil && len(b) > 0 {
-			return string(b)
-		}
-	}
-	return a.local.AIKey
+	return a.settings.AIKey
 }
 
 func (a *app) setAIKey(k string) {
-	if a.device != nil {
-		if k == "" {
-			_ = a.device.Delete("ai-api-key")
-		} else {
-			_ = a.device.Set("ai-api-key", []byte(k))
+	k = strings.TrimSpace(k)
+	if k == a.settings.AIKey {
+		return
+	}
+	if k != "" && a.vault != nil && a.vault.State() == vault.Unprotected {
+		a.requireProtection(func() { a.setAIKey(k) })
+		return
+	}
+	next := a.settings
+	next.AIKey = k
+	if err := a.saveSettings(next); err != nil {
+		a.notice = "保存 AI 密钥失败：" + err.Error()
+		return
+	}
+	if a.settingsPanel.open {
+		a.settingsPanel.aiKey = k
+	}
+}
+
+// migrateAIKey 将旧版本明文保存在 device.json 或系统安全存储里的 AI Key 迁移到加密保险库并清理旧副本。
+func (a *app) migrateAIKey() {
+	if a.vault == nil || a.vault.State() != vault.Unlocked {
+		return
+	}
+	legacy := strings.TrimSpace(a.local.LegacyAIKey)
+	if legacy == "" && a.device != nil {
+		if b, err := a.device.Get("ai-api-key"); err == nil && len(b) > 0 {
+			legacy = strings.TrimSpace(string(b))
 		}
 	}
-	next := a.local
-	next.AIKey = k
-	_ = a.saveLocal(next)
+	if legacy == "" {
+		return
+	}
+	if a.settings.AIKey == "" {
+		next := a.settings
+		next.AIKey = legacy
+		if err := a.saveSettings(next); err != nil {
+			return
+		}
+	}
+	if a.local.LegacyAIKey != "" {
+		d := a.local
+		d.LegacyAIKey = ""
+		_ = a.saveLocal(d)
+	}
+	if a.device != nil {
+		_ = a.device.Delete("ai-api-key")
+	}
+}
+
+func (a *app) shouldAutoMonitor(hostID string) bool {
+	if hostID != "" && a.local.HostMonitor != nil {
+		if v, ok := a.local.HostMonitor[hostID]; ok {
+			return v
+		}
+	}
+	return a.local.DefaultMonitor
 }
 
 func (a *app) aiClient() *ai.Client {
@@ -2176,4 +2262,53 @@ func (a *app) aiClient() *ai.Client {
 		APIKey:  a.getAIKey(),
 		Model:   model,
 	})
+}
+
+func friendlyAIError(err error) string {
+	switch {
+	case errors.Is(err, ai.ErrNoAPIKey):
+		return "尚未配置 API Key，请点击右上角打开“设置 → AI”填写"
+	case errors.Is(err, ai.ErrInvalidEndpoint):
+		return "API 端点地址格式不正确，请检查是否包含 http:// 或 https://"
+	case errors.Is(err, ai.ErrUnauthorized):
+		return "API Key 无效或没有权限，请到“设置 → AI”核对密钥"
+	case errors.Is(err, ai.ErrRateLimited):
+		return "请求过于频繁或账号额度已用尽，请稍后再试"
+	case errors.Is(err, ai.ErrBadGateway):
+		return "AI 服务暂时不可用，请稍后重试或切换模型"
+	case errors.Is(err, ai.ErrTimeout):
+		return "连接 AI 服务超时，请检查网络或代理设置"
+	case errors.Is(err, ai.ErrEmptyResponse):
+		return "AI 服务返回了空内容，请换个描述再试"
+	default:
+		return "无法连接到 AI 服务，请检查网络和端点地址"
+	}
+}
+
+func friendlyTelnetError(err error) string {
+	switch {
+	case errors.Is(err, telnet.ErrRefused):
+		return "目标主机拒绝了 Telnet 连接，请确认端口是否正确且服务端已启动"
+	case errors.Is(err, telnet.ErrTimeout):
+		return "Telnet 连接超时，请检查目标地址、端口和网络连通性"
+	case errors.Is(err, telnet.ErrUnreachable):
+		return "网络不可达，无法连接到目标 Telnet 主机"
+	default:
+		return "Telnet 连接失败，请检查地址和端口设置"
+	}
+}
+
+func friendlySerialError(err error, dev string) string {
+	switch {
+	case errors.Is(err, serial.ErrPermission):
+		return fmt.Sprintf("没有权限打开串口 %s。Linux 上请将当前用户加入 dialout 组后重新登录", dev)
+	case errors.Is(err, serial.ErrNotFound):
+		return fmt.Sprintf("找不到串口设备 %s，请确认数据线已插好并刷新设备列表", dev)
+	case errors.Is(err, serial.ErrBusy):
+		return fmt.Sprintf("串口 %s 正被其他程序占用，请关闭占用程序后再试", dev)
+	case errors.Is(err, serial.ErrUnsupportedBaudRate):
+		return "系统不支持当前选择的波特率，请尝试 115200 或 9600"
+	default:
+		return fmt.Sprintf("无法打开串口 %s，请检查设备路径和参数设置", dev)
+	}
 }

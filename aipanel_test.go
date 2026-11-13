@@ -79,15 +79,15 @@ func TestAISettingsAndProbe(t *testing.T) {
 		return strings.Contains(h.a.settingsPanel.aiTestMsg, "测试成功")
 	})
 
-	// 保存配置
-	h.click("保存 AI 配置")
+	// 关闭设置自动保存配置
+	h.click("完成")
 	h.tt.Frame()
 
 	if h.a.settings.AIBaseURL != ts.URL || h.a.settings.AIModel != "gpt-4o" {
 		t.Fatalf("设置未正确保存: baseURL=%s, model=%s", h.a.settings.AIBaseURL, h.a.settings.AIModel)
 	}
 	if h.a.getAIKey() != "test-sk" {
-		t.Fatalf("API Key 未正确保存到 deviceSettings")
+		t.Fatalf("API Key 未正确保存到加密保险库")
 	}
 }
 
@@ -105,6 +105,8 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 	h.a.setAIKey("test-sk")
 
 	// 开启一个本地终端作为活动标签
+	h.click("新建")
+	h.tt.Frame()
 	h.click("本地终端")
 	h.tt.Frame()
 	if len(h.a.tabs) == 0 {
@@ -119,8 +121,11 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 	}
 
 	// 输入查询并点击生成命令
-	h.a.ai.query = "查找大于100M的文件"
+	h.tt.Type("查找大于100M的文件")
 	h.tt.Frame()
+	if h.a.ai.query == "" {
+		t.Fatalf("AutoFocus 未聚焦到 AI 输入框，query 为空")
+	}
 	h.click("生成命令")
 
 	// 等待异步完成
@@ -157,7 +162,7 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 
 	// 验证高危命令拦截
 	h.a.openAI()
-	h.a.ai.command = "rm -rf /var/log/*"
+	h.a.ai.turns = []aiTurn{{query: "danger", explanation: "危险测试", commands: []string{"rm -rf /var/log/*"}}}
 	h.tt.Frame()
 	h.click("填入终端（需确认）")
 	h.tt.Frame()
@@ -175,6 +180,63 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 	h.tt.Frame()
 	if h.a.ai.confirmDanger {
 		t.Fatal("确认填入后 confirmDanger 状态应复位")
+	}
+}
+
+// TestAIKeyEncryptedAndMigrated 验证 AI Key 加密写进保险库，并自动迁移旧明文配置。
+func TestAIKeyEncryptedAndMigrated(t *testing.T) {
+	h := newHarness(t)
+	h.a.setAIKey("sk-super-secret-999")
+	if h.a.getAIKey() != "sk-super-secret-999" {
+		t.Fatalf("getAIKey mismatch: %q", h.a.getAIKey())
+	}
+	if h.vaultFileContains("sk-super-secret-999") {
+		t.Fatal("AI Key 不应以明文形式出现在 vault.json 中")
+	}
+	if h.a.local.LegacyAIKey != "" {
+		t.Fatal("deviceSettings 不应保留明文 AI Key")
+	}
+
+	// 模拟从旧版 device.json 迁移明文 Key
+	h.a.setAIKey("")
+	legacy := h.a.local
+	legacy.LegacyAIKey = "sk-legacy-plain-123"
+	if err := h.a.saveLocal(legacy); err != nil {
+		t.Fatal(err)
+	}
+	h.a.loadLocal()
+	if h.a.getAIKey() != "sk-legacy-plain-123" {
+		t.Fatalf("旧版 AI Key 迁移失败: got %q", h.a.getAIKey())
+	}
+	if h.a.local.LegacyAIKey != "" {
+		t.Fatal("迁移后旧明文字段应当被清空")
+	}
+}
+
+// TestAIMultilineCommandCannotInsert 验证多行脚本不提供“填入终端”且底层拒绝填入。
+func TestAIMultilineCommandCannotInsert(t *testing.T) {
+	h := newHarness(t)
+	h.click("新建")
+	h.tt.Frame()
+	h.click("本地终端")
+	h.tt.Frame()
+
+	h.a.openAI()
+	h.a.ai.turns = []aiTurn{{
+		query:       "multi",
+		explanation: "多行脚本",
+		commands:    []string{"echo one\necho two"},
+	}}
+	h.tt.Frame()
+	if h.tt.HasText("填入终端（需确认）") {
+		t.Fatal("多行命令不应显示“填入终端（需确认）”按钮")
+	}
+	if !h.tt.HasText("多行脚本请复制后核对执行") {
+		t.Fatal("多行命令应提示用户复制后核对执行")
+	}
+	h.a.insertCommandToTerminal("echo one\necho two")
+	if !h.a.ai.open {
+		t.Fatal("多行命令应被 insertCommandToTerminal 拒绝，面板保持打开")
 	}
 }
 

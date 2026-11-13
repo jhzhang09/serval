@@ -46,6 +46,12 @@ type Host struct {
 	Protocol string `json:"protocol,omitempty"`
 	// BaudRate 是串口波特率（Protocol 为 "serial" 时生效），默认 115200。
 	BaudRate int `json:"baudRate,omitempty"`
+	// DataBits 是串口数据位（5/6/7/8），默认 8。
+	DataBits int `json:"dataBits,omitempty"`
+	// Parity 是串口校验位（"N"/"O"/"E"），默认 "N"。
+	Parity string `json:"parity,omitempty"`
+	// StopBits 是串口停止位（1/2），默认 1。
+	StopBits int `json:"stopBits,omitempty"`
 }
 
 // 支持的连接协议常量
@@ -69,6 +75,32 @@ func (h *Host) EffectiveBaudRate() int {
 		return 115200
 	}
 	return h.BaudRate
+}
+
+// EffectiveDataBits 返回有效串口数据位，默认为 8。
+func (h *Host) EffectiveDataBits() int {
+	if h.DataBits >= 5 && h.DataBits <= 8 {
+		return h.DataBits
+	}
+	return 8
+}
+
+// EffectiveParity 返回有效串口校验位，默认为 "N"。
+func (h *Host) EffectiveParity() string {
+	switch h.Parity {
+	case "O", "E":
+		return h.Parity
+	default:
+		return "N"
+	}
+}
+
+// EffectiveStopBits 返回有效串口停止位，默认为 1。
+func (h *Host) EffectiveStopBits() int {
+	if h.StopBits == 2 {
+		return 2
+	}
+	return 1
 }
 
 // Proxy 是一条独立管理的代理配置，供多台主机复用，整条记录（包括密码）加密存进保险库。

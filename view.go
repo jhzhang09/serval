@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"serval/core/hosts"
 	"serval/core/sshconn"
@@ -61,6 +62,7 @@ func (a *app) view(c *ui.Context) {
 	a.authDialog(c, colors)
 	a.challengeDialog(c, colors)
 	a.hostDialog(c, colors)
+	a.groupDialog(c, colors)
 	a.proxiesDialog(c, colors)
 	a.forwardsDialog(c, colors)
 	a.keysDialog(c, colors)
@@ -110,8 +112,10 @@ func (a *app) shortcuts(c *ui.Context) {
 	c.OnShortcut(mods, ui.KeyJ, a.toggleFiles)
 	if t := a.current(); t != nil {
 		c.OnShortcut(mods, ui.KeyF, func() { a.openSearch(t) })
-		c.OnShortcut(mods, ui.KeyD, func() { a.split(t, false) })
-		c.OnShortcut(mods|ui.Alt, ui.KeyD, func() { a.split(t, true) })
+		if t.local || t.client != nil {
+			c.OnShortcut(mods, ui.KeyD, func() { a.split(t, false) })
+			c.OnShortcut(mods|ui.Alt, ui.KeyD, func() { a.split(t, true) })
+		}
 		c.OnShortcut(mods, ui.KeyW, func() { a.closeFocused(t) })
 	}
 }
@@ -154,6 +158,75 @@ func selectionPill(c *ui.Context, colors design.Colors, list string, bg ui.Color
 	pill.Transition(ui.ElementTransition{Animation: &design.Glide, Match: pillMatch{list}})
 }
 
+// sidebarIconButton 是侧栏底部工具栏的紧凑图标按钮，带 Tooltip、Label 和可选数量角标。
+func sidebarIconButton(c *ui.Context, colors design.Colors, key, icon, label string, count int, fn func()) ui.Element {
+	t := c.Theme()
+	tip := label
+	if count > 0 {
+		tip = fmt.Sprintf("%s（%d）", label, count)
+	}
+	b := ui.ButtonBase(c).Key(key).Label(label).Tooltip(tip).
+		Height(30).Grow(1).Center().Gap(3).Radius(design.RadiusRow).Transition(design.Hover)
+	if b.Hovered() {
+		b.Background(colors.Hover)
+	}
+	b.Children(func() {
+		ui.Icon(c, design.Icon(icon)).FontSize(15).TextColor(t.TextMuted)
+		if count > 0 {
+			ui.Text(c, fmt.Sprint(count)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum")
+		}
+	})
+	return b.OnClick(fn)
+}
+
+func (a *app) groupMenu(group string) func(m *ui.Menu) {
+	return func(m *ui.Menu) {
+		if m.Item(locales.GroupNew()).Chosen() {
+			a.openNewGroup()
+		}
+		if m.Item(locales.GroupRename()).Chosen() {
+			a.openRenameGroup(group)
+		}
+		empty := len(a.allHostsInGroup(group)) == 0
+		if m.Item(locales.GroupDeleteEmpty()).Disabled(!empty).Danger().Chosen() {
+			a.deleteEmptyGroup(group)
+		}
+	}
+}
+
+func (a *app) groupDialog(c *ui.Context, colors design.Colors) {
+	if !a.groupSheet.open {
+		return
+	}
+	t := c.Theme()
+	title, submit := locales.GroupNew(), "创建分组"
+	if a.groupSheet.rename {
+		title, submit = locales.GroupRename(), locales.Save()
+	}
+	sheet(c, colors, &a.groupSheet.open, &a.groupSheet.fresh, 340, 20, func() {
+		ui.Column(c).Gap(12).Children(func() {
+			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
+			ui.Field(c, "分组名称", func() {
+				c.Key("groupNameInput")
+				in := ui.TextInput(c, &a.groupSheet.name).Placeholder("例如：生产环境").AutoFocus()
+				if in.Submitted() {
+					a.submitGroupDialog()
+				}
+			})
+			if a.groupSheet.err != "" {
+				ui.Text(c, a.groupSheet.err).FontSize(design.TextSmall).TextColor(t.Danger)
+			}
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				ui.Button(c, locales.Cancel()).Key("groupCancel").OnClick(func() { a.groupSheet = groupDialogState{} })
+				ui.PrimaryButton(c, submit).Key("groupSubmit").OnClick(a.submitGroupDialog)
+			})
+		})
+	})
+	if !a.groupSheet.open {
+		a.groupSheet = groupDialogState{}
+	}
+}
+
 // sidebar 是主机列表。它透出窗口的渐变和系统的毛玻璃，不画自己的底色。
 func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
@@ -162,34 +235,65 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 	ui.Column(c).Key("sidebar").Width(240).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
 
-		ui.Column(c).Padding(2, 12, 12, 12).Children(func() {
-			// 侧栏框直接过滤主机。命令面板仍由旁边的快捷键按钮和 ⌘K 打开，两者不再绑在同一次点击上。
-			ui.Row(c).Key("hostFilterRow").Height(32).Padding(0, 4, 0, 10).Gap(6).
-				AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
-				ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted).Shrink(0)
-				c.Key("hostFilter")
-				ui.TextInput(c, &a.hostFilter).Placeholder("过滤主机").Label("过滤主机").
-					Grow(1).MinWidth(0).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
-				cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).Size(22, 22).Radius(6).Shrink(0).
-					Tooltip("命令面板（" + shortcutText("K") + "）")
-				if cmd.Hovered() {
-					cmd.Background(colors.Hover)
+		ui.Column(c).Padding(2, 12, 10, 12).Children(func() {
+			// 搜索框 + 快捷键提示 + 顶部“+”新建菜单（添加主机 / 本地终端 / 新建分组）。
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Key("hostFilterRow").Height(32).Grow(1).MinWidth(0).Padding(0, 4, 0, 10).Gap(6).
+					AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
+					ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted).Shrink(0)
+					c.Key("hostFilter")
+					ui.TextInput(c, &a.hostFilter).Placeholder("过滤主机").Label("过滤主机").
+						Grow(1).MinWidth(0).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
+					cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).Size(22, 22).Radius(6).Shrink(0).
+						Tooltip("命令面板（" + shortcutText("K") + "）")
+					if cmd.Hovered() {
+						cmd.Background(colors.Hover)
+					}
+					cmd.Children(func() {
+						ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+					}).OnClick(a.openPalette)
+				})
+				addMenuBtn := ui.ButtonBase(c).Key("sidebarAddMenu").Label("新建").Tooltip("新建主机、本地终端或分组").
+					Size(30, 30).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
+				if addMenuBtn.Hovered() {
+					addMenuBtn.Background(colors.Hover)
 				}
-				cmd.Children(func() {
-					ui.Text(c, shortcutText("K")).FontSize(design.TextSmall).TextColor(colors.TextFaint)
-				}).OnClick(a.openPalette)
+				addMenuBtn.Children(func() {
+					ui.Icon(c, design.Icon("plus")).FontSize(15).TextColor(t.TextMuted)
+				}).PopoverMenuButton(func(m *ui.Menu) {
+					if m.Item(locales.AddHost()).Chosen() {
+						a.openAdd()
+					}
+					if m.Item(locales.LocalTerminal()).Chosen() {
+						a.openLocalTerminal()
+					}
+					m.Separator()
+					if m.Item(locales.GroupNew()).Chosen() {
+						a.openNewGroup()
+					}
+				})
 			})
 		})
 
+		filtering := strings.TrimSpace(a.hostFilter) != ""
 		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-			ui.Column(c).Padding(0, 10, 10, 10).Gap(16).Children(func() {
-				if len(a.hosts) == 0 {
+			ui.Column(c).Padding(0, 10, 10, 10).Gap(12).Children(func() {
+				if filtering {
+					ui.Row(c).Padding(4, 8).Radius(design.RadiusRow).Background(colors.Hover).AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Text(c, locales.HostFilterSortHint()).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Grow(1)
+						ui.ButtonBase(c).Key("clearHostFilter").Label("清空").Children(func() {
+							ui.Text(c, "清空").FontSize(design.TextSmall - 1).TextColor(t.Accent).FontWeight(600)
+						}).OnClick(func() { a.hostFilter = "" })
+					})
+				}
+				if len(a.hosts) == 0 && len(a.customGroups) == 0 {
 					a.sidebarEmpty(c)
 					return
 				}
 				matched := false
 				for _, group := range a.groups() {
-					if len(a.hostsInGroup(group)) > 0 {
+					rows := a.hostsInGroup(group)
+					if len(rows) > 0 || (!filtering && slices.Contains(a.customGroups, group)) {
 						matched = true
 						break
 					}
@@ -200,7 +304,8 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				}
 				for _, group := range a.groups() {
 					rows := a.hostsInGroup(group)
-					if len(rows) == 0 {
+					isCustomEmpty := !filtering && len(rows) == 0 && slices.Contains(a.customGroups, group)
+					if len(rows) == 0 && !isCustomEmpty {
 						continue
 					}
 					collapsed := a.groupCollapsed(group)
@@ -211,11 +316,12 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						}
 						header := ui.ButtonBase(c).Key("groupToggle:"+group).Label(action+" "+group).
 							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
-							Radius(design.RadiusRow).Transition(design.Hover)
-						if strings.TrimSpace(a.hostFilter) == "" {
+							Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group))
+						var groupInsertLine bool
+						if !filtering {
 							if dragged, ok := ui.DragOver[hostDrag](header); ok {
 								if h, ok := a.hostByID(dragged.ID); ok && h.Group != group {
-									header.Border(1, t.Accent)
+									groupInsertLine = true
 								}
 							}
 							if dropped, ok := ui.Drop[hostDrag](header); ok {
@@ -223,6 +329,11 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 									a.notice = "调整主机分组失败：" + err.Error()
 								}
 							}
+						}
+						if groupInsertLine {
+							header.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+								painter.Fill(ui.Rect{X: r.X + 4, Y: r.Y + r.H - 2, W: max(0, r.W-8), H: 2}, t.Accent, 1)
+							})
 						}
 						if header.Hovered() {
 							header.Background(colors.Hover)
@@ -242,87 +353,21 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 			})
 		})
 
-		ui.Column(c).Padding(6, 10, 12, 10).Gap(2).Children(func() {
+		ui.Column(c).Padding(6, 10, 10, 10).Gap(4).Children(func() {
 			for _, message := range []string{a.hostsError, a.notice} {
 				if message != "" {
 					ui.Text(c, message).Key("notice").FontSize(design.TextSmall).TextColor(colors.Danger).
-						Padding(8, 10).Margin(0, 0, 6, 0).Radius(design.RadiusRow).Background(colors.DangerSoft).Selectable()
+						Padding(8, 10).Margin(0, 0, 4, 0).Radius(design.RadiusRow).Background(colors.DangerSoft).Selectable()
 				}
 			}
-			// ButtonBase 默认居中，这里要和上面的主机列表左对齐。
-			add := ui.ButtonBase(c).Key("addHost").Label(locales.AddHost()).Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if add.Hovered() {
-				add.Background(colors.Hover)
-			}
-			add.Children(func() {
-				ui.Icon(c, design.Icon("plus")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, locales.AddHost()).TextColor(t.TextMuted)
-			}).OnClick(func() { a.openAdd() })
-			localBtn := ui.ButtonBase(c).Key("openLocal").Label(locales.LocalTerminal()).Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if localBtn.Hovered() {
-				localBtn.Background(colors.Hover)
-			}
-			localBtn.Children(func() {
-				ui.Icon(c, design.Icon("terminal")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, locales.LocalTerminal()).TextColor(t.TextMuted)
-			}).OnClick(a.openLocalTerminal)
-			keysButton := ui.ButtonBase(c).Key("openKeys").Label(locales.ViewKeys()).Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if keysButton.Hovered() {
-				keysButton.Background(colors.Hover)
-			}
-			keysButton.Children(func() {
-				ui.Icon(c, design.Icon("key-round")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, locales.ViewKeys()).TextColor(t.TextMuted).Grow(1)
-				if n := len(a.keys); n > 0 {
-					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
-				}
-			}).OnClick(a.openKeys)
-			proxiesButton := ui.ButtonBase(c).Key("openProxies").Label(locales.Proxy()).Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if proxiesButton.Hovered() {
-				proxiesButton.Background(colors.Hover)
-			}
-			proxiesButton.Children(func() {
-				ui.Icon(c, design.Icon("globe")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, locales.Proxy()).TextColor(t.TextMuted).Grow(1)
-				if n := len(a.proxies); n > 0 {
-					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
-				}
-			}).OnClick(a.openProxies)
-			forwardsButton := ui.ButtonBase(c).Key("openForwards").Label("端口转发").Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if forwardsButton.Hovered() {
-				forwardsButton.Background(colors.Hover)
-			}
-			forwardsButton.Children(func() {
-				ui.Icon(c, design.Icon("arrow-left-right")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "端口转发").TextColor(t.TextMuted).Grow(1)
-				if n := len(a.forwards); n > 0 {
-					ui.Text(c, fmt.Sprint(n)).FontSize(design.TextSmall).TextColor(colors.TextFaint)
-				}
-			}).OnClick(a.openForwards)
-			aiButton := ui.ButtonBase(c).Key("openAI").Label("AI 助手").Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if aiButton.Hovered() {
-				aiButton.Background(colors.Hover)
-			}
-			aiButton.Children(func() {
-				ui.Icon(c, design.Icon("sparkles")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "AI 助手").TextColor(t.TextMuted).Grow(1)
-			}).OnClick(a.openAI)
-			settingsButton := ui.ButtonBase(c).Key("openSettings").Label(locales.Settings()).Height(30).Padding(0, 10).Gap(8).
-				Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-			if settingsButton.Hovered() {
-				settingsButton.Background(colors.Hover)
-			}
-			settingsButton.Children(func() {
-				ui.Icon(c, design.Icon("settings")).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, locales.Settings()).TextColor(t.TextMuted)
-			}).OnClick(a.openSettings)
 			a.syncStatus(c, colors)
+			ui.Row(c).Key("sidebarToolbar").Gap(4).AlignItems(ui.Center).Children(func() {
+				sidebarIconButton(c, colors, "openKeys", "key-round", locales.ViewKeys(), len(a.keys), a.openKeys)
+				sidebarIconButton(c, colors, "openProxies", "globe", locales.Proxy(), len(a.proxies), a.openProxies)
+				sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
+				sidebarIconButton(c, colors, "openAI", "sparkles", locales.AiAssistant(), 0, a.openAI)
+				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings)
+			})
 		})
 	})
 }
@@ -350,13 +395,13 @@ func (a *app) syncStatus(c *ui.Context, colors design.Colors) {
 		caption = "同步正常"
 		tip = "上次同步 " + formatSyncTime(a.lastSync)
 	}
-	row := ui.ButtonBase(c).Key("syncStatus").Label("同步状态").Tooltip(tip).Height(30).Padding(0, 10).Gap(8).
+	row := ui.ButtonBase(c).Key("syncStatus").Label("同步状态").Tooltip(tip).Height(28).Padding(0, 8).Gap(8).
 		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
 	if row.Hovered() {
 		row.Background(colors.Hover)
 	}
 	row.Children(func() {
-		ui.Icon(c, design.Icon(icon)).FontSize(14).TextColor(color)
+		ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(color)
 		ui.Text(c, caption).FontSize(design.TextSmall).TextColor(color).SingleLine()
 	}).OnClick(func() {
 		if !a.settingsPanel.open {
@@ -378,6 +423,27 @@ func (a *app) sidebarEmpty(c *ui.Context) {
 	})
 }
 
+func hostTooltip(h hosts.Host) string {
+	proto := "SSH"
+	switch h.EffectiveProtocol() {
+	case hosts.ProtocolTelnet:
+		proto = "Telnet"
+	case hosts.ProtocolSerial:
+		proto = "串口"
+	}
+	parts := []string{fmt.Sprintf("%s · %s", proto, h.Target())}
+	if h.Distro != "" {
+		parts = append(parts, "系统: "+h.Distro)
+	}
+	if jumps := hosts.SplitJumps(h.ProxyJump); len(jumps) > 0 {
+		parts = append(parts, "跳板: "+strings.Join(jumps, " → "))
+	}
+	if h.Production {
+		parts = append(parts, "生产环境")
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	t := c.Theme()
 	current := a.current()
@@ -394,9 +460,10 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	if !selected && hovered {
 		line.Background(colors.Hover)
 	}
+	var showInsertLine bool
 	if strings.TrimSpace(a.hostFilter) == "" {
 		if dragged, ok := ui.DragOver[hostDrag](line); ok && dragged.ID != h.ID {
-			line.Border(1, t.Accent)
+			showInsertLine = true
 		}
 		if dropped, ok := ui.Drop[hostDrag](line); ok && dropped.ID != h.ID {
 			if err := a.moveHostOrder(dropped.ID, h.ID, h.Group); err != nil {
@@ -404,11 +471,16 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 			}
 		}
 	}
+	if showInsertLine {
+		line.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+			painter.Fill(ui.Rect{X: r.X + 8, Y: r.Y, W: max(0, r.W-16), H: 2}, t.Accent, 1)
+		})
+	}
 	line.Children(func() {
 		if selected {
 			selectionPill(c, colors, "hosts", colors.Selected, true)
 		}
-		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
+		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Tooltip(hostTooltip(h)).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		if strings.TrimSpace(a.hostFilter) == "" {
 			row.Drag(hostDrag{ID: h.ID})
@@ -475,9 +547,11 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 					Background(colors.Selected).Radius(design.RadiusRow).OnClick(func() { a.openSaveHost(t.host) })
 			}
 			iconButton(c, colors, "search", locales.ViewFindShortcut(shortcutText("F")), func() { a.openSearch(t) })
-			iconButton(c, colors, "columns-2", locales.ViewSplitRightShortcut(shortcutText("D")), func() { a.split(t, false) })
-			iconButton(c, colors, "rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
-			if !t.local {
+			if t.local || t.client != nil {
+				iconButton(c, colors, "columns-2", locales.ViewSplitRightShortcut(shortcutText("D")), func() { a.split(t, false) })
+				iconButton(c, colors, "rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
+			}
+			if !t.local && t.client != nil {
 				iconButton(c, colors, "folder", locales.ViewFilesShortcut(shortcutText("J")), a.toggleFiles)
 			}
 		}
@@ -492,6 +566,25 @@ func tabLabel(t *tab) string {
 		return locales.ThisMachine()
 	}
 	return t.host.Name
+}
+
+// displayTabTitle 在同主机打开多个标签时自动附上序号，如 "prod (2)"。
+func displayTabTitle(tabs []*tab, idx int) string {
+	base := tabLabel(tabs[idx])
+	total := 0
+	ordinal := 0
+	for i, tb := range tabs {
+		if tabLabel(tb) == base {
+			total++
+			if i == idx {
+				ordinal = total
+			}
+		}
+	}
+	if total > 1 && ordinal > 1 {
+		return fmt.Sprintf("%s (%d)", base, ordinal)
+	}
+	return base
 }
 
 // tabMenu 是标签页右键菜单，提供复制标签页和关闭等快捷操作。
@@ -525,12 +618,24 @@ func (a *app) tabMenu(t *tab) func(m *ui.Menu) {
 func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 	theme := c.Theme()
 	selected := i == a.active
-	title := tabLabel(t)
+	title := displayTabTitle(a.tabs, i)
 	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
 	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
 		Height(28).MinWidth(36).MaxWidth(200).Shrink(1).Padding(0, 10).Gap(8).AlignItems(ui.Center).
-		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t))
+		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t)).Drag(tabDrag{ID: t.id})
+	var tabInsertLine bool
+	if dragged, ok := ui.DragOver[tabDrag](item); ok && dragged.ID != t.id {
+		tabInsertLine = true
+	}
+	if dropped, ok := ui.Drop[tabDrag](item); ok && dropped.ID != t.id {
+		a.moveTab(dropped.ID, t.id)
+	}
+	if tabInsertLine {
+		item.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+			painter.Fill(ui.Rect{X: r.X, Y: r.Y + 4, W: 2, H: max(0, r.H-8)}, theme.Accent, 1)
+		})
+	}
 	hovered := item.Hovered()
 	if !selected && hovered {
 		item.Background(colors.Hover)
@@ -577,7 +682,8 @@ func (a *app) workspace(c *ui.Context, colors design.Colors) {
 	})
 }
 
-// emptyState 是打开应用的第一屏。品牌斑纹放大作为标志，也预告了每台主机都有自己的图案。
+// emptyState 是打开应用的第一屏。品牌斑纹放大作为标志，也预告了每台主机都有自己的图案；
+// 存在主机时提供最近连接快捷入口与常用快捷键提示。
 func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Column(c).Fill().Center().Gap(20).Padding(32).Children(func() {
@@ -590,9 +696,69 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 			}
 			ui.Text(c, hint).TextColor(t.TextMuted)
 		})
+		if len(a.connecting) > 0 {
+			for hostID, cancel := range a.connecting {
+				if h, ok := a.hostByID(hostID); ok {
+					phase := a.connectingPhase[hostID]
+					if phase == "" {
+						phase = locales.ViewConnecting()
+					}
+					ui.Row(c).Padding(8, 12).Gap(10).AlignItems(ui.Center).Radius(design.RadiusRow).
+						Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
+						design.DistroCoatView(c, h.ID, h.Distro, h.Production, 18)
+						ui.Text(c, h.Name).FontWeight(500)
+						ui.Text(c, phase).FontSize(design.TextSmall).TextColor(t.TextMuted)
+						ui.Button(c, "取消连接").Key("cancelConnect:"+h.ID).Height(24).Padding(0, 8).OnClick(cancel)
+					})
+				}
+			}
+		}
 		if len(a.hosts) == 0 {
 			ui.PrimaryButton(c, locales.AddHost()).Key("addFirst").OnClick(func() { a.openAdd() })
+			return
 		}
+		var recents []hosts.Host
+		for _, id := range a.local.RecentHosts {
+			if h, ok := a.hostByID(id); ok {
+				recents = append(recents, h)
+				if len(recents) >= 5 {
+					break
+				}
+			}
+		}
+		if len(recents) > 0 {
+			ui.Column(c).Width(360).Gap(6).Padding(12).Radius(design.RadiusCard).
+				Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
+				ui.Text(c, locales.EmptyRecentHosts()).FontSize(design.TextSmall).FontWeight(600).TextColor(colors.TextFaint)
+				for _, h := range recents {
+					host := h
+					btn := ui.ButtonBase(c).Key("recent:"+host.ID).Label("连接 "+host.Name).
+						Height(32).Padding(0, 8).Gap(8).Justify(ui.Start).AlignItems(ui.Center).
+						Radius(design.RadiusRow).Transition(design.Hover)
+					if btn.Hovered() {
+						btn.Background(colors.Hover)
+					}
+					btn.Children(func() {
+						design.DistroCoatView(c, host.ID, host.Distro, host.Production, 18)
+						ui.Text(c, host.Name).FontWeight(500).Grow(1).SingleLine()
+						ui.Text(c, host.Target()).FontSize(design.TextSmall).TextColor(colors.TextFaint).SingleLine()
+					}).OnClick(func() { a.open(host) })
+				}
+			})
+		}
+		ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+			for _, item := range [][2]string{
+				{shortcutText("K"), "命令面板"},
+				{shortcutText("I"), locales.AiAssistantTitle()},
+				{shortcutText("\\"), "切换侧栏"},
+				{shortcutText("J"), "文件抽屉"},
+			} {
+				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+					chip(c, item[0], t.TextMuted, colors.Chip)
+					ui.Text(c, item[1]).FontSize(design.TextSmall).TextColor(colors.TextFaint)
+				})
+			}
+		})
 	})
 }
 
@@ -632,6 +798,15 @@ func (a *app) paneView(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 	broadcastMark(card, colors, c.Theme().Accent, a.broadcast[p.id], t.host.Production)
 	card.Children(func() {
 		a.paneHeader(c, colors, t, p)
+		if p.ended && !t.reconnecting {
+			ui.Row(c).Key(fmt.Sprintf("endedBanner:%d", p.id)).Height(32).Shrink(0).Padding(0, 12).Gap(8).
+				AlignItems(ui.Center).Background(colors.DangerSoft).BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+				ui.Icon(c, design.Icon("cloud-off")).FontSize(14).TextColor(colors.Danger)
+				ui.Text(c, locales.PaneDisconnected()).FontSize(design.TextSmall).FontWeight(500).TextColor(c.Theme().Text).Grow(1)
+				ui.Button(c, locales.Reconnect()).Key("bannerReconnect").Height(24).Padding(0, 8).OnClick(func() { a.reconnect(t) })
+				ui.Button(c, locales.PaneCloseTab()).Key("bannerClose").Height(24).Padding(0, 8).OnClick(func() { a.closeTab(t) })
+			})
+		}
 		if p.searchOpen {
 			a.searchBar(c, colors, t, p)
 		}
@@ -678,6 +853,12 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).FontSize(design.TextSmall).Children(func() {
 		// 按终端列数估计窗格宽度，窄的时候逐级收起次要信息，而不是让文字互相挤压重叠。
 		cols, rows := p.term.Size()
+		if cols != p.lastCols || rows != p.lastRows {
+			if p.lastCols != 0 || p.lastRows != 0 {
+				p.sizeChangedAt = time.Now()
+			}
+			p.lastCols, p.lastRows = cols, rows
+		}
 		compact, tiny := cols < 70, cols < 50
 
 		multiPane := t.root.leaves() > 1
@@ -734,16 +915,16 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				}
 			})
 		}
-		if !compact {
+		if !compact && !p.sizeChangedAt.IsZero() && time.Since(p.sizeChangedAt) < 1500*time.Millisecond {
 			ui.Textf(c, "%d × %d", cols, rows).TextColor(colors.TextFaint).FontFeatures("tnum").NoWrap().Shrink(0)
 		}
-		if t.monitorOpen && !t.local && !p.ended && !tiny {
-			a.paneMonitorMetrics(c, colors, t, compact)
+		if t.monitorOpen && !t.local && t.client != nil && !p.ended && !tiny {
+			a.paneMonitorMetrics(c, colors, t)
 		}
-		if !t.local {
-			monitorLabel := "开启服务器监控"
+		if !t.local && t.client != nil {
+			monitorLabel := locales.MonitorToggleOpen()
 			if t.monitorOpen {
-				monitorLabel = "收起服务器监控"
+				monitorLabel = locales.MonitorToggleClose()
 			}
 			btn := iconButton(c, colors, "activity", monitorLabel, func() { a.toggleMonitor(t) }).Disabled(p.ended)
 			if t.monitorOpen {
@@ -757,9 +938,26 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			}
 			chip(c, "广播", fg, bg)
 		}
-		// 同一台主机拆开后标题相同，标签带上序号，避免点到另一个窗格。
-		label := broadcastButtonLabel(a.broadcast[p.id], t.host.Name, paneOrdinal(t.root, p))
-		iconButton(c, colors, "radio", label, func() { a.togglePaneBroadcast(t, p) }).Disabled(p.ended && !a.broadcast[p.id])
+		moreLabel := locales.PaneMoreActions()
+		if t.root.leaves() > 1 {
+			moreLabel = fmt.Sprintf("%s %d", locales.PaneMoreActions(), paneOrdinal(t.root, p))
+		}
+		moreBtn := ui.ButtonBase(c).Key(fmt.Sprintf("paneMore:%d", p.id)).Label(moreLabel).Tooltip(locales.PaneMoreActions()).
+			Size(26, 26).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
+		if moreBtn.Hovered() {
+			moreBtn.Background(colors.Hover)
+		}
+		moreBtn.Children(func() {
+			ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(theme.TextMuted)
+		}).PopoverMenuButton(func(m *ui.Menu) {
+			broadcastLabel := broadcastButtonLabel(a.broadcast[p.id], t.host.Name, paneOrdinal(t.root, p))
+			if m.Item(broadcastLabel).Disabled(p.ended && !a.broadcast[p.id]).Chosen() {
+				a.togglePaneBroadcast(t, p)
+			}
+			if m.Item(locales.AiAnalyzeOutput()).Chosen() {
+				a.openAIExplainFromActivePane()
+			}
+		})
 	})
 }
 
@@ -1051,11 +1249,11 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 	p.fileDrag = over
 }
 
-// paneMonitorMetrics 在窗格状态栏内显示轻量服务器监控指标。
-func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, compact bool) {
+// paneMonitorMetrics 在窗格顶栏显示紧凑的中文监控摘要（CPU / 内存），点击弹出完整监控浮层。
+func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab) {
 	s := t.stats
 	if s.UpdatedAt.IsZero() {
-		ui.Text(c, "正在探测…").TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
+		ui.Text(c, locales.MonitorProbing()).TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
 		return
 	}
 	tTheme := c.Theme()
@@ -1063,51 +1261,57 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, co
 	if s.CPUPercent >= 85 {
 		cpuColor = colors.Danger
 	}
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
-		// CPU
+	var memPercent float32
+	if s.MemTotalBytes > 0 {
+		memPercent = float32(s.MemUsedBytes) * 100.0 / float32(s.MemTotalBytes)
+	}
+	memColor := colors.TextFaint
+	if memPercent >= 85 {
+		memColor = colors.Danger
+	}
+
+	anchor := ui.ButtonBase(c).Key(fmt.Sprintf("monitorBtn:%d", t.id)).Label(locales.MonitorTitle()).Tooltip(locales.MonitorTitle()).
+		Height(24).Padding(0, 6).Gap(8).AlignItems(ui.Center).Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
+	if anchor.Hovered() || t.monitorPopoverOpen {
+		anchor.Background(colors.Hover)
+	}
+	anchor.Children(func() {
 		ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "CPU").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
-			ui.Textf(c, "%.0f%%", s.CPUPercent).TextColor(cpuColor).FontFeatures("tnum")
+			ui.Text(c, locales.MonitorCPU()).TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
+			ui.Textf(c, "%3.0f%%", s.CPUPercent).TextColor(cpuColor).FontFeatures("tnum")
 		})
-
-		// 内存
 		if s.MemTotalBytes > 0 {
-			memPercent := float32(s.MemUsedBytes) * 100.0 / float32(s.MemTotalBytes)
-			memColor := colors.TextFaint
-			if memPercent >= 85 {
-				memColor = colors.Danger
-			}
 			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "RAM").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
-				if compact {
-					ui.Textf(c, "%.0f%%", memPercent).TextColor(memColor).FontFeatures("tnum")
-				} else {
-					ui.Textf(c, "%s (%.0f%%)", formatBytes(s.MemUsedBytes), memPercent).TextColor(memColor).FontFeatures("tnum")
+				ui.Text(c, locales.MonitorMemory()).TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
+				ui.Textf(c, "%3.0f%%", memPercent).TextColor(memColor).FontFeatures("tnum")
+			})
+		}
+	}).OnClick(func() { t.monitorPopoverOpen = !t.monitorPopoverOpen })
+
+	ui.Popover(c, anchor, &t.monitorPopoverOpen, func() {
+		ui.Column(c).Width(240).Padding(12).Gap(8).Children(func() {
+			ui.Text(c, locales.MonitorTitle()).FontWeight(600).FontSize(design.TextBody)
+			metricRow := func(label, val string, valColor ui.Color) {
+				ui.Row(c).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, label).FontSize(design.TextSmall).TextColor(tTheme.TextMuted).Grow(1)
+					ui.Text(c, val).FontSize(design.TextSmall).TextColor(valColor).FontWeight(600).FontFeatures("tnum")
+				})
+			}
+			metricRow(locales.MonitorCPU(), fmt.Sprintf("%.1f%%", s.CPUPercent), cpuColor)
+			metricRow(locales.MonitorLoad(), fmt.Sprintf("%.2f / %.2f", s.Load1, s.Load5), tTheme.Text)
+			if s.MemTotalBytes > 0 {
+				metricRow(locales.MonitorMemory(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.MemUsedBytes), formatBytes(s.MemTotalBytes), memPercent), memColor)
+			}
+			if s.DiskTotalBytes > 0 {
+				diskPercent := float32(s.DiskUsedBytes) * 100.0 / float32(s.DiskTotalBytes)
+				diskColor := tTheme.Text
+				if diskPercent >= 90 {
+					diskColor = colors.Danger
 				}
-			})
-		}
-
-		// 磁盘 (仅非紧凑模式显示)
-		if !compact && s.DiskTotalBytes > 0 {
-			diskPercent := float32(s.DiskUsedBytes) * 100.0 / float32(s.DiskTotalBytes)
-			diskColor := colors.TextFaint
-			if diskPercent >= 90 {
-				diskColor = colors.Danger
+				metricRow(locales.MonitorDisk(), fmt.Sprintf("%s / %s (%.0f%%)", formatBytes(s.DiskUsedBytes), formatBytes(s.DiskTotalBytes), diskPercent), diskColor)
 			}
-			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "Disk").TextColor(colors.TextFaint).FontSize(design.TextSmall - 1).FontWeight(600)
-				ui.Textf(c, "%.0f%%", diskPercent).TextColor(diskColor).FontFeatures("tnum")
-			})
-		}
-
-		// 实时网络速率 (非紧凑模式显示)
-		if !compact && (s.NetRxBytesPerSec > 0 || s.NetTxBytesPerSec > 0) {
-			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-				ui.Icon(c, design.Icon("arrow-up")).FontSize(10).TextColor(tTheme.Accent)
-				ui.Text(c, formatRate(s.NetTxBytesPerSec)).TextColor(colors.TextFaint).FontFeatures("tnum")
-				ui.Icon(c, design.Icon("arrow-down")).FontSize(10).TextColor(tTheme.Accent)
-				ui.Text(c, formatRate(s.NetRxBytesPerSec)).TextColor(colors.TextFaint).FontFeatures("tnum")
-			})
-		}
+			metricRow(locales.MonitorNetUp(), formatRate(s.NetTxBytesPerSec), tTheme.Accent)
+			metricRow(locales.MonitorNetDown(), formatRate(s.NetRxBytesPerSec), tTheme.Accent)
+		})
 	})
 }

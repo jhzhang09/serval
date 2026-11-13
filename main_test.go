@@ -266,9 +266,16 @@ func TestEnglishCatalogRenders(t *testing.T) {
 		t.Fatalf("英文添加主机是 %q", got)
 	}
 	h := newBareHarness(t)
-	for _, want := range []string{"Connect to a host", "Add host", "Local terminal", "Settings"} {
+	for _, want := range []string{"Connect to a host", "Settings", "Keys", "Proxy"} {
 		if _, ok := h.tt.Find(want); !ok {
 			t.Fatalf("英文界面没有 %q，实际：%v", want, h.tt.Texts())
+		}
+	}
+	h.click("新建")
+	h.tt.Frame()
+	for _, want := range []string{"Add host", "Local terminal"} {
+		if _, ok := h.tt.Find(want); !ok {
+			t.Fatalf("英文新建菜单没有 %q，实际：%v", want, h.tt.Texts())
 		}
 	}
 	if _, ok := h.tt.Find("连接一台主机"); ok {
@@ -629,6 +636,8 @@ func TestManyTabsStayReachable(t *testing.T) {
 
 func TestAddHost(t *testing.T) {
 	h := newHarness(t)
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	if !h.a.form.open {
 		t.Fatal("添加面板没有打开")
@@ -668,6 +677,8 @@ func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
 		Address: "127.0.0.1", Port: 1080})); err != nil {
 		t.Fatal(err)
 	}
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	h.tt.Frame()
 	if h.tt.HasText("选择主机…") || h.tt.HasText("不使用代理") {
@@ -676,6 +687,10 @@ func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
 	d := &h.a.form
 	d.address, d.user, d.name = "10.2.2.2", "ops", "inner"
 
+	if box, ok := h.tt.Find("协议"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("添加跳板机")
 	h.tt.Frame()
 	h.click("添加")
@@ -713,6 +728,10 @@ func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
 	if !h.tt.HasText("不使用代理") || len(h.a.form.jumps) != 1 {
 		t.Fatalf("编辑时应展开已有设置: %q", h.tt.Texts())
 	}
+	if box, ok := h.tt.Find("协议"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("不使用代理")
 	h.click("移除第 1 台跳板机")
 	h.click("保存")
@@ -737,9 +756,15 @@ func TestLegacyProxyAndJumpAreKept(t *testing.T) {
 // 在表单里新建代理：表单让位、内容保留，保存后回到表单并选中新代理。
 func TestCreateProxyFromHostForm(t *testing.T) {
 	h := newHarness(t)
+	h.click("新建")
+	h.tt.Frame()
 	h.click("添加主机")
 	h.a.form.address, h.a.form.user, h.a.form.name = "10.3.3.3", "ops", "via-proxy"
 	h.tt.Frame()
+	if box, ok := h.tt.Find("协议"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("使用代理")
 	h.tt.Frame()
 	if !h.tt.HasText("还没有代理，先新建一个。") {
@@ -901,9 +926,9 @@ func TestExpandHome(t *testing.T) {
 
 func TestAutoReconnectOnServerRestart(t *testing.T) {
 	h := newHarness(t)
-	tab := h.connectDev()
 	h.a.pingInterval = 50 * time.Millisecond
 	h.a.reconnectBaseDelay = 50 * time.Millisecond
+	tab := h.connectDev()
 
 	addr := h.server.Addr().String()
 	hostKeys := h.server.HostKeys()
@@ -1116,6 +1141,8 @@ func TestQuickConnectAndSaveAsHost(t *testing.T) {
 func TestLocalTerminal(t *testing.T) {
 	h := newHarness(t)
 	before := len(h.a.tabs)
+	h.click("新建")
+	h.tt.Frame()
 	h.click("本地终端")
 	h.tt.Frame()
 	if len(h.a.tabs) != before+1 {
@@ -1147,7 +1174,7 @@ func TestLocalTerminal(t *testing.T) {
 		t.Fatalf("“本地终端”出现了 %d 次，标签和侧栏按钮重名: %q", n, texts)
 	}
 
-	h.click("向右拆分（⌘D）")
+	h.click("向右拆分（" + shortcutText("D") + "）")
 	h.pump("本地终端拆分", func() bool { return tab.root.leaves() == 2 })
 	if tab.root.leaves() != 2 {
 		t.Fatalf("本地终端应能正常拆分窗格，leaves=%d", tab.root.leaves())
@@ -1179,7 +1206,7 @@ func TestTerminalSearch(t *testing.T) {
 	h.tt.Frame()
 
 	// 触发搜索
-	h.click("查找（⌘F）")
+	h.click(locales.ViewFindShortcut(shortcutText("F")))
 	h.tt.Frame()
 	if !tb.focus.searchOpen {
 		t.Fatal("查找工具条应该处于打开状态")
@@ -1251,7 +1278,7 @@ func TestFileUploadDownloadAndCancel(t *testing.T) {
 	tb := h.connectDev()
 
 	// 打开文件抽屉
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	// 准备本地待上传文件
@@ -1359,7 +1386,7 @@ func TestSystemDialogsAreWired(t *testing.T) {
 func TestUploadAsksBeforeReplacing(t *testing.T) {
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	name := fmt.Sprintf("replace-%d.txt", time.Now().UnixNano())
@@ -1402,7 +1429,7 @@ func TestFileOperations(t *testing.T) {
 	tb := h.connectDev()
 
 	// 打开文件抽屉
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 
 	// 1. 新建文件夹
@@ -1528,7 +1555,7 @@ func TestFileNameValidation(t *testing.T) {
 
 	h := newHarness(t)
 	tb := h.connectDev()
-	h.click("文件（⌘J）")
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
 	h.pump("打开文件列表", func() bool { return tb.dir != "" })
 	h.click("新建文件夹")
 	h.tt.Frame()
@@ -1612,6 +1639,8 @@ func TestFilesDrawerOnLocalTabExplains(t *testing.T) {
 	h.connectDev()
 	h.click("文件（" + shortcutText("J") + "）")
 	h.pump("文件列表", func() bool { return h.tt.HasText("go.mod") })
+	h.click("新建")
+	h.tt.Frame()
 	h.click("本地终端")
 	h.tt.Frame()
 	if !h.tt.HasText("文件抽屉用于浏览远程主机的文件") {

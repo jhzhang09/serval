@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestLocalBroadcastBytes(t *testing.T) {
 	if got := string(localBroadcastBytes(0, ui.KeyUp)); got != "\x1b[A" {
 		t.Fatalf("up = %q", got)
 	}
-	if localBroadcastBytes(ui.Cmd, ui.KeyK) != nil {
+	if ui.Cmd != ui.Ctrl && localBroadcastBytes(ui.Cmd, ui.KeyK) != nil {
 		t.Fatal("Command 组合应留给应用，不广播")
 	}
 	if localBroadcastBytes(ui.Alt, ui.KeyA) != nil {
@@ -137,6 +138,8 @@ func TestBroadcastInputReachesMembers(t *testing.T) {
 		t.Fatal("未加入的窗格收到了输入")
 	}
 
+	h.click(fmt.Sprintf("窗格操作 %d", paneOrdinal(tb.root, first)))
+	h.tt.Frame()
 	h.click(broadcastButtonLabel(false, tb.host.Name, paneOrdinal(tb.root, first)))
 	h.tt.Frame()
 	if !h.a.broadcast[first.id] {
@@ -209,6 +212,8 @@ func TestBroadcastProductionConfirm(t *testing.T) {
 	if h.a.broadcast[second.id] {
 		t.Fatal("新窗格不应自动加入广播")
 	}
+	h.click(fmt.Sprintf("窗格操作 %d", paneOrdinal(tb.root, second)))
+	h.tt.Frame()
 	h.click(broadcastButtonLabel(false, tb.host.Name, paneOrdinal(tb.root, second)))
 	h.tt.Frame()
 	if h.a.broadcastAsk == nil || h.a.broadcast[second.id] {
@@ -220,6 +225,8 @@ func TestBroadcastProductionConfirm(t *testing.T) {
 		t.Fatal("取消第二个窗格时，已经加入的窗格和广播本身应保留")
 	}
 
+	h.click(fmt.Sprintf("窗格操作 %d", paneOrdinal(tb.root, second)))
+	h.tt.Frame()
 	h.click(broadcastButtonLabel(false, tb.host.Name, paneOrdinal(tb.root, second)))
 	h.tt.Frame()
 	h.click("加入广播")

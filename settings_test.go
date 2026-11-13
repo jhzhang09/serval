@@ -242,6 +242,10 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	}
 
 	// 删除该条已知主机记录（即使主机本身还在或已删都能独立删除）。
+	if box, ok := h.tt.Find("外观"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 400)
+		h.tt.Frame()
+	}
 	h.click("删除")
 	h.tt.Frame()
 	if known, _ := h.a.knownHostsList(); len(known) != 0 || h.tt.HasText(sums[0]) || !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
@@ -264,6 +268,10 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 
 	h.click("设置")
 	h.tt.Frame()
+	if box, ok := h.tt.Find("外观"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("修改主密码…")
 	h.tt.Frame()
 	if !h.a.settingsPanel.changePwOpen {
@@ -442,6 +450,10 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	// 打开设置，取消勾选“在这台设备上记住主密码”
 	h.click("设置")
 	h.tt.Frame()
+	if box, ok := h.tt.Find("外观"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("在这台设备上记住主密码")
 	h.tt.Frame()
 	if h.a.isRememberedOnDevice() {
@@ -475,6 +487,10 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	// 再次在设置里打开“记住”
 	h.click("设置")
 	h.tt.Frame()
+	if box, ok := h.tt.Find("外观"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+		h.tt.Frame()
+	}
 	h.click("在这台设备上记住主密码")
 	h.tt.Frame()
 	if !h.a.isRememberedOnDevice() {
