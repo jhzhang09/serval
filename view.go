@@ -111,6 +111,11 @@ func (a *app) shortcuts(c *ui.Context) {
 	c.OnShortcut(mods, ui.KeyI, a.openAI)
 	c.OnShortcut(mods, ui.KeyBackslash, func() { a.sidebarOpen = !a.sidebarOpen })
 	c.OnShortcut(mods, ui.KeyJ, a.toggleFiles)
+	c.OnShortcut(mods, ui.KeyComma, func() {
+		if !a.settingsPanel.open {
+			a.openSettings()
+		}
+	})
 	if t := a.current(); t != nil {
 		c.OnShortcut(mods, ui.KeyF, func() { a.openSearch(t) })
 		if t.local || t.client != nil {
@@ -367,7 +372,8 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				sidebarIconButton(c, colors, "openProxies", "globe", locales.Proxy(), len(a.proxies), a.openProxies)
 				sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
 				sidebarIconButton(c, colors, "openAI", "sparkles", locales.AiAssistant(), 0, a.openAI)
-				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings)
+				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings).
+					Tooltip(locales.Settings() + "（" + shortcutText(",") + "）")
 			})
 		})
 	})
@@ -542,6 +548,23 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 				a.tabItem(c, colors, i, t)
 			}
 		})
+		if a.broadcastOn {
+			theme := c.Theme()
+			b := ui.ButtonBase(c).Key("exitAllBroadcast").Label("退出广播").Tooltip("退出全部广播").
+				Height(24).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
+				Background(theme.Accent.Alpha(0.14)).Transition(design.Hover)
+			if b.Hovered() {
+				b.Background(theme.Accent.Alpha(0.22))
+			}
+			b.Children(func() {
+				ui.Icon(c, design.Icon("radio")).FontSize(12).TextColor(theme.Accent)
+				ui.Text(c, "退出广播").TextColor(theme.Accent).FontWeight(600).FontSize(design.TextSmall).NoWrap()
+				ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(theme.Accent)
+			}).OnClick(func() {
+				a.clearBroadcast()
+				a.toast(ui.Toast{Title: "已关闭广播"})
+			})
+		}
 		if t := a.current(); t != nil {
 			if !t.local && !a.isSavedHost(t.host.ID) { // 本地终端不是主机，不能保存
 				ui.Button(c, locales.ViewSaveAsHost()).Key("saveAsHost").Height(28).Padding(0, 8).
@@ -754,6 +777,7 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 				{shortcutText("I"), locales.AiAssistantTitle()},
 				{shortcutText("\\"), "切换侧栏"},
 				{shortcutText("J"), "文件抽屉"},
+				{shortcutText(","), locales.Settings()},
 			} {
 				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 					chip(c, item[0], t.TextMuted, colors.Chip)
@@ -871,10 +895,22 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			// 单窗格时主机名已在上方标签页清晰显示，此处仅展示主机专属斑纹，避免信息冗余
 			design.DistroCoatView(c, t.host.ID, t.host.Distro, t.host.Production, 14)
 		}
+		user, dir := paneUserAndDir(t, p)
+		if user != "" {
+			if user == "root" {
+				ui.Row(c).Key(fmt.Sprintf("paneUser:%d", p.id)).Height(20).Padding(0, 7).Gap(4).
+					Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).Background(colors.DangerSoft).Children(func() {
+					ui.Box(c).Size(5, 5).Radius(3).Background(colors.Danger)
+					ui.Text(c, user).TextColor(colors.Danger).FontWeight(700).FontSize(design.TextSmall - 0.5).NoWrap()
+				})
+			} else {
+				chip(c, user, theme.TextMuted, colors.Chip).Key(fmt.Sprintf("paneUser:%d", p.id))
+			}
+		}
 		// 路径放在一个会裁剪的容器里：容器宽度只取剩余空间，文字超出时用省略号截断。
 		ui.Row(c).Basis(0).Grow(1).MinWidth(0).Clip().Children(func() {
-			if dir := p.term.Dir(); dir != "" {
-				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).SingleLine().MinWidth(0).Shrink(1)
+			if dir != "" {
+				ui.Text(c, shortPath(dir)).TextColor(theme.TextMuted).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 			}
 		})
 		switch {
@@ -938,7 +974,20 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			if t.host.Production {
 				fg, bg = colors.Danger, colors.DangerSoft
 			}
-			chip(c, "广播", fg, bg)
+			b := ui.ButtonBase(c).Key(fmt.Sprintf("paneBroadcast:%d", p.id)).
+				Label(fmt.Sprintf("移出窗格广播：%s %d", t.host.Name, paneOrdinal(t.root, p))).
+				Tooltip("点击移出广播").
+				Height(20).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
+				Background(bg).Transition(design.Hover)
+			if b.Hovered() {
+				b.Background(fg.Alpha(0.22))
+			}
+			b.Children(func() {
+				ui.Text(c, "广播").TextColor(fg).FontWeight(600).FontSize(design.TextSmall - 0.5).NoWrap()
+				ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(fg)
+			}).OnClick(func() {
+				a.togglePaneBroadcast(t, p)
+			})
 		}
 		moreLabel := locales.PaneMoreActions()
 		if t.root.leaves() > 1 {

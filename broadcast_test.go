@@ -241,3 +241,42 @@ func TestBroadcastProductionConfirm(t *testing.T) {
 		return strings.Contains(first.term.Text(), "prod-both-8") && strings.Contains(second.term.Text(), "prod-both-8")
 	})
 }
+
+func TestBroadcastOneClickExit(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	first := tb.focus
+
+	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.pump("拆分", func() bool { return tb.root.leaves() == 2 })
+	second := tb.focus
+
+	// 将两个窗格都加入广播
+	h.click("搜索主机和操作")
+	h.a.pal.query = "广播输入"
+	h.tt.Frame()
+	h.click("广播输入")
+	h.tt.Frame()
+
+	h.click(fmt.Sprintf("窗格操作 %d", paneOrdinal(tb.root, first)))
+	h.tt.Frame()
+	h.click(broadcastButtonLabel(false, tb.host.Name, paneOrdinal(tb.root, first)))
+	h.tt.Frame()
+	if !h.a.broadcast[first.id] || !h.a.broadcast[second.id] || !h.a.broadcastOn {
+		t.Fatalf("两个窗格都应处于广播中: on=%v members=%v", h.a.broadcastOn, h.a.broadcast)
+	}
+
+	// 单击窗格顶栏上的广播芯片即可一键移出该窗格
+	h.click(fmt.Sprintf("移出窗格广播：%s %d", tb.host.Name, paneOrdinal(tb.root, first)))
+	h.tt.Frame()
+	if h.a.broadcast[first.id] || !h.a.broadcast[second.id] || !h.a.broadcastOn {
+		t.Fatalf("点击窗格广播芯片后应仅移出该窗格: on=%v members=%v", h.a.broadcastOn, h.a.broadcast)
+	}
+
+	// 再点顶栏的“退出广播”按钮可一键退出全部广播
+	h.click("退出广播")
+	h.tt.Frame()
+	if h.a.broadcastOn || len(h.a.broadcast) != 0 {
+		t.Fatalf("点击退出广播后应全部退出: on=%v members=%v", h.a.broadcastOn, h.a.broadcast)
+	}
+}

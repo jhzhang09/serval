@@ -111,8 +111,8 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
-	// DefaultMonitor 为真时，新建 SSH 会话默认开启顶栏服务器监控。
-	DefaultMonitor bool `json:"defaultMonitor,omitempty"`
+	// DisableDefaultMonitor 为真时，新建 SSH 会话不默认开启顶栏服务器监控。
+	DisableDefaultMonitor bool `json:"disableDefaultMonitor,omitempty"`
 	// HostMonitor 记录各台主机上次的监控开关状态。
 	HostMonitor map[string]bool `json:"hostMonitor,omitempty"`
 	// DisableDistroProbe 为真时，不在首次连接时执行发行版探测命令。
@@ -573,16 +573,16 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 						}).Description("默认关闭。只记录远程会话的输出，存成纯文本并去掉颜色和控制字符。文件在所选文件夹里，不进保险库。本机终端不记录。")
 
 						ui.Field(c, "服务器监控", func() {
-							defMon := a.local.DefaultMonitor
+							defMon := !a.local.DisableDefaultMonitor
 							c.Key("settingsDefaultMonitor")
 							ui.Checkbox(c, &defMon, "新建 SSH 会话时默认开启顶栏监控").OnChange(func() {
 								next := a.local
-								next.DefaultMonitor = defMon
+								next.DisableDefaultMonitor = !defMon
 								if err := a.saveLocal(next); err != nil {
 									p.err = err.Error()
 								}
 							})
-						}).Description("开启后，每次连接 SSH 服务器都会自动探测并展示 CPU、内存等轻量状态。仅保存在本机。")
+						}).Description("默认开启。每次连接 SSH 服务器都会自动探测并展示 CPU、内存等轻量状态。仅保存在本机。")
 
 						ui.Field(c, "系统识别", func() {
 							probeOn := !a.local.DisableDistroProbe

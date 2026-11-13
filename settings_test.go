@@ -679,3 +679,20 @@ func TestRememberedKeyMissingAfterIdentifierChange(t *testing.T) {
 		t.Fatalf("重新记住后，下次启动应自动解锁: state=%v", h.a.vault.State())
 	}
 }
+
+func TestSettingsShortcutOpensSettings(t *testing.T) {
+	h := newHarness(t)
+	h.tt.Key(chromeShortcut(), ui.KeyComma)
+	h.tt.Frame()
+	if !h.a.settingsPanel.open {
+		t.Fatal("按设置快捷键后应打开设置面板")
+	}
+
+	// 已打开时再按快捷键，不应清空正在编辑的草稿
+	h.a.settingsPanel.aiModel = "custom-model"
+	h.tt.Key(chromeShortcut(), ui.KeyComma)
+	h.tt.Frame()
+	if h.a.settingsPanel.aiModel != "custom-model" {
+		t.Fatalf("重复按设置快捷键不应重置草稿: %q", h.a.settingsPanel.aiModel)
+	}
+}

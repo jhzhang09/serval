@@ -199,10 +199,13 @@ func (a *app) paletteItems(query string) []paletteItem {
 	})
 
 	var actions []scored
-	action := func(icon, title string, run func()) {
+	actionWithShortcut := func(icon, title, shortcut string, run func()) {
 		if s := fuzzyScore(query, title); s >= 0 {
-			actions = append(actions, scored{paletteItem{key: "action:" + title, section: "操作", title: title, icon: icon, run: run}, s})
+			actions = append(actions, scored{paletteItem{key: "action:" + title, section: "操作", title: title, subtitle: shortcut, icon: icon, run: run}, s})
 		}
+	}
+	action := func(icon, title string, run func()) {
+		actionWithShortcut(icon, title, "", run)
 	}
 	if t := a.current(); t != nil {
 		action("terminal", locales.PaletteDuplicateTab(), func() { a.duplicateTab(t) })
@@ -234,7 +237,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	action("arrow-left-right", locales.PortForward(), a.openForwards)
 	action("sparkles", "AI 助手：生成命令与错误分析", a.openAI)
 	action("refresh-cw", "立即同步", func() { a.syncNow(true) })
-	action("settings", locales.PaletteOpenSettings(), a.openSettings)
+	actionWithShortcut("settings", locales.PaletteOpenSettings(), shortcutText(","), a.openSettings)
 	action("server", locales.KnownHosts(), a.openSettings)
 	if a.vault != nil && a.vault.State() == vault.Unlocked {
 		action("lock", locales.PaletteLockVault(), a.askLockVault)
