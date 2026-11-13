@@ -181,6 +181,16 @@
 - **范围**：OpenSSH 证书认证；FIDO 硬件密钥（`sk-ed25519`）。硬件密钥需要平台原生接口，工作量大。
 - **需决策**：是否做、优先级。
 
+### C8 协议扩展：Telnet 与 串口 Serial（M，已完成：`feat/C8-telnet-serial`）
+
+- **范围**：协议扩展，支持标准 Telnet（RFC 854、RFC 857、RFC 858、RFC 1073 NAWS、RFC 1091 TTYPE）以及跨平台串口 Serial 通信（POSIX termios 及常用波特率配置），复用冷色终端界面与 ZMODEM 传输。
+- **实现**：
+  - `core/telnet`：纯 Go 标准库实现 Telnet 协商客户端，支持窗口大小自适应上报、终端类型协商与命令转义。
+  - `core/serial`：基于 termios 的串口设备驱动，支持波特率（9600 至 230400）、8N1 原始流式读写与终端适配。
+  - `hosts.Host` 扩展 `Protocol`（"ssh" / "telnet" / "serial"）与 `BaudRate`，登记进 `docs/storage.md`。
+  - 表单支持协议分流切换，串口模式提供波特率选择并隐藏无关 SSH 字段；应用层统一桥接终端字符流。
+- **依赖**：无。
+
 ---
 
 ## T 终端
@@ -388,8 +398,8 @@
 
 | 事项 | 说明 |
 |---|---|
-| AI 助手 | Netcatty 的主打功能之一（自然语言执行命令、多主机编排）。涉及模型服务选择、费用、命令执行的安全确认，需要单独设计 |
-| Telnet、串口、Mosh | Netcatty 支持；用户群需求不明确 |
+| AI 助手 | Netcatty 的主打功能之一（自然语言执行命令、终端报错分析）。支持 OpenAI 兼容 API 自定义 BaseURL/Key/Model，执行命令前需确认 |
+| Mosh | 移动网络下抗漫游弱网，需远端预装 mosh-server 与 UDP 端口放行，暂不排期 |
 
 ## 待整理
 

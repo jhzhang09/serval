@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"path"
@@ -16,7 +17,9 @@ import (
 
 	"serval/core/hosts"
 	"serval/core/keys"
+	"serval/core/serial"
 	"serval/core/sshconn"
+	"serval/core/telnet"
 	"serval/core/totp"
 	"serval/core/vault"
 	"serval/design"
@@ -268,6 +271,9 @@ type tab struct {
 	monitorOpen bool
 	monitorStop chan struct{}
 	stats       ServerStats
+
+	// conn 是非 SSH（如 Telnet、串口）连接的底层资源，关闭标签时释放。
+	conn io.Closer
 }
 
 // pane 是窗格树的节点：叶子节点持有一个终端，内部节点持有两个子窗格。
@@ -277,6 +283,8 @@ type pane struct {
 	ended bool
 	// shell 是这个窗格的远程 shell（本地终端为 nil），用来在终端结束时判断是断线还是远端自己退出。
 	shell *sshconn.Shell
+	// conn 是窗格实际对接的字符流（可能是 *sshconn.Shell、*telnet.Conn 或 *serial.Port）。
+	conn shellConn
 	// zconn 位于 shell 和终端之间，处理 rz/sz；zmodem 是正在进行的 rz/sz 传输，界面显示进度。
 	zconn  *zmodemConn
 	zmodem *zmodemTransfer
@@ -440,6 +448,15 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 	if _, busy := a.connecting[h.ID]; busy {
 		return
 	}
+	switch h.EffectiveProtocol() {
+	case hosts.ProtocolTelnet:
+		a.connectTelnet(h)
+		return
+	case hosts.ProtocolSerial:
+		a.connectSerial(h)
+		return
+	}
+
 	a.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg, route, used, chain, err := a.prepareDialConfig(ctx, h, creds)
@@ -807,6 +824,101 @@ func (a *app) addTab(h hosts.Host, client *sshconn.Client, shell *sshconn.Shell)
 	a.syncHostForwards(h.ID)
 }
 
+func (a *app) addTabWithConn(h hosts.Host, conn shellConn, closer io.Closer) {
+	a.nextID++
+	_, stop := context.WithCancel(context.Background())
+	t := &tab{id: a.nextID, host: h, conn: closer, stop: stop}
+	leaf, err := a.newPaneWithConn(t, nil, conn)
+	if err != nil {
+		stop()
+		if closer != nil {
+			_ = closer.Close()
+		}
+		a.notice = locales.AppTerminalStartFailed(err.Error())
+		return
+	}
+	t.root, t.focus = leaf, leaf
+	a.arrived[leaf.id] = true
+	a.tabs = append(a.tabs, t)
+	a.active = len(a.tabs) - 1
+	if _, ok := a.hostByID(h.ID); ok {
+		a.recordRecentHost(h.ID)
+	}
+	a.saveSessionLayout()
+}
+
+func (a *app) connectTelnet(h hosts.Host) {
+	if _, busy := a.connecting[h.ID]; busy {
+		return
+	}
+	a.notice = ""
+	ctx, cancel := context.WithCancel(context.Background())
+	a.connecting[h.ID] = cancel
+
+	port := h.Port
+	if port <= 0 {
+		port = 23
+	}
+	addr := net.JoinHostPort(h.Address, strconv.Itoa(port))
+
+	go func() {
+		tConn, err := telnet.DialContext(ctx, addr)
+		a.post(func() {
+			defer cancel()
+			delete(a.connecting, h.ID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				a.notice = fmt.Sprintf("Telnet 连接失败: %v", err)
+				return
+			}
+			if ctx.Err() != nil {
+				_ = tConn.Close()
+				return
+			}
+			a.addTabWithConn(h, tConn, tConn)
+		})
+	}()
+}
+
+func (a *app) connectSerial(h hosts.Host) {
+	if _, busy := a.connecting[h.ID]; busy {
+		return
+	}
+	a.notice = ""
+	ctx, cancel := context.WithCancel(context.Background())
+	a.connecting[h.ID] = cancel
+
+	cfg := serial.Config{
+		Name:     h.Address,
+		BaudRate: h.EffectiveBaudRate(),
+		DataBits: 8,
+		Parity:   serial.ParityNone,
+		StopBits: serial.StopBits1,
+	}
+
+	go func() {
+		port, err := serial.Open(cfg)
+		a.post(func() {
+			defer cancel()
+			delete(a.connecting, h.ID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				a.notice = fmt.Sprintf("打开串口失败: %v", err)
+				return
+			}
+			if ctx.Err() != nil {
+				_ = port.Close()
+				return
+			}
+			a.addTabWithConn(h, port, port)
+		})
+	}()
+}
+
 func (a *app) openSearch(t *tab) {
 	if t == nil || t.focus == nil {
 		return
@@ -963,8 +1075,8 @@ func (a *app) openLocalTerminal() {
 	a.arrived[pane.id] = true
 }
 
-// createTerminal 创建终端控件。shell 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
-func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.Terminal, error) {
+// createTerminal 创建终端控件。conn 为 nil 时是本地终端：插件在伪终端里运行本机 shell。
+func (a *app) createTerminal(t *tab, p *pane, conn shellConn, shell *sshconn.Shell) (*terminal.Terminal, error) {
 	opts := terminal.Options{
 		Font:       a.terminalFont(),
 		Theme:      a.terminalTheme(false),
@@ -982,11 +1094,11 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 			a.post(func() { p.searchStatus = s })
 		},
 	}
-	// 只在有远程 shell 时设置 Conn：值为 nil 的 *Shell 放进接口后接口并不是 nil，
-	// 终端插件会以为有连接，本地终端就打不开了。远程 shell 外面套一层 zmodemConn 处理 rz/sz。
-	if shell != nil {
+	// 只在有远程字符流时设置 Conn：值为 nil 的接口并不是 nil，
+	// 终端插件会以为有连接，本地终端就打不开了。远程字符流外面套一层 zmodemConn 处理 rz/sz。
+	if conn != nil {
 		var z *zmodemConn
-		z = newZmodemConn(shell, func(s *zmodemSession) {
+		z = newZmodemConn(conn, func(s *zmodemSession) {
 			a.post(func() { a.startZmodem(t, p, z, s) })
 		})
 		z.onOutput = func(b []byte) {
@@ -1023,14 +1135,17 @@ func (a *app) createTerminal(t *tab, p *pane, shell *sshconn.Shell) (*terminal.T
 }
 
 func (a *app) newPane(t *tab, shell *sshconn.Shell) (*pane, error) {
+	return a.newPaneWithConn(t, shell, shell)
+}
+
+func (a *app) newPaneWithConn(t *tab, shell *sshconn.Shell, conn shellConn) (*pane, error) {
 	a.nextID++
-	p := &pane{id: a.nextID, log: &sessionLog{}}
-	term, err := a.createTerminal(t, p, shell)
+	p := &pane{id: a.nextID, log: &sessionLog{}, shell: shell, conn: conn}
+	term, err := a.createTerminal(t, p, conn, shell)
 	if err != nil {
 		return nil, err
 	}
 	p.term = term
-	p.shell = shell
 	a.ensureSessionLog(t, p)
 	return p, nil
 }
@@ -1358,6 +1473,9 @@ func (t *tab) close() {
 	if t.client != nil {
 		t.client.Close()
 	}
+	if t.conn != nil {
+		t.conn.Close()
+	}
 }
 
 // closeAll 在窗口关闭时取消进行中的连接并断开所有会话。
@@ -1552,7 +1670,7 @@ func (a *app) finishReconnect(t *tab, client *sshconn.Client) {
 			return
 		}
 		oldTerm := p.term
-		term, err := a.createTerminal(t, p, shell)
+		term, err := a.createTerminal(t, p, shell, shell)
 		if err != nil {
 			shell.Close()
 			p.ended = true

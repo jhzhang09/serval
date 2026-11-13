@@ -26,6 +26,9 @@ func noKey() string { return locales.HostNoKey() }
 // 表单里认证方式的顺序，和 Segmented 的选项一一对应。
 var authModes = []string{hosts.AuthAuto, hosts.AuthPassword, hosts.AuthKey}
 
+// serialBaudRates 是串口常见波特率选项。
+var serialBaudRates = []string{"9600", "19200", "38400", "57600", "115200", "230400"}
+
 // hostForm 是添加、编辑和复制主机共用的表单。
 type hostForm struct {
 	open, fresh bool
@@ -38,6 +41,8 @@ type hostForm struct {
 
 	name, address, port, user, group string
 	distro                           string // 操作系统或发行版标识
+	protoIdx                         int    // 0: SSH, 1: Telnet, 2: Serial
+	baudRateText                     string // 串口波特率字符串
 	auth                             int    // authModes 的下标
 	keyName                          string // 选中的私钥名称，noKey 表示不用
 	production                       bool
@@ -68,7 +73,7 @@ type hostForm struct {
 
 // openAdd 打开空白的添加主机表单。
 func (a *app) openAdd() {
-	a.form = hostForm{open: true, fresh: true, keyName: noKey()}
+	a.form = hostForm{open: true, fresh: true, keyName: noKey(), baudRateText: "115200"}
 	if len(a.keys) == 1 {
 		a.form.keyName = a.keys[0].Name // 只有一把私钥时直接选上，添加完私钥就能用
 	}
@@ -83,8 +88,17 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 		production:    h.Production,
 		forwardAgent:  h.ForwardAgent,
 		passwordSaved: h.Password != "", keyName: noKey(),
-		totpSaved: h.TOTPSecret != "",
-		jumps:     hosts.SplitJumps(h.ProxyJump),
+		totpSaved:    h.TOTPSecret != "",
+		jumps:        hosts.SplitJumps(h.ProxyJump),
+		baudRateText: strconv.Itoa(h.EffectiveBaudRate()),
+	}
+	switch h.EffectiveProtocol() {
+	case hosts.ProtocolTelnet:
+		f.protoIdx = 1
+	case hosts.ProtocolSerial:
+		f.protoIdx = 2
+	default:
+		f.protoIdx = 0
 	}
 	f.showJumps = len(f.jumps) > 0
 	if p, ok := a.proxyByID(h.ProxyID); ok {
@@ -145,37 +159,79 @@ func (a *app) saveForm() {
 	f := &a.form
 	address := strings.TrimSpace(f.address)
 	if address == "" {
-		f.err = locales.HostAddressRequired()
+		if f.protoIdx == 2 {
+			f.err = "请填写串口设备路径"
+		} else {
+			f.err = locales.HostAddressRequired()
+		}
 		return
 	}
+
+	var proto string
 	port := 22
-	if text := strings.TrimSpace(f.port); text != "" {
-		parsed, err := strconv.Atoi(text)
-		if err != nil || parsed < 1 || parsed > 65535 {
-			f.err = locales.HostPortInvalid()
-			return
+	baudRate := 115200
+	if text := strings.TrimSpace(f.baudRateText); text != "" {
+		if parsed, err := strconv.Atoi(text); err == nil && parsed > 0 {
+			baudRate = parsed
 		}
-		port = parsed
 	}
+
+	switch f.protoIdx {
+	case 1:
+		proto = hosts.ProtocolTelnet
+		port = 23
+		if text := strings.TrimSpace(f.port); text != "" {
+			parsed, err := strconv.Atoi(text)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				f.err = locales.HostPortInvalid()
+				return
+			}
+			port = parsed
+		}
+	case 2:
+		proto = hosts.ProtocolSerial
+		port = 0
+	default:
+		proto = hosts.ProtocolSSH
+		if text := strings.TrimSpace(f.port); text != "" {
+			parsed, err := strconv.Atoi(text)
+			if err != nil || parsed < 1 || parsed > 65535 {
+				f.err = locales.HostPortInvalid()
+				return
+			}
+			port = parsed
+		}
+	}
+
 	user := strings.TrimSpace(f.user)
-	if user == "" {
+	if f.protoIdx == 0 && user == "" {
 		f.err = locales.HostUserRequired()
 		return
 	}
+	if f.protoIdx == 1 && user == "" {
+		user = "telnet"
+	}
+	if f.protoIdx == 2 && user == "" {
+		user = "serial"
+	}
+
 	auth := authModes[f.auth]
 	keyID := ""
-	if auth != hosts.AuthPassword && f.keyName != noKey() {
-		i := slices.IndexFunc(a.keys, func(k keys.Key) bool { return k.Name == f.keyName })
-		if i < 0 {
-			f.err = locales.HostKeyGone()
+	if f.protoIdx == 0 {
+		if auth != hosts.AuthPassword && f.keyName != noKey() {
+			i := slices.IndexFunc(a.keys, func(k keys.Key) bool { return k.Name == f.keyName })
+			if i < 0 {
+				f.err = locales.HostKeyGone()
+				return
+			}
+			keyID = a.keys[i].ID
+		}
+		if auth == hosts.AuthKey && keyID == "" {
+			f.err = locales.HostKeyRequired()
 			return
 		}
-		keyID = a.keys[i].ID
 	}
-	if auth == hosts.AuthKey && keyID == "" {
-		f.err = locales.HostKeyRequired()
-		return
-	}
+
 	name := strings.TrimSpace(f.name)
 	if name == "" {
 		name = address
@@ -194,7 +250,7 @@ func (a *app) saveForm() {
 		return
 	}
 	var jumps []string
-	if f.showJumps {
+	if f.showJumps && f.protoIdx == 0 {
 		for i, j := range f.jumps {
 			if j == pickHost() || strings.TrimSpace(j) == "" {
 				f.err = locales.RouteJumpMissing(i + 1)
@@ -208,7 +264,8 @@ func (a *app) saveForm() {
 		Name: name, Address: address, Port: port, User: user, Auth: auth, KeyID: keyID,
 		Group: group, Production: f.production, ForwardAgent: f.forwardAgent,
 		ProxyJump: strings.Join(jumps, ","), ProxyID: proxyID, Proxy: legacyProxy,
-		Distro: f.distro,
+		Distro:   f.distro,
+		Protocol: proto, BaudRate: baudRate,
 	}
 	// 密码：新输入的覆盖；要求清除的清除；密码以外的登录方式也保留已有密码（自动模式会用到），
 	// 只有“私钥”模式用不上密码，清掉。复制来的主机沿用来源的密码。
@@ -399,24 +456,57 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600)
 			ui.Scroll(c).Key("hostFormScroll").MaxHeight(max(windowHeight-180, 120)).Children(func() {
 				ui.Column(c).Gap(12).Padding(0, 4, 0, 0).Children(func() {
-					ui.Row(c).Gap(10).Children(func() {
-						ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-							ui.Field(c, locales.Address(), func() {
-								c.Key("addAddress")
-								ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
+					ui.Field(c, "协议", func() {
+						c.Key("addProtocol")
+						ui.Segmented(c, &f.protoIdx, "SSH", "Telnet", "串口 Serial")
+					})
+
+					if f.protoIdx == 2 {
+						// 串口 Serial
+						ui.Row(c).Gap(10).Children(func() {
+							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+								ui.Field(c, "设备路径", func() {
+									c.Key("addAddress")
+									ui.TextInput(c, &f.address).Placeholder("/dev/ttyUSB0 或 COM1").AutoFocus()
+								})
+							})
+							ui.Column(c).Width(104).Children(func() {
+								ui.Field(c, "波特率", func() {
+									c.Key("addBaudRate")
+									ui.Select(c, &f.baudRateText, serialBaudRates)
+								})
 							})
 						})
-						ui.Column(c).Width(76).Children(func() {
-							ui.Field(c, locales.Port(), func() {
-								c.Key("addPort")
-								ui.TextInput(c, &f.port).Placeholder("22")
+					} else {
+						// 网络协议 (SSH 或 Telnet)
+						defaultPort := "22"
+						if f.protoIdx == 1 {
+							defaultPort = "23"
+						}
+						ui.Row(c).Gap(10).Children(func() {
+							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+								ui.Field(c, locales.Address(), func() {
+									c.Key("addAddress")
+									ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
+								})
+							})
+							ui.Column(c).Width(76).Children(func() {
+								ui.Field(c, locales.Port(), func() {
+									c.Key("addPort")
+									ui.TextInput(c, &f.port).Placeholder(defaultPort)
+								})
 							})
 						})
-					})
-					ui.Field(c, locales.HostUsername(), func() {
-						c.Key("addUser")
-						ui.TextInput(c, &f.user).Placeholder("deploy")
-					})
+						ui.Field(c, locales.HostUsername(), func() {
+							c.Key("addUser")
+							placeholder := "deploy"
+							if f.protoIdx == 1 {
+								placeholder = "可选"
+							}
+							ui.TextInput(c, &f.user).Placeholder(placeholder)
+						})
+					}
+
 					ui.Row(c).Gap(10).Children(func() {
 						half(func() {
 							nameField := ui.Field(c, locales.Name(), func() {
@@ -436,30 +526,32 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 					})
 					a.distroField(c, f)
 
-					descriptions := []string{
-						locales.HostAuthAutoHint(),
-						locales.HostAuthPasswordHint(),
-						locales.HostAuthKeyHint(),
-					}
-					ui.Field(c, locales.HostAuth(), func() {
-						c.Key("addAuth")
-						ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
-					}).Description(descriptions[f.auth])
-					if f.auth == 1 {
-						a.passwordField(c, f)
-					} else {
-						a.keyField(c, f)
-					}
+					if f.protoIdx == 0 {
+						descriptions := []string{
+							locales.HostAuthAutoHint(),
+							locales.HostAuthPasswordHint(),
+							locales.HostAuthKeyHint(),
+						}
+						ui.Field(c, locales.HostAuth(), func() {
+							c.Key("addAuth")
+							ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
+						}).Description(descriptions[f.auth])
+						if f.auth == 1 {
+							a.passwordField(c, f)
+						} else {
+							a.keyField(c, f)
+						}
 
-					a.routeFields(c, colors, f)
-					a.totpField(c, f)
-					c.Key("addProduction")
-					ui.Checkbox(c, &f.production, locales.HostProduction())
-					c.Key("addForwardAgent")
-					ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
-					if f.forwardAgent {
-						ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
-							FontSize(design.TextSmall).TextColor(colors.Danger)
+						a.routeFields(c, colors, f)
+						a.totpField(c, f)
+						c.Key("addProduction")
+						ui.Checkbox(c, &f.production, locales.HostProduction())
+						c.Key("addForwardAgent")
+						ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
+						if f.forwardAgent {
+							ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
+								FontSize(design.TextSmall).TextColor(colors.Danger)
+						}
 					}
 				})
 			})

@@ -412,3 +412,61 @@ func TestHostFormDistroPersistsAndDisplays(t *testing.T) {
 		t.Fatalf("再次编辑时 Distro 未保留: %q", h.a.form.distro)
 	}
 }
+
+func TestHostFormProtocolTelnetAndSerial(t *testing.T) {
+	h := newHarness(t)
+
+	// 1. 添加 Telnet 主机
+	h.click("添加主机")
+	h.tt.Frame()
+	f := &h.a.form
+	f.protoIdx = 1
+	f.name = "my-telnet"
+	f.address = "127.0.0.1"
+	f.port = "" // 留空应默认为 23
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("Telnet 保存失败: %s", h.a.form.err)
+	}
+	telnetHost := h.host("my-telnet")
+	if telnetHost.Protocol != hosts.ProtocolTelnet || telnetHost.Port != 23 {
+		t.Fatalf("Telnet 属性异常: %+v", telnetHost)
+	}
+
+	// 编辑 Telnet 主机，确认表单回显
+	h.a.openEdit(telnetHost)
+	h.tt.Frame()
+	if h.a.form.protoIdx != 1 {
+		t.Fatalf("编辑时 protoIdx 应为 1, 得到 %d", h.a.form.protoIdx)
+	}
+	h.click("取消")
+	h.tt.Frame()
+
+	// 2. 添加 串口 Serial 主机
+	h.click("添加主机")
+	h.tt.Frame()
+	f = &h.a.form
+	f.protoIdx = 2
+	f.name = "my-serial"
+	f.address = "/dev/ttyUSB0"
+	f.baudRateText = "57600"
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("Serial 保存失败: %s", h.a.form.err)
+	}
+	serialHost := h.host("my-serial")
+	if serialHost.Protocol != hosts.ProtocolSerial || serialHost.BaudRate != 57600 {
+		t.Fatalf("Serial 属性异常: %+v", serialHost)
+	}
+
+	// 编辑 Serial 主机，确认表单回显
+	h.a.openEdit(serialHost)
+	h.tt.Frame()
+	if h.a.form.protoIdx != 2 || h.a.form.baudRateText != "57600" {
+		t.Fatalf("编辑时 Serial 回显异常: protoIdx=%d, baud=%s", h.a.form.protoIdx, h.a.form.baudRateText)
+	}
+}

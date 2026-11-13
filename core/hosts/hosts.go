@@ -42,6 +42,33 @@ type Host struct {
 	SortOrder int `json:"sortOrder,omitempty"`
 	// Distro 是操作系统或发行版标识（如 ubuntu, debian, alpine, macos, windows 等）。
 	Distro string `json:"distro,omitempty"`
+	// Protocol 是连接协议："ssh"（默认）、"telnet"、"serial"。
+	Protocol string `json:"protocol,omitempty"`
+	// BaudRate 是串口波特率（Protocol 为 "serial" 时生效），默认 115200。
+	BaudRate int `json:"baudRate,omitempty"`
+}
+
+// 支持的连接协议常量
+const (
+	ProtocolSSH    = "ssh"
+	ProtocolTelnet = "telnet"
+	ProtocolSerial = "serial"
+)
+
+// EffectiveProtocol 返回有效连接协议，默认为 "ssh"。
+func (h *Host) EffectiveProtocol() string {
+	if h.Protocol == "" {
+		return ProtocolSSH
+	}
+	return h.Protocol
+}
+
+// EffectiveBaudRate 返回有效串口波特率，默认为 115200。
+func (h *Host) EffectiveBaudRate() int {
+	if h.BaudRate <= 0 {
+		return 115200
+	}
+	return h.BaudRate
 }
 
 // Proxy 是一条独立管理的代理配置，供多台主机复用，整条记录（包括密码）加密存进保险库。
