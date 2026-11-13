@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,13 +127,13 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 		t.Fatal("AI 助手面板未打开")
 	}
 
-	// 输入查询并点击生成命令
+	// 输入查询并点击发送
 	h.tt.Type("查找大于100M的文件")
 	h.tt.Frame()
 	if h.a.ai.query == "" {
 		t.Fatalf("AutoFocus 未聚焦到 AI 输入框，query 为空")
 	}
-	h.click("生成命令")
+	h.click("发送")
 
 	// 等待异步完成
 	h.pump("AI 生成命令", func() bool {
@@ -153,11 +154,11 @@ func TestAIPanelGenerateAndInsertCommand(t *testing.T) {
 		t.Fatalf("剪贴板未包含命令: got %q", h.tt.Clipboard())
 	}
 
-	// 测试安全填入终端（无回车符）
+	// 测试安全填入终端（停靠式侧栏填入后保持打开，且不自动回车）
 	h.click("填入终端（需确认）")
 	h.tt.Frame()
-	if h.a.ai.open {
-		t.Fatal("填入终端后 AI 面板应当关闭")
+	if !h.a.ai.open {
+		t.Fatal("停靠式 AI 侧栏填入终端后应保持打开")
 	}
 
 	// 验证终端存在
@@ -586,10 +587,10 @@ func TestAIStaleCanceledRequestAndEscCloseCancels(t *testing.T) {
 
 	close(req2Release)
 	h.pump("第二个 AI 请求完成", func() bool {
-		return !h.a.ai.loading && len(h.a.ai.turns) == 1
+		return !h.a.ai.loading && len(h.a.ai.turns) == 2 && !h.a.ai.turns[1].running
 	})
 
-	// 发起第三个请求后模拟 Esc/点外部关闭弹窗（open=false 后下一帧渲染）
+	// 发起第三个请求后点击“停止”按钮，应立即取消进行中的请求
 	h.a.ai.query = "third"
 	h.a.runAIGenerate()
 	select {
@@ -597,15 +598,327 @@ func TestAIStaleCanceledRequestAndEscCloseCancels(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("第三个 AI 请求未发出")
 	}
-	h.a.ai.open = false
+	h.tt.Frame()
+	h.click(locales.AiStop())
 	h.tt.Frame()
 
 	select {
 	case <-req3Canceled:
 	case <-time.After(5 * time.Second):
-		t.Fatal("关闭 AI 浮层后进行中的请求未被立即取消")
+		t.Fatal("点击停止后进行中的 AI 请求未被立即取消")
 	}
 	if h.a.ai.loading || h.a.ai.cancel != nil {
-		t.Fatalf("关闭 AI 浮层后应停止加载状态: loading=%v cancelNil=%v", h.a.ai.loading, h.a.ai.cancel == nil)
+		t.Fatalf("点击停止后应停止加载状态: loading=%v cancelNil=%v", h.a.ai.loading, h.a.ai.cancel == nil)
+	}
+}
+
+// TestAIAgentMultiStepSSHInspection 端到端测试：连接真实 devsshd，AI Agent 流式思考、多步调用 host_info 与 ssh_exec、渲染 Markdown 表格和 Token 统计。
+func TestAIAgentMultiStepSSHInspection(t *testing.T) {
+	var round atomic.Int32
+	var sawSSHOutput atomic.Bool
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		n := round.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1:
+			chunks := []string{
+				`{"choices":[{"delta":{"reasoning_content":"先检查主机信息并执行远端硬件探测"}}]}`,
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc_1","type":"function","function":{"name":"host_info","arguments":"{}"}}]}}]}`,
+				`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"tc_2","type":"function","function":{"name":"ssh_exec","arguments":"{\"command\":\"printf SERVAL_AGENT_PROBE_OK\",\"reason\":\"探测远端连通与环境\"}"}}]}}]}`,
+				`{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_cache_hit_tokens":20,"completion_tokens_details":{"reasoning_tokens":15}}}`,
+			}
+			for _, c := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", c)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		case 2:
+			msgs, _ := req["messages"].([]any)
+			for _, m := range msgs {
+				mm, _ := m.(map[string]any)
+				if mm["role"] == "tool" {
+					if content, _ := mm["content"].(string); strings.Contains(content, "SERVAL_AGENT_PROBE_OK") {
+						sawSSHOutput.Store(true)
+					}
+				}
+			}
+			chunks := []string{
+				`{"choices":[{"delta":{"content":"### 这台主机配置概览\n\n| 项目 | 配置 |\n| --- | --- |\n| 探针 | SERVAL_AGENT_PROBE_OK |\n\n` + "```bash\\nfree -h\\n```" + `"}}]}`,
+				`{"choices":[],"usage":{"prompt_tokens":280,"completion_tokens":40,"total_tokens":320}}`,
+			}
+			for _, c := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", c)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		default:
+			http.Error(w, "unexpected round", 500)
+		}
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "deepseek-chat"
+	h.a.setAIKey("test-sk")
+
+	// 连接测试 SSH 服务器
+	h.connectDev()
+
+	// 点击“AI 助手”打开停靠侧栏并点击“这台服务配置如何”快捷提问
+	h.click("AI 助手")
+	h.tt.Frame()
+	h.click("这台服务配置如何")
+
+	h.pump("Agent 多轮 SSH 探测完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+
+	if !sawSSHOutput.Load() {
+		t.Fatal("第二轮模型请求未收到 ssh_exec 的真实远端输出结果")
+	}
+	if !h.tt.HasText("这台主机配置概览") || !h.tt.HasText("SERVAL_AGENT_PROBE_OK") {
+		t.Fatalf("未渲染 Markdown 表格报告内容: %q", h.tt.Texts())
+	}
+	if !h.tt.HasText("Token 470") {
+		t.Fatalf("未显示累计 Token 消耗统计: %q", h.tt.Texts())
+	}
+
+	// 展开工具卡片应能看到真实输出
+	h.click("$ printf SERVAL_AGENT_PROBE_OK")
+	h.tt.Frame()
+	if !h.tt.HasText("exit_code: 0") {
+		t.Fatalf("展开工具卡片未显示真实输出: %q", h.tt.Texts())
+	}
+
+	// 验证 toggleAI 收起再打开保留会话内容
+	h.a.toggleAI()
+	h.tt.Frame()
+	if h.a.ai.open {
+		t.Fatal("toggleAI 应关闭侧栏")
+	}
+	h.a.toggleAI()
+	h.tt.Frame()
+	if !h.a.ai.open || len(h.a.ai.turns) != 1 {
+		t.Fatal("重新打开侧栏应保留会话记录")
+	}
+}
+
+// TestAIAgentPermissionModes 测试三档权限模式：只读观察（允许 SFTP/终端读取但拦截 ssh_exec）、确认执行（弹窗卡片审批）、自动执行（普通放行、高危拦截）。
+func TestAIAgentPermissionModes(t *testing.T) {
+	var phase atomic.Int32
+	var toolOutputs []string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		// 从末尾收集最新 tool 消息文本
+		msgs, _ := req["messages"].([]any)
+		var lastToolText string
+		for _, m := range msgs {
+			mm, _ := m.(map[string]any)
+			if mm["role"] == "tool" {
+				lastToolText, _ = mm["content"].(string)
+			}
+		}
+
+		p := phase.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		var msg map[string]any
+		switch p {
+		case 1:
+			// 只读观察模式下尝试执行 ssh_exec -> 应被阻止，且 sftp_read 应成功
+			msg = map[string]any{
+				"tool_calls": []map[string]any{
+					{"id": "c_obs_read", "type": "function", "function": map[string]string{"name": "sftp_read", "arguments": `{"path":"go.mod"}`}},
+					{"id": "c_obs_exec", "type": "function", "function": map[string]string{"name": "ssh_exec", "arguments": `{"command":"echo should_block"}`}},
+				},
+			}
+		case 2:
+			toolOutputs = append(toolOutputs, lastToolText)
+			msg = map[string]any{"content": "只读探测结束"}
+		case 3:
+			// 确认执行模式：发起 ssh_exec，等待用户点击“允许执行”
+			msg = map[string]any{
+				"tool_calls": []map[string]any{
+					{"id": "c_confirm_exec", "type": "function", "function": map[string]string{"name": "ssh_exec", "arguments": `{"command":"echo CONFIRM_PASS","reason":"验证确认模式"}`}},
+				},
+			}
+		case 4:
+			toolOutputs = append(toolOutputs, lastToolText)
+			msg = map[string]any{"content": "确认模式执行结束"}
+		case 5:
+			// 自动执行模式：普通命令自动放行，高危 rm -rf 仍应拦截等待拒绝
+			msg = map[string]any{
+				"tool_calls": []map[string]any{
+					{"id": "c_auto_danger", "type": "function", "function": map[string]string{"name": "ssh_exec", "arguments": `{"command":"rm -rf /tmp/serval-danger-test","reason":"高危拦截测试"}`}},
+				},
+			}
+		case 6:
+			toolOutputs = append(toolOutputs, lastToolText)
+			msg = map[string]any{"content": "高危命令已拦截"}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": msg}},
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.connectDev()
+
+	// 1. 只读观察模式
+	h.a.openAI()
+	h.a.ai.mode = aiModeObserver
+	h.a.ai.query = "observer check"
+	h.a.runAIGenerate()
+	h.pump("只读观察完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	if len(toolOutputs) == 0 || !strings.Contains(toolOutputs[0], "只读观察") {
+		t.Fatalf("只读观察模式应阻止 ssh_exec，实际=%v", toolOutputs)
+	}
+	if len(h.a.ai.turns[0].steps) == 0 || len(h.a.ai.turns[0].steps[0].Tools) != 2 || !strings.Contains(h.a.ai.turns[0].steps[0].Tools[0].Output, "module serval") {
+		t.Fatalf("只读观察模式下 sftp_read 应成功读取文件内容")
+	}
+
+	// 2. 确认执行模式 -> 出现审批卡片 -> 点击允许执行
+	h.a.ai.mode = aiModeConfirm
+	h.a.ai.query = "confirm check"
+	h.a.runAIGenerate()
+	h.pump("出现命令执行确认卡片", func() bool {
+		return h.a.ai.pendingApproval != nil && h.tt.HasText("允许执行")
+	})
+	h.click("允许执行")
+	h.pump("确认执行完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 2 && !h.a.ai.turns[1].running
+	})
+	if !strings.Contains(toolOutputs[len(toolOutputs)-1], "CONFIRM_PASS") {
+		t.Fatalf("确认执行放行后应收到真实 stdout，实际=%q", toolOutputs[len(toolOutputs)-1])
+	}
+
+	// 3. 自动执行模式下的高危命令仍拦截 -> 点击拒绝
+	h.a.ai.mode = aiModeAuto
+	h.a.ai.query = "danger check"
+	h.a.runAIGenerate()
+	h.pump("自动模式下高危命令触发拦截卡片", func() bool {
+		return h.a.ai.pendingApproval != nil && h.tt.HasText("高危命令拦截确认")
+	})
+	h.click("拒绝")
+	h.pump("高危命令拒绝后完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 3 && !h.a.ai.turns[2].running
+	})
+	if !strings.Contains(toolOutputs[len(toolOutputs)-1], "拒绝") {
+		t.Fatalf("拒绝后应告知模型用户已拒绝，实际=%q", toolOutputs[len(toolOutputs)-1])
+	}
+}
+
+// TestAIAgentComposerSlashMentionsAndProfiles 测试设置页多模型配置保存、底部模型切换、@ 引用上下文与 / 快捷命令。
+func TestAIAgentComposerSlashMentionsAndProfiles(t *testing.T) {
+	var seenModel string
+	var seenUserPrompt string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer sk-ds-1" && auth != "Bearer test-sk" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		seenModel, _ = req["model"].(string)
+		msgs, _ := req["messages"].([]any)
+		for _, m := range msgs {
+			mm, _ := m.(map[string]any)
+			if mm["role"] == "user" {
+				seenUserPrompt, _ = mm["content"].(string)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": "ok"}}},
+		})
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.click("设置")
+	h.tt.Frame()
+	h.click("AI")
+	h.tt.Frame()
+
+	// 点击 DeepSeek 预设后填入本地 mock 地址并保存为多模型配置
+	h.click("DeepSeek")
+	h.tt.Frame()
+	h.a.settingsPanel.aiBaseURL = ts.URL
+	h.a.settingsPanel.aiKey = "sk-ds-1"
+	h.tt.Frame()
+	h.click("存为新配置")
+	h.tt.Frame()
+	if len(h.a.settings.AIProfiles) != 1 || h.a.settings.AIProfiles[0].Name != "DeepSeek" {
+		t.Fatalf("未能保存多模型配置: %+v", h.a.settings.AIProfiles)
+	}
+
+	h.click(locales.Done())
+	h.tt.Frame()
+
+	// 打开本地终端与 AI 侧栏
+	h.click("新建")
+	h.tt.Frame()
+	h.click("本地终端")
+	h.tt.Frame()
+	h.a.openAI()
+	h.tt.Frame()
+
+	if !h.tt.HasText("DeepSeek · deepseek-chat") {
+		t.Fatalf("底部模型切换栏应显示当前激活配置，界面=%q", h.tt.Texts())
+	}
+
+	// 测试 @ 引用上下文
+	h.click("@")
+	h.tt.Frame()
+	h.click("@主机信息")
+	h.tt.Frame()
+	if len(h.a.ai.attachedContexts) != 1 || h.a.ai.attachedContexts[0] != "host" {
+		t.Fatalf("点击 @主机信息 后应附加 host 上下文: %+v", h.a.ai.attachedContexts)
+	}
+
+	// 测试 / 快捷命令执行
+	h.click("/")
+	h.tt.Frame()
+	h.click("/inspect")
+	h.pump("斜杠命令执行完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	if seenModel != "deepseek-chat" || !strings.Contains(seenUserPrompt, "[附加主机信息]") {
+		t.Fatalf("期望使用 deepseek-chat 且附带主机信息，实际 model=%q prompt=%q", seenModel, seenUserPrompt)
+	}
+
+	// /clear 清空对话
+	h.a.ai.query = "/clear"
+	h.a.submitAIInput()
+	h.tt.Frame()
+	if len(h.a.ai.turns) != 0 {
+		t.Fatalf("/clear 后应清空对话轮次: %d", len(h.a.ai.turns))
 	}
 }

@@ -84,6 +84,8 @@ type app struct {
 	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
 	filesWidth float32
 	filesSplit float32
+	// aiWidth 是右侧 AI Agent 侧栏的宽度（DIP）。
+	aiWidth float32
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
 	hostFilter string
 
@@ -2219,7 +2221,64 @@ func (p *pane) contains(target *pane) bool {
 }
 
 func (a *app) getAIKey() string {
-	return a.settings.AIKey
+	return a.activeAIConfig().APIKey
+}
+
+func (a *app) activeAIConfig() aiProfile {
+	if a.settings.ActiveAIProfile != "" {
+		for _, prof := range a.settings.AIProfiles {
+			if prof.ID == a.settings.ActiveAIProfile {
+				baseURL := strings.TrimSpace(prof.BaseURL)
+				if baseURL == "" {
+					baseURL = ai.DefaultBaseURL
+				}
+				model := strings.TrimSpace(prof.Model)
+				if model == "" {
+					model = ai.DefaultModel
+				}
+				name := strings.TrimSpace(prof.Name)
+				if name == "" {
+					name = inferAIProviderName(baseURL)
+				}
+				return aiProfile{
+					ID:      prof.ID,
+					Name:    name,
+					BaseURL: baseURL,
+					Model:   model,
+					APIKey:  prof.APIKey,
+				}
+			}
+		}
+	}
+	baseURL := strings.TrimSpace(a.settings.AIBaseURL)
+	if baseURL == "" {
+		baseURL = ai.DefaultBaseURL
+	}
+	model := strings.TrimSpace(a.settings.AIModel)
+	if model == "" {
+		model = ai.DefaultModel
+	}
+	return aiProfile{
+		Name:    inferAIProviderName(baseURL),
+		BaseURL: baseURL,
+		Model:   model,
+		APIKey:  a.settings.AIKey,
+	}
+}
+
+func (a *app) switchAIProfile(id string) error {
+	for _, prof := range a.settings.AIProfiles {
+		if prof.ID != id {
+			continue
+		}
+		next := a.settings
+		next.ActiveAIProfile = prof.ID
+		next.AIBaseURL = prof.BaseURL
+		next.AIModel = prof.Model
+		next.AIKey = prof.APIKey
+		return a.saveSettings(next)
+	}
+	return nil
 }
 
 func (a *app) setAIKey(k string) {
@@ -2315,18 +2374,11 @@ func paneUserAndDir(t *tab, p *pane) (user, dir string) {
 }
 
 func (a *app) aiClient() *ai.Client {
-	baseURL := a.settings.AIBaseURL
-	if baseURL == "" {
-		baseURL = ai.DefaultBaseURL
-	}
-	model := a.settings.AIModel
-	if model == "" {
-		model = ai.DefaultModel
-	}
+	cfg := a.activeAIConfig()
 	return ai.NewClient(ai.Config{
-		BaseURL: baseURL,
-		APIKey:  a.getAIKey(),
-		Model:   model,
+		BaseURL: cfg.BaseURL,
+		APIKey:  cfg.APIKey,
+		Model:   cfg.Model,
 	})
 }
 
