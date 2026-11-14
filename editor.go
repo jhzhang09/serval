@@ -182,27 +182,50 @@ func (a *app) editorDialog(c *ui.Context, colors design.Colors) {
 		ed.dirty = true
 	}
 	t := c.Theme()
+	windowW, windowH := c.Size()
+	panelW := float32(680)
+	if windowW > 0 {
+		panelW = min(max(windowW-120, 520), 840)
+		if windowW < 560 {
+			panelW = max(windowW-32, 320)
+		}
+	}
+	editorH := float32(360)
+	if windowH > 0 {
+		editorH = min(max(windowH-240, 260), 620)
+		if windowH < 460 {
+			editorH = max(windowH-180, 160)
+		}
+	}
 	title := "编辑 " + ed.name
 	saveText := "保存"
 	if ed.busy {
 		saveText = "正在保存…"
 	}
-	panel := sheet(c, colors, &ed.open, &ed.fresh, 680, 22, func() {
-		ui.Column(c).Gap(12).OnShortcut(chromeShortcut(), ui.KeyS, func() {
+	panel := sheet(c, colors, &ed.open, &ed.fresh, panelW, 22, func() {
+		ui.Column(c).Gap(10).OnShortcut(chromeShortcut(), ui.KeyS, func() {
 			if !ed.busy {
 				a.saveEditor(false)
 			}
 		}).Children(func() {
-			ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600).SingleLine()
-			ui.Text(c, ed.path).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Tooltip(ed.path)
-			if ed.dirty {
-				ui.Text(c, "未保存").FontSize(design.TextSmall).TextColor(t.TextMuted)
-			}
+			ui.Column(c).Gap(3).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, title).FontSize(design.TextHeading).FontWeight(600).SingleLine().MinWidth(0).Grow(1)
+					if ed.dirty {
+						chip(c, "未保存", t.Accent, t.Accent.Alpha(0.14))
+					}
+				})
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, ed.path).FontSize(design.TextSmall).TextColor(t.TextMuted).
+						SingleLine().Ellipsis("…").MinWidth(0).Grow(1).Tooltip(ed.path)
+					ui.Text(c, shortcutText("S")+" 保存").FontSize(design.TextSmall).TextColor(colors.TextFaint).Shrink(0)
+				})
+			})
 			if ed.err != "" {
 				ui.Text(c, ed.err).FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()
 			}
 			c.Key("editorText")
-			ui.TextAreaBuffer(c, ed.buf).Label("编辑内容").Height(300).
+			ui.TextAreaBuffer(c, ed.buf).Label("编辑内容").Height(editorH).
 				Font(design.FontTerminal).FontSize(design.TextBody).
 				ReadOnly(ed.busy).AutoFocus()
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {

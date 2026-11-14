@@ -446,6 +446,8 @@ func (a *app) lockVault() {
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.editor = editorState{}
+	a.fileOp = fileOpState{}
+	a.fileDelete = nil
 	a.lastDrawer = ""
 	a.sidebarResizing = false
 	a.toast(ui.Toast{Title: locales.AppVaultLocked()})

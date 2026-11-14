@@ -317,3 +317,71 @@ func TestShortPathCrossPlatform(t *testing.T) {
 		t.Fatalf("POSIX 路径缩写不符合预期: got=%q", gotPOSIX)
 	}
 }
+
+func TestLocalNewFolderRenameUploadAndDelete(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	sample := filepath.Join(h.a.localDir, "local-menu.txt")
+	if err := os.WriteFile(sample, []byte("from-menu"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.click("文件（" + shortcutText("J") + "）")
+	h.pump("两栏列出文件", func() bool {
+		return tb.dir != "" && h.tt.HasText("local-menu.txt")
+	})
+
+	// 1. 新建本地文件夹
+	h.click("新建本地文件夹")
+	h.tt.Frame()
+	h.a.fileOp.input = "local-created"
+	h.tt.Frame()
+	h.click("创建")
+	h.pump("新建本地目录", func() bool {
+		info, err := os.Stat(filepath.Join(h.a.localDir, "local-created"))
+		return err == nil && info.IsDir() && h.tt.HasText("本地 local-created")
+	})
+
+	// 2. 右键本地文件夹重命名
+	if err := h.tt.RightClick("本地 local-created"); err != nil {
+		t.Fatalf("右键本地目录失败: %v", err)
+	}
+	if err := h.tt.ChooseMenuItem("重命名"); err != nil {
+		t.Fatalf("选择重命名失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.tt.Frame()
+	h.a.fileOp.input = "local-renamed"
+	h.tt.Frame()
+	h.click("重命名")
+	h.pump("重命名本地目录", func() bool {
+		_, oldErr := os.Stat(filepath.Join(h.a.localDir, "local-created"))
+		info, newErr := os.Stat(filepath.Join(h.a.localDir, "local-renamed"))
+		return os.IsNotExist(oldErr) && newErr == nil && info.IsDir() && h.tt.HasText("本地 local-renamed")
+	})
+
+	// 3. 右键本地文件上传到远端
+	if err := h.tt.RightClick("本地 local-menu.txt"); err != nil {
+		t.Fatalf("右键本地文件失败: %v", err)
+	}
+	if err := h.tt.ChooseMenuItem("上传文件"); err != nil {
+		t.Fatalf("右键上传文件失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.pump("右键上传完成", func() bool {
+		got, err := os.ReadFile(filepath.Join(tb.dir, "local-menu.txt"))
+		return err == nil && string(got) == "from-menu"
+	})
+
+	// 4. 右键删除本地空文件夹
+	if err := h.tt.RightClick("本地 local-renamed"); err != nil {
+		t.Fatalf("右键删除本地目录失败: %v", err)
+	}
+	if err := h.tt.ChooseMenuItem("删除"); err != nil {
+		t.Fatalf("选择删除失败: %v，菜单=%q", err, h.tt.Menu())
+	}
+	h.tt.Frame()
+	h.click("删除")
+	h.pump("本地目录已删除", func() bool {
+		_, err := os.Stat(filepath.Join(h.a.localDir, "local-renamed"))
+		return os.IsNotExist(err)
+	})
+}

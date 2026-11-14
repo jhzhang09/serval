@@ -205,3 +205,22 @@ func chooseEdit(t *testing.T, h *harness, name string) {
 		t.Fatalf("选择编辑失败: %v menu=%q", err, h.tt.Menu())
 	}
 }
+
+func TestEditorAdaptiveSizeAndHeader(t *testing.T) {
+	h := newHarness(t)
+	h.tt.SetSize(1100, 820)
+	tb := h.connectDev()
+	openEditorOn(t, h, tb, "tall.txt", "line1\nline2")
+	h.tt.Frame()
+
+	edBox, ok := h.tt.Find("编辑内容")
+	if !ok {
+		t.Fatalf("找不到编辑内容框: %q", h.tt.Texts())
+	}
+	if edBox.H <= 320 || edBox.W <= 680 {
+		t.Fatalf("大窗口下编辑器未自适应放大: box=%+v", edBox)
+	}
+	if !h.tt.HasText(shortcutText("S") + " 保存") {
+		t.Fatalf("编辑器副标题行应展示保存快捷键提示: %q", h.tt.Texts())
+	}
+}

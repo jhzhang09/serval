@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"serval/design"
+	"serval/locales"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -202,6 +203,8 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	col.Children(func() {
 		ui.Row(c).Height(32).Shrink(0).Padding(4, 6, 0, 14).Gap(2).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "本地").FontSize(design.TextSmall).TextColor(theme.TextMuted).Grow(1).MinWidth(0).SingleLine()
+			iconButton(c, colors, "folder-plus", "新建本地文件夹", a.openLocalNewFolder).
+				Key("localNewFolder").Disabled(a.localDir == "")
 			parent := filepath.Dir(a.localDir)
 			iconButton(c, colors, "arrow-up", "本地上一级", func() { a.openLocal(parent) }).
 				Disabled(a.localDir == "" || parent == a.localDir)
@@ -270,9 +273,35 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 			ui.Text(c, formatSize(entry.Size)).FontSize(design.TextSmall).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 		}
 	}
+	menu := func(m *ui.Menu) {
+		canUpload := t != nil && !t.local && t.files != nil && t.dir != ""
+		if entry.IsDir {
+			if m.Item(locales.ViewOpen()).Chosen() {
+				a.openLocal(entry.Path)
+			}
+			if m.Item("上传文件夹").Disabled(!canUpload).Chosen() {
+				a.planFolderUpload(t, entry.Path, t.dir)
+			}
+		} else {
+			if m.Item("上传文件").Disabled(!canUpload).Chosen() {
+				a.uploadTo(t, entry.Path, path.Join(t.dir, entry.Name))
+			}
+		}
+		m.Separator()
+		if m.Item(locales.Rename()).Chosen() {
+			a.openLocalRenameFile(entry.Path, entry.Name)
+		}
+		if m.Item(locales.ViewCopyPath()).Chosen() {
+			c.WriteClipboard(entry.Path)
+			a.toast(ui.Toast{Title: locales.ViewPathCopied()})
+		}
+		if m.Item(locales.Delete()).Danger().Chosen() {
+			a.askDeleteLocalFile(entry.Path, entry.Name, entry.IsDir)
+		}
+	}
 	// 标签带上“本地”，和远端同名文件同时出现时，点击和读屏不会撞在一起。
 	row := ui.ButtonBase(c).Key("local:"+entry.Path).Label("本地 "+entry.Name).Height(28).Padding(0, 8).Gap(8).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2)
+		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow - 2).PopoverMenu(menu)
 	row.Drag(paneDrag{local: true, path: entry.Path, name: entry.Name, dir: entry.IsDir})
 	if entry.IsDir {
 		if item, ok := ui.Drop[paneDrag](row); ok {

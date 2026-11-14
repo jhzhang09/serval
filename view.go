@@ -1478,55 +1478,103 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, ma
 // transferQueueView 展示传输队列面板。
 func (a *app) transferQueueView(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
-	ui.Column(c).Key("transfers").Padding(6, 10, 8, 10).Gap(6).Children(func() {
-		ui.Row(c).Height(20).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted)
-		})
-		for _, tr := range t.transfers {
-			item := tr
-			ui.Column(c).Key(fmt.Sprintf("tr:%d", item.id)).Gap(2).Padding(4, 6).
-				Radius(design.RadiusRow - 2).Background(colors.Hover).Children(func() {
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					icon := "arrow-down"
-					if item.kind == transferUpload {
-						icon = "arrow-up"
-					}
-					if item.folder {
-						icon = "folder"
-					}
-					ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
-					ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).SingleLine()
-					if !item.done.Load() {
-						iconButton(c, colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
-					}
-				})
-				ui.Row(c).Children(func() {
-					var info string
-					if item.done.Load() {
-						if item.err != "" {
-							info = locales.ViewTransferFailed(item.err)
-						} else {
-							info = locales.ViewTransferDone()
-						}
-					} else {
-						speed := item.speed.Load()
-						speedStr := ""
-						if speed > 0 {
-							speedStr = " · " + formatSize(speed) + "/s"
-						}
-						info = fmt.Sprintf("%s / %s%s", formatSize(item.transferred.Load()), formatSize(item.total.Load()), speedStr)
-						if item.folder {
-							info = locales.ViewFolderProgress(int(item.filesDone.Load()), int(item.filesTotal.Load()), info)
-						}
-					}
-					color := colors.TextFaint
-					if item.err != "" {
-						color = colors.Danger
-					}
-					ui.Text(c, info).FontSize(design.TextSmall - 1).TextColor(color).FontFeatures("tnum")
-				})
-			})
+	hasFinished := false
+	for _, tr := range t.transfers {
+		if tr.done.Load() {
+			hasFinished = true
+			break
 		}
+	}
+	ui.Column(c).Key("transfers").Padding(6, 10, 8, 10).Gap(6).Children(func() {
+		ui.Row(c).Height(22).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, locales.ViewTransferQueue()).FontSize(design.TextSmall).FontWeight(600).TextColor(theme.TextMuted).Grow(1)
+			if hasFinished {
+				clearBtn := ui.ButtonBase(c).Key("clearTransfers").Label("清除已完成").Height(20).Padding(0, 6).
+					Radius(design.RadiusRow - 2).AlignItems(ui.Center).Transition(design.Hover)
+				if clearBtn.Hovered() {
+					clearBtn.Background(colors.Hover)
+				}
+				clearBtn.Children(func() {
+					ui.Text(c, "清除已完成").FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).NoWrap()
+				}).OnClick(func() { a.clearFinishedTransfers(t) })
+			}
+		})
+		ui.Scroll(c).Key("transfersScroll").MaxHeight(140).Children(func() {
+			ui.Column(c).Gap(4).Children(func() {
+				for _, tr := range t.transfers {
+					item := tr
+					done := item.done.Load()
+					ui.Column(c).Key(fmt.Sprintf("tr:%d", item.id)).Gap(3).Padding(5, 6).
+						Radius(design.RadiusRow - 2).Background(colors.Hover).Children(func() {
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							icon := "arrow-down"
+							if item.kind == transferUpload {
+								icon = "arrow-up"
+							}
+							if item.folder {
+								icon = "folder"
+							}
+							ui.Icon(c, design.Icon(icon)).FontSize(12).TextColor(theme.Accent)
+							ui.Text(c, item.fileName).FontSize(design.TextSmall).FontWeight(500).Grow(1).MinWidth(0).SingleLine()
+							if !done {
+								iconButton(c, colors, "x", locales.ViewCancelTransfer(), func() { a.cancelTransfer(item) })
+							} else {
+								if item.err != "" {
+									retryBtn := ui.ButtonBase(c).Key(fmt.Sprintf("trRetry:%d", item.id)).
+										Label("重试 "+item.fileName).Height(20).Padding(0, 6).Radius(design.RadiusChip).
+										AlignItems(ui.Center).Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover)
+									if retryBtn.Hovered() {
+										retryBtn.Background(theme.Accent.Alpha(0.14))
+									}
+									retryBtn.Children(func() {
+										ui.Text(c, "重试").FontSize(design.TextSmall - 1).FontWeight(500).TextColor(theme.Accent).NoWrap()
+									}).OnClick(func() { a.retryTransfer(t, item) })
+								}
+								iconButton(c, colors, "x", "移除传输记录 "+item.fileName, func() { a.dismissTransfer(t, item.id) }).
+									Key(fmt.Sprintf("trDismiss:%d", item.id)).Tooltip("移除记录")
+							}
+						})
+						if !done {
+							total := item.total.Load()
+							pct := float64(-1)
+							if total > 0 {
+								pct = min(max(float64(item.transferred.Load())/float64(total), 0), 1)
+							} else if item.folder {
+								if filesTotal := item.filesTotal.Load(); filesTotal > 0 {
+									pct = min(max(float64(item.filesDone.Load())/float64(filesTotal), 0), 1)
+								}
+							}
+							ui.Progress(c, pct).Height(3)
+						}
+						ui.Row(c).Children(func() {
+							var info string
+							if done {
+								if item.err != "" {
+									info = locales.ViewTransferFailed(item.err)
+								} else {
+									info = locales.ViewTransferDone()
+								}
+							} else {
+								speed := item.speed.Load()
+								speedStr := ""
+								if speed > 0 {
+									speedStr = " · " + formatSize(speed) + "/s"
+								}
+								info = fmt.Sprintf("%s / %s%s", formatSize(item.transferred.Load()), formatSize(item.total.Load()), speedStr)
+								if item.folder {
+									info = locales.ViewFolderProgress(int(item.filesDone.Load()), int(item.filesTotal.Load()), info)
+								}
+							}
+							color := colors.TextFaint
+							if item.err != "" {
+								color = colors.Danger
+							}
+							ui.Text(c, info).FontSize(design.TextSmall - 1).TextColor(color).FontFeatures("tnum").SingleLine().Ellipsis("…")
+						})
+					})
+				}
+			})
+		})
 	})
 }
 
