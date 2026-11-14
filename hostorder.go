@@ -168,7 +168,14 @@ func (a *app) renameGroup(oldName, newName string) error {
 			updated = append(updated, g)
 		}
 	}
-	a.customGroups = updated
+	if !slices.Equal(a.customGroups, updated) {
+		a.customGroups = updated
+		if err := a.saveCustomGroups(); err != nil {
+			return err
+		}
+	} else {
+		a.customGroups = updated
+	}
 	if slices.Contains(a.local.CollapsedGroups, oldName) {
 		next := a.local
 		var collapsed []string
@@ -188,7 +195,27 @@ func (a *app) renameGroup(oldName, newName string) error {
 
 // deleteEmptyGroup 删除没有主机的空分组。
 func (a *app) deleteEmptyGroup(name string) {
-	a.customGroups = slices.DeleteFunc(a.customGroups, func(g string) bool { return g == name })
+	next := slices.DeleteFunc(slices.Clone(a.customGroups), func(g string) bool { return g == name })
+	if slices.Equal(a.customGroups, next) {
+		return
+	}
+	a.customGroups = next
+	if err := a.saveCustomGroups(); err != nil {
+		a.notice = "保存分组列表失败：" + err.Error()
+	}
+}
+
+func (a *app) saveCustomGroups() error {
+	if a.vault == nil {
+		return nil
+	}
+	next := a.settings
+	if len(a.customGroups) == 0 {
+		next.CustomGroups = nil
+	} else {
+		next.CustomGroups = slices.Clone(a.customGroups)
+	}
+	return a.saveSettings(next)
 }
 
 type tabDrag struct {
@@ -304,6 +331,10 @@ func (a *app) submitGroupDialog() {
 	} else {
 		if !slices.Contains(a.groups(), name) {
 			a.customGroups = append(a.customGroups, name)
+			if err := a.saveCustomGroups(); err != nil {
+				a.groupSheet.err = err.Error()
+				return
+			}
 		}
 	}
 	a.groupSheet = groupDialogState{}

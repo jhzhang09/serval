@@ -104,6 +104,9 @@ type settings struct {
 	AIKey           string      `json:"aiKey,omitempty"`
 	AIProfiles      []aiProfile `json:"aiProfiles,omitempty"`
 	ActiveAIProfile string      `json:"activeAIProfile,omitempty"`
+
+	// 侧栏空自定义分组（随保险库同步）
+	CustomGroups []string `json:"customGroups,omitempty"`
 }
 
 // aiProfile 保存单个 AI 服务商与模型配置，密钥随保险库加密存储。
@@ -131,6 +134,8 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
+	// SidebarWidth 是本机侧栏宽度（DIP），0 表示使用默认值 240。
+	SidebarWidth float32 `json:"sidebarWidth,omitempty"`
 	// DisableDefaultMonitor 为真时，新建 SSH 会话不默认开启顶栏服务器监控。
 	DisableDefaultMonitor bool `json:"disableDefaultMonitor,omitempty"`
 	// HostMonitor 记录各台主机上次的监控开关状态。

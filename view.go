@@ -53,6 +53,7 @@ func (a *app) view(c *ui.Context) {
 	ui.Row(c).Fill().AlignItems(ui.Stretch).LinearGradient(colors.Glow).Children(func() {
 		if a.sidebarOpen {
 			a.sidebar(c, colors)
+			a.sidebarResizeHandle(c, colors)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			a.tabBar(c, colors)
@@ -248,18 +249,28 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	bar := c.TitleBar()
 	// 侧栏的宽度一步到位（不让终端逐帧改尺寸），内容从左侧滑入、淡入。
-	ui.Column(c).Key("sidebar").Width(240).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
+	ui.Column(c).Key("sidebar").Width(a.effectiveSidebarWidth()).Shrink(0).DragWindow().Transition(design.SlideIn(-14)).Children(func() {
 		ui.Box(c).Height(max(bar.Height, 12)).Shrink(0)
 
 		ui.Column(c).Padding(2, 12, 10, 12).Children(func() {
-			// 搜索框 + 快捷键提示 + 顶部“+”新建菜单（添加主机 / 本地终端 / 新建分组）。
+			// 搜索框 + 清除按钮 + 快捷键提示 + 顶部“+”新建菜单（添加主机 / 本地终端 / 新建分组）。
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Row(c).Key("hostFilterRow").Height(32).Grow(1).MinWidth(0).Padding(0, 4, 0, 10).Gap(6).
+				ui.Row(c).Key("hostFilterRow").Height(32).Grow(1).MinWidth(0).Padding(0, 4, 0, 10).Gap(4).
 					AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Chip).Children(func() {
 					ui.Icon(c, design.Icon("search")).FontSize(14).TextColor(t.TextMuted).Shrink(0)
 					c.Key("hostFilter")
 					ui.TextInput(c, &a.hostFilter).Placeholder("过滤主机").Label("过滤主机").
 						Grow(1).MinWidth(0).FontSize(design.TextSmall).Border(0, ui.Transparent).Background(ui.Transparent)
+					if a.hostFilter != "" {
+						clr := ui.ButtonBase(c).Key("clearHostFilterInput").Label("清除过滤").Tooltip("清除过滤文字").
+							Size(20, 20).Center().Radius(4).Shrink(0).Transition(design.Hover)
+						if clr.Hovered() {
+							clr.Background(colors.Hover)
+						}
+						clr.Children(func() {
+							ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
+						}).OnClick(func() { a.hostFilter = "" })
+					}
 					cmd := ui.ButtonBase(c).Key("openPalette").Label(locales.ViewSearchHostsAndActions()).Size(22, 22).Radius(6).Shrink(0).
 						Tooltip("命令面板（" + shortcutText("K") + "）")
 					if cmd.Hovered() {
@@ -303,30 +314,32 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 				if a.activeTag != "" && !slices.Contains(allTags, a.activeTag) {
 					a.activeTag = ""
 				}
-				ui.Row(c).Key("tagFilterRow").Padding(6, 0, 0, 0).Gap(5).Wrap().Children(func() {
-					for _, tag := range allTags {
-						tagName := tag
-						selected := a.activeTag == tagName
-						fg, bg := t.TextMuted, colors.Chip
-						if selected {
-							fg, bg = t.Accent, t.Accent.Alpha(0.16)
-						}
-						b := ui.ButtonBase(c).Key("tagFilter:"+tagName).Label("筛选标签 "+tagName).
-							Height(22).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).
-							Background(bg).Transition(design.Hover)
-						if !selected && b.Hovered() {
-							b.Background(colors.Hover)
-						}
-						b.Children(func() {
-							ui.Text(c, "#"+tagName).FontSize(design.TextSmall - 1).TextColor(fg).FontWeight(500).NoWrap()
-						}).OnClick(func() {
-							if a.activeTag == tagName {
-								a.activeTag = ""
-							} else {
-								a.activeTag = tagName
+				ui.Scroll(c).MaxHeight(58).Children(func() {
+					ui.Row(c).Key("tagFilterRow").Padding(6, 0, 0, 0).Gap(5).Wrap().Children(func() {
+						for _, tag := range allTags {
+							tagName := tag
+							selected := a.activeTag == tagName
+							fg, bg := t.TextMuted, colors.Chip
+							if selected {
+								fg, bg = t.Accent, t.Accent.Alpha(0.16)
 							}
-						})
-					}
+							b := ui.ButtonBase(c).Key("tagFilter:"+tagName).Label("筛选标签 "+tagName).
+								Height(22).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).
+								Background(bg).Transition(design.Hover)
+							if !selected && b.Hovered() {
+								b.Background(colors.Hover)
+							}
+							b.Children(func() {
+								ui.Text(c, "#"+tagName).FontSize(design.TextSmall - 1).TextColor(fg).FontWeight(500).NoWrap()
+							}).OnClick(func() {
+								if a.activeTag == tagName {
+									a.activeTag = ""
+								} else {
+									a.activeTag = tagName
+								}
+							})
+						}
+					})
 				})
 			} else if a.activeTag != "" {
 				a.activeTag = ""
@@ -409,28 +422,105 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						for _, h := range rows {
 							a.hostRow(c, colors, h)
 						}
+						if !filtering && len(rows) > 0 {
+							lastID := rows[len(rows)-1].ID
+							endDrop := ui.Box(c).Key("groupEnd:" + group).Height(8).Shrink(0)
+							var endInsertLine bool
+							if dragged, ok := ui.DragOver[hostDrag](endDrop); ok && dragged.ID != lastID {
+								endInsertLine = true
+							}
+							if dropped, ok := ui.Drop[hostDrag](endDrop); ok && dropped.ID != lastID {
+								if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
+									a.notice = "调整主机排序失败：" + err.Error()
+								}
+							}
+							if endInsertLine {
+								endDrop.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+									painter.Fill(ui.Rect{X: r.X + 8, Y: r.Y + 2, W: max(0, r.W-16), H: 2}, t.Accent, 1)
+								})
+							}
+						}
 					})
 				}
 			})
 		})
 
 		ui.Column(c).Padding(6, 10, 10, 10).Gap(4).Children(func() {
-			for _, message := range []string{a.hostsError, a.notice} {
-				if message != "" {
-					ui.Text(c, message).Key("notice").FontSize(design.TextSmall).TextColor(colors.Danger).
-						Padding(8, 10).Margin(0, 0, 4, 0).Radius(design.RadiusRow).Background(colors.DangerSoft).Selectable()
-				}
-			}
+			noticeBanner(c, colors, "hostsError", "dismissHostsError", "关闭系统错误", a.hostsError, func() { a.hostsError = "" })
+			noticeBanner(c, colors, "notice", "dismissNotice", "关闭通知", a.notice, func() { a.notice = "" })
 			a.syncStatus(c, colors)
 			ui.Row(c).Key("sidebarToolbar").Gap(4).AlignItems(ui.Center).Children(func() {
 				sidebarIconButton(c, colors, "openKeys", "key-round", locales.ViewKeys(), len(a.keys), a.openKeys)
 				sidebarIconButton(c, colors, "openProxies", "globe", locales.Proxy(), len(a.proxies), a.openProxies)
 				sidebarIconButton(c, colors, "openForwards", "arrow-left-right", locales.PortForward(), len(a.forwards), a.openForwards)
+				snipBtn := sidebarIconButton(c, colors, "openSnippets", "code", "片段", len(a.snippets), a.openSnippets)
+				snipTip := "代码片段"
+				if len(a.snippets) > 0 {
+					snipTip = fmt.Sprintf("代码片段（%d）", len(a.snippets))
+				}
+				snipBtn.Tooltip(snipTip)
 				sidebarIconButton(c, colors, "openAI", "sparkles", locales.AiAssistant(), 0, a.openAI)
 				sidebarIconButton(c, colors, "openSettings", "settings", locales.Settings(), 0, a.openSettings).
 					Tooltip(locales.Settings() + "（" + shortcutText(",") + "）")
 			})
 		})
+	})
+}
+
+func (a *app) sidebarResizeHandle(c *ui.Context, colors design.Colors) {
+	// 放在侧栏最右侧 6px 范围内，紧邻内容区左缘而不伸进内容区，避免后续列遮挡命中区域。
+	grip := ui.Box(c).Key("sidebarResize").Width(6).Shrink(0).Margin(0, 0, 0, -6).
+		Cursor(ui.CursorResizeEW).Focusable().Label("调整侧栏宽度")
+	dx, _, held := grip.Dragged()
+	if a.sidebarWidth <= 0 {
+		a.sidebarWidth = 240
+	}
+	changed := false
+	switch {
+	case grip.DoubleClicked():
+		a.sidebarWidth = 240
+		changed = true
+	case held && dx != 0:
+		a.sidebarWidth = min(max(a.sidebarWidth+dx, 200), 360)
+		a.sidebarResizing = true
+	case a.sidebarResizing && !held:
+		a.sidebarResizing = false
+		changed = true
+	case grip.Shortcut(0, ui.KeyRight):
+		a.sidebarWidth = min(a.effectiveSidebarWidth()+16, 360)
+		changed = true
+	case grip.Shortcut(0, ui.KeyLeft):
+		a.sidebarWidth = max(a.effectiveSidebarWidth()-16, 200)
+		changed = true
+	}
+	if changed && a.devicePath != "" {
+		next := a.local
+		next.SidebarWidth = a.sidebarWidth
+		_ = a.saveLocal(next)
+	}
+	if held || grip.Hovered() {
+		accent := c.Theme().Accent
+		grip.Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(ui.Rect{X: r.X + r.W - 1.5, Y: r.Y + 12, W: 1.5, H: max(0, r.H-24)}, accent, 0)
+		})
+	}
+}
+
+func noticeBanner(c *ui.Context, colors design.Colors, key, dismissKey, dismissLabel, message string, dismiss func()) {
+	if message == "" {
+		return
+	}
+	ui.Row(c).Key(key).Padding(6, 6, 6, 10).Margin(0, 0, 4, 0).Gap(6).AlignItems(ui.Start).
+		Radius(design.RadiusRow).Background(colors.DangerSoft).Children(func() {
+		ui.Text(c, message).FontSize(design.TextSmall).TextColor(colors.Danger).Grow(1).MinWidth(0).Selectable()
+		btn := ui.ButtonBase(c).Key(dismissKey).Size(20, 20).Center().Radius(4).Shrink(0).
+			Label(dismissLabel).Tooltip(dismissLabel).Transition(design.Hover)
+		if btn.Hovered() {
+			btn.Background(colors.Danger.Alpha(0.14))
+		}
+		btn.Children(func() {
+			ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.Danger)
+		}).OnClick(dismiss)
 	})
 }
 
@@ -803,28 +893,110 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 	})
 }
 
+func (a *app) drawerBudget(c *ui.Context, hasFiles, hasAI bool) (filesW, filesMaxW, aiW, aiMaxW float32) {
+	if a.filesWidth <= 0 {
+		a.filesWidth = 560
+	}
+	if a.aiWidth <= 0 {
+		a.aiWidth = 430
+	}
+	windowW, _ := c.Size()
+	var sideW float32
+	if a.sidebarOpen {
+		sideW = a.effectiveSidebarWidth()
+	}
+	const minPaneW float32 = 260
+	const gapOverhead float32 = 24
+	totalBudget := max(float32(320), windowW-sideW-minPaneW-gapOverhead)
+
+	if hasFiles && hasAI {
+		const minFiles float32 = 300
+		const minAI float32 = 320
+		if totalBudget < minFiles+minAI {
+			if a.lastDrawer == "ai" {
+				a.filesOpen = false
+				hasFiles = false
+			} else {
+				a.ai.open = false
+				hasAI = false
+			}
+		} else {
+			desiredFiles := max(minFiles, a.filesWidth)
+			desiredAI := max(minAI, a.aiWidth)
+			if desiredFiles+desiredAI <= totalBudget {
+				filesW, aiW = desiredFiles, desiredAI
+			} else {
+				extra := totalBudget - (minFiles + minAI)
+				wantExtra := (desiredFiles - minFiles) + (desiredAI - minAI)
+				if wantExtra <= 0 {
+					filesW, aiW = minFiles+extra/2, minAI+extra/2
+				} else {
+					filesW = minFiles + extra*((desiredFiles-minFiles)/wantExtra)
+					aiW = minAI + extra*((desiredAI-minAI)/wantExtra)
+				}
+			}
+			filesMaxW = max(minFiles, totalBudget-aiW)
+			aiMaxW = max(minAI, totalBudget-filesW)
+			return filesW, filesMaxW, aiW, aiMaxW
+		}
+	}
+	if hasFiles {
+		filesMaxW = max(float32(320), totalBudget)
+		filesW = min(max(a.filesWidth, 320), filesMaxW)
+	}
+	if hasAI {
+		aiMaxW = max(float32(340), totalBudget)
+		aiW = min(max(a.aiWidth, 340), aiMaxW)
+	}
+	return filesW, filesMaxW, aiW, aiMaxW
+}
+
+func (a *app) effectiveSidebarWidth() float32 {
+	if a.sidebarWidth <= 0 {
+		return 240
+	}
+	return min(max(a.sidebarWidth, 200), 360)
+}
+
 func (a *app) workspace(c *ui.Context, colors design.Colors) {
 	t := a.current()
 	left := float32(0)
 	if !a.sidebarOpen {
 		left = design.Gap / 2
 	}
+	hasFiles := t != nil && a.filesOpen
+	hasAI := a.ai.open
+	filesW, filesMaxW, aiW, aiMaxW := a.drawerBudget(c, hasFiles, hasAI)
+	hasFiles = t != nil && a.filesOpen
+	hasAI = a.ai.open
 	// 每张卡片自带一半的间距（Margin），这里再补一半，卡片之间和到窗口边缘都是一样的空隙。
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Padding(0, design.Gap/2, design.Gap/2, left).Children(func() {
 		if t == nil {
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				if !a.sidebarOpen && (a.hostsError != "" || a.notice != "") {
+					ui.Column(c).Padding(design.Gap/2, design.Gap/2, 0, design.Gap/2).Children(func() {
+						noticeBanner(c, colors, "hostsError", "dismissHostsError", "关闭系统错误", a.hostsError, func() { a.hostsError = "" })
+						noticeBanner(c, colors, "notice", "dismissNotice", "关闭通知", a.notice, func() { a.notice = "" })
+					})
+				}
 				a.emptyState(c, colors)
 			})
 		} else {
 			ui.Column(c).Key(t.id).Grow(1).MinWidth(0).Children(func() {
+				if !a.sidebarOpen && (a.hostsError != "" || a.notice != "") {
+					ui.Column(c).Padding(design.Gap/2, design.Gap/2, 0, design.Gap/2).Children(func() {
+						noticeBanner(c, colors, "hostsError", "dismissHostsError", "关闭系统错误", a.hostsError, func() { a.hostsError = "" })
+						noticeBanner(c, colors, "notice", "dismissNotice", "关闭通知", a.notice, func() { a.notice = "" })
+					})
+				}
 				a.paneView(c, colors, t, t.root)
 			})
-			if a.filesOpen {
-				a.filesDrawer(c, colors, t)
+			if hasFiles {
+				a.filesDrawer(c, colors, t, filesW, filesMaxW)
 			}
 		}
-		if a.ai.open {
-			a.aiDrawer(c, colors)
+		if hasAI {
+			a.aiDrawer(c, colors, aiW, aiMaxW)
 		}
 	})
 }
@@ -1158,11 +1330,17 @@ func chip(c *ui.Context, text string, fg, bg ui.Color) ui.Element {
 	})
 }
 
-func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
+func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab, width, maxW float32) {
 	a.ensureFiles(t)
 	a.followCwd(t)
 	if a.filesWidth <= 0 {
 		a.filesWidth = 560
+	}
+	if width <= 0 {
+		width = a.filesWidth
+	}
+	if maxW < 300 {
+		maxW = 300
 	}
 	if a.filesSplit <= 0 {
 		a.filesSplit = 50
@@ -1172,17 +1350,15 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 	grip := ui.Box(c).Key("drawerResize").Width(8).Shrink(0).Margin(design.Gap/2, -4).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整文件抽屉宽度")
 	dx, _, held := grip.Dragged()
-	windowWidth, _ := c.Size()
-	maxW := max(float32(320), windowWidth-360)
 	switch {
 	case grip.DoubleClicked():
 		a.filesWidth = 560
 	case held && dx != 0:
-		a.filesWidth = min(max(a.filesWidth-dx, 320), maxW)
+		a.filesWidth = min(max(width-dx, 300), maxW)
 	case grip.Shortcut(0, ui.KeyLeft):
-		a.filesWidth = min(a.filesWidth+20, maxW)
+		a.filesWidth = min(width+20, maxW)
 	case grip.Shortcut(0, ui.KeyRight):
-		a.filesWidth = max(a.filesWidth-20, 320)
+		a.filesWidth = max(width-20, 300)
 	}
 	if held || grip.Hovered() {
 		accent := c.Theme().Accent
@@ -1191,10 +1367,25 @@ func (a *app) filesDrawer(c *ui.Context, colors design.Colors, t *tab) {
 		})
 	}
 	// 两栏并排，支持拖动调整抽屉总宽和内部左右栏比例；不做宽度动画，避免终端连续收到几十次 SIGWINCH。
-	drawer := raised(ui.Column(c).Key("drawer").Width(a.filesWidth).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	drawer := raised(ui.Column(c).Key("drawer").Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	// 抽屉的宽度一步到位，终端只改一次尺寸；内容从右侧滑入。
 	// 之前用 Collapse 让宽度从 0 长大，会让终端逐帧改尺寸，已改掉。
 	drawer.Transition(design.SlideIn(18)).Children(func() {
+		ui.Row(c).Key("filesHeader").Height(28).Shrink(0).Padding(0, 6, 0, 10).Gap(6).AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+			theme := c.Theme()
+			ui.Icon(c, design.Icon("folder")).FontSize(13).TextColor(theme.Accent)
+			ui.Text(c, "文件管理").FontSize(design.TextSmall).FontWeight(600).SingleLine()
+			if target := t.host.Target(); target != "" {
+				ui.Box(c).Padding(1, 6).Radius(design.RadiusChip).Background(colors.Chip).Grow(1).MinWidth(0).Children(func() {
+					ui.Text(c, target).FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).SingleLine().Ellipsis("…")
+				})
+			} else {
+				ui.Spacer(c)
+			}
+			iconButton(c, colors, "x", "关闭文件抽屉", func() { a.filesOpen = false }).
+				Key("filesClose").Tooltip("关闭文件抽屉（" + shortcutText("J") + "）")
+		})
 		// 抽屉本身接收拖放，目标是当前列出的目录，不是终端的工作目录。
 		// 平时不铺接收层，避免挡住列表；有文件悬停时再盖一层提示，宽度不变，终端不会跟着改尺寸。
 		if !t.local && t.dir != "" {

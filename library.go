@@ -60,6 +60,7 @@ func (a *app) reload() {
 	if err := decodeSettings(a.vault, &a.settings); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
+	a.customGroups = slices.Clone(a.settings.CustomGroups)
 	a.dropStaleTunnels()
 	a.refreshTerminals()
 }
@@ -127,6 +128,9 @@ func (a *app) loadLocal() {
 		return
 	}
 	a.local = d
+	if d.SidebarWidth > 0 {
+		a.sidebarWidth = min(max(d.SidebarWidth, 200), 360)
+	}
 	a.migrateAIKey()
 }
 

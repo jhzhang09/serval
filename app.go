@@ -94,12 +94,17 @@ type app struct {
 	reconnectBaseDelay time.Duration
 
 	sidebarOpen bool
-	filesOpen   bool
+	// sidebarWidth 是左侧主机列表宽度（DIP），默认 240，范围 200~360。
+	sidebarWidth    float32
+	sidebarResizing bool
+	filesOpen       bool
 	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
 	filesWidth float32
 	filesSplit float32
 	// aiWidth 是右侧 AI Agent 侧栏的宽度（DIP）。
 	aiWidth float32
+	// lastDrawer 记录最近一次主动打开的右侧抽屉（"files" 或 "ai"），窄窗口两者放不下时保留它。
+	lastDrawer string
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
 	hostFilter string
 
@@ -437,6 +442,8 @@ func (a *app) lockVault() {
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.editor = editorState{}
+	a.lastDrawer = ""
+	a.sidebarResizing = false
 	a.toast(ui.Toast{Title: locales.AppVaultLocked()})
 }
 
@@ -2062,6 +2069,7 @@ func (a *app) toggleFiles() {
 	}
 	a.filesOpen = !a.filesOpen
 	if a.filesOpen {
+		a.lastDrawer = "files"
 		a.ensureFiles(t)
 	}
 }
