@@ -143,6 +143,8 @@ type deviceSettings struct {
 	SyncOn bool `json:"syncOn,omitempty"`
 	// SyncDir 是本机的同步文件夹（iCloud Drive、Dropbox、Syncthing）。只存路径，不存秘密。
 	SyncDir string `json:"syncDir,omitempty"`
+	// DisableAutoCheckUpdate 为真时启动时不自动检查更新。默认自动检查（值为 false）。
+	DisableAutoCheckUpdate bool `json:"disableAutoCheckUpdate,omitempty"`
 	// LegacyAIKey 仅用于将旧版本明文保存在 device.json 的密钥迁移进加密保险库，迁移后即清空。
 	LegacyAIKey string `json:"aiKey,omitempty"`
 }
@@ -673,6 +675,8 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 
 						ui.Divider(c)
 						a.knownHostsSection(c, colors)
+						ui.Divider(c)
+						a.aboutAndUpdatesSection(c, colors)
 						return
 					}
 					if p.tab == settingsTabSync {

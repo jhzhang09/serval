@@ -61,6 +61,9 @@ func installSystemDialogs(a *app) {
 		dir := downloadsDir(home)
 		return mygo.Dialog.Save(mygo.SaveDialogOptions{Title: locales.DialogDownloadTo(), DefaultPath: filepath.Join(dir, defaultName), ButtonLabel: locales.Save(), CreateDirectories: true})
 	}
+	a.openURL = func(url string) error {
+		return mygo.Shell.OpenExternal(url)
+	}
 }
 
 // downloadsDir 返回“下载”文件夹，没有时用主目录。

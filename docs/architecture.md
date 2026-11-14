@@ -84,6 +84,7 @@ flowchart TB
 | `forwardpanel.go` | 端口转发面板：规则的增删改、手动启停；绑定主机的规则随连接自动开启 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
 | `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观、终端、同步、已知主机）、本机最近使用主机记录 |
+| `update.go` | GitHub Releases 最新版本检查、语义化版本比对、关于与更新设置区、新版本详情与 Homebrew 升级指引浮层 |
 | `sessionlog.go` | 远程终端输出的纯文本会话日志；开关和目录在本机 `device.json`，默认关闭 |
 | `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
 | `files.go`、`folderupload.go`、`dragout.go`、`dualpane.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面、抽屉里的本机栏；系统文件选择框接线 |
