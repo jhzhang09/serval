@@ -21,8 +21,9 @@ import (
 
 // broadcastAsk 是等待用户确认的生产环境窗格。
 type broadcastAsk struct {
-	tab  *tab
-	pane *pane
+	tab      *tab
+	pane     *pane
+	allInTab bool
 }
 
 // isTerminalReply 判断这段字节是不是终端自己写回程序的应答，而不是用户按的键。
@@ -284,13 +285,118 @@ func broadcastButtonLabel(member bool, host string, ordinal int) string {
 	return fmt.Sprintf("%s：%s %d", verb, host, ordinal)
 }
 
+// joinAllBroadcastInTab 将当前标签页内所有未结束的窗格加入广播；生产环境会先弹窗确认。
+func (a *app) joinAllBroadcastInTab(t *tab) {
+	if t == nil || t.root == nil {
+		return
+	}
+	var pending []*pane
+	t.root.each(func(p *pane) {
+		if p.term != nil && !p.ended && !a.broadcast[p.id] {
+			pending = append(pending, p)
+		}
+	})
+	if len(pending) == 0 {
+		a.toast(ui.Toast{Title: "当前标签页的可用窗格都已在广播中"})
+		return
+	}
+	if t.host.Production {
+		a.broadcastAsk = &broadcastAsk{tab: t, allInTab: true}
+		a.broadcastOn = true
+		return
+	}
+	for _, p := range pending {
+		a.addBroadcast(p)
+	}
+}
+
+// broadcastBar 在广播开启时置于工作区上方，可一眼看到并逐个开关当前标签页的窗格。
+func (a *app) broadcastBar(c *ui.Context, colors design.Colors) {
+	theme := c.Theme()
+	t := a.current()
+	ui.Row(c).Key("broadcastBar").Height(34).Shrink(0).Padding(0, design.Gap+4).Gap(8).
+		AlignItems(ui.Center).Background(theme.Accent.Alpha(0.08)).
+		BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+		ui.Icon(c, design.Icon("radio")).FontSize(13).TextColor(theme.Accent)
+		ui.Textf(c, "广播中 · %d 个窗格", len(a.broadcast)).FontWeight(600).
+			FontSize(design.TextSmall).TextColor(theme.Text).NoWrap().Shrink(0)
+
+		if t != nil && t.root != nil {
+			var panes []*pane
+			t.root.each(func(p *pane) { panes = append(panes, p) })
+			ui.ScrollHorizontal(c).Key("broadcastChipsScroll").Grow(1).MinWidth(0).Height(26).
+				Scrollbars(false).AlignItems(ui.Center).Gap(6).Children(func() {
+				for i, p := range panes {
+					ord := i + 1
+					member := a.broadcast[p.id]
+					disabled := p.ended && !member
+					fg, bg := theme.TextMuted, colors.Card
+					if member {
+						if t.host.Production {
+							fg, bg = colors.Danger, colors.DangerSoft
+						} else {
+							fg, bg = theme.Accent, theme.Accent.Alpha(0.16)
+						}
+					}
+					chipBtn := ui.ButtonBase(c).Key(fmt.Sprintf("bcastChip:%d", p.id)).
+						Label(fmt.Sprintf("切换广播窗格 %d", ord)).
+						Tooltip(fmt.Sprintf("%s #%d（点击加入或移出广播）", tabLabel(t), ord)).
+						Height(22).Padding(0, 8).Gap(5).Radius(design.RadiusChip).
+						AlignItems(ui.Center).Shrink(0).Background(bg).
+						Border(1, colors.CardBorder).Disabled(disabled).Transition(design.Hover)
+					if member {
+						chipBtn.Border(1, fg.Alpha(0.45))
+					} else if chipBtn.Hovered() {
+						chipBtn.Background(colors.Hover)
+					}
+					panePtr := p
+					chipBtn.Children(func() {
+						if member {
+							ui.Box(c).Size(6, 6).Radius(3).Background(fg)
+						}
+						ui.Textf(c, "#%d %s", ord, tabLabel(t)).FontSize(design.TextSmall - 0.5).
+							FontWeight(600).TextColor(fg).NoWrap()
+					}).OnClick(func() {
+						a.togglePaneBroadcast(t, panePtr)
+					})
+				}
+			})
+			ui.ButtonBase(c).Key("broadcastSelectAll").Label("全选当前窗格").
+				Height(24).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
+				Background(colors.Card).Border(1, colors.CardBorder).Transition(design.Hover).
+				Children(func() {
+					ui.Text(c, "全选当前窗格").FontSize(design.TextSmall).FontWeight(500).TextColor(theme.Text).NoWrap()
+				}).OnClick(func() {
+				a.joinAllBroadcastInTab(t)
+			})
+		} else {
+			ui.Spacer(c)
+		}
+
+		exitBtn := ui.ButtonBase(c).Key("exitAllBroadcast").Label("退出广播").Tooltip("退出全部广播").
+			Height(24).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
+			Background(theme.Accent.Alpha(0.14)).Transition(design.Hover)
+		if exitBtn.Hovered() {
+			exitBtn.Background(theme.Accent.Alpha(0.22))
+		}
+		exitBtn.Children(func() {
+			ui.Icon(c, design.Icon("radio")).FontSize(12).TextColor(theme.Accent)
+			ui.Text(c, "退出广播").TextColor(theme.Accent).FontWeight(600).FontSize(design.TextSmall).NoWrap()
+			ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(theme.Accent)
+		}).OnClick(func() {
+			a.clearBroadcast()
+			a.toast(ui.Toast{Title: "已关闭广播"})
+		})
+	})
+}
+
 // broadcastDialog 确认把生产环境加入广播。默认按钮是“取消”。
 func (a *app) broadcastDialog(c *ui.Context) {
 	ask := a.broadcastAsk
-	if ask == nil || ask.tab == nil || ask.pane == nil {
+	if ask == nil || ask.tab == nil || ask.tab.root == nil || (!ask.allInTab && ask.pane == nil) {
 		return
 	}
-	if !slices.Contains(a.tabs, ask.tab) || ask.tab.root == nil || !ask.tab.root.contains(ask.pane) {
+	if !slices.Contains(a.tabs, ask.tab) || (!ask.allInTab && !ask.tab.root.contains(ask.pane)) {
 		a.broadcastAsk = nil
 		if len(a.broadcast) == 0 {
 			a.broadcastOn = false
@@ -299,15 +405,33 @@ func (a *app) broadcastDialog(c *ui.Context) {
 		return
 	}
 	open := true
+	title := "把生产环境加入广播？"
 	message := fmt.Sprintf("%s 是生产环境。加入以后，广播里的输入会同时发到这个窗格。", ask.tab.host.Name)
-	choice := ui.AlertDialog(c, &open, "把生产环境加入广播？", message, "加入广播", "取消")
+	confirmText := "加入广播"
+	if ask.allInTab {
+		title = "把生产环境全部窗格加入广播？"
+		message = fmt.Sprintf("%s 是生产环境。确认后，当前标签页里所有可用窗格都会同时收到广播输入。", ask.tab.host.Name)
+		confirmText = "全部加入"
+	}
+	choice := ui.AlertDialog(c, &open, title, message, confirmText, "取消")
 	if choice == -1 && open {
 		return
 	}
-	pane := ask.pane
+	tabPtr := ask.tab
+	panePtr := ask.pane
+	allInTab := ask.allInTab
 	a.broadcastAsk = nil
 	if choice == 0 {
-		a.addBroadcast(pane)
+		if allInTab {
+			tabPtr.root.each(func(p *pane) {
+				if p.term != nil && !p.ended {
+					a.addBroadcast(p)
+				}
+			})
+			a.toast(ui.Toast{Title: "已把当前标签页的窗格加入广播"})
+			return
+		}
+		a.addBroadcast(panePtr)
 		a.toast(ui.Toast{Title: "已加入广播"})
 		return
 	}

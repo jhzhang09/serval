@@ -115,10 +115,12 @@ type app struct {
 	arrived map[int]bool
 
 	// connecting 记录正在连接的主机和取消函数，同一台主机不重复发起连接。
-	connecting      map[string]context.CancelFunc
-	connectingPhase map[string]string
-	customGroups    []string
-	groupSheet      groupDialogState
+	connecting        map[string]context.CancelFunc
+	connectingPhase   map[string]string
+	connectingHost    map[string]hosts.Host
+	lastScrolledTabID int
+	customGroups      []string
+	groupSheet        groupDialogState
 	// notice 显示最近一次连接失败的原因。
 	notice string
 
@@ -438,6 +440,8 @@ func (a *app) lockVault() {
 	a.groupSheet = groupDialogState{}
 	a.customGroups = nil
 	a.connectingPhase = nil
+	a.connectingHost = nil
+	a.lastScrolledTabID = 0
 	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
@@ -532,6 +536,10 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在建立连接与验证身份…"
 
 	leafCount := 1
@@ -570,6 +578,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				a.connectFailed(ctx, h, route, used, err)
 				return
@@ -948,6 +957,10 @@ func (a *app) connectTelnet(h hosts.Host) {
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在连接 Telnet…"
 
 	port := h.Port
@@ -962,6 +975,7 @@ func (a *app) connectTelnet(h hosts.Host) {
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -988,6 +1002,10 @@ func (a *app) connectSerial(h hosts.Host) {
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在打开串口…"
 
 	stopBits := serial.StopBits1
@@ -1008,6 +1026,7 @@ func (a *app) connectSerial(h hosts.Host) {
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return

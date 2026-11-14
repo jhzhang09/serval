@@ -1,7 +1,13 @@
 package main
 
 import (
+	"fmt"
+	"net"
+	"slices"
+	"strconv"
 	"testing"
+
+	"serval/core/hosts"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -167,5 +173,111 @@ func TestCloseAllStopsTabMonitor(t *testing.T) {
 	case <-stopCh:
 	default:
 		t.Fatal("closeAll 后应关闭监控停止通道")
+	}
+}
+
+func TestTabBarConnectingIndicatorWhenTabsOpen(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.tt.Frame()
+	if len(h.a.tabs) != 1 {
+		t.Fatalf("应先打开 1 个标签，实际 %d", len(h.a.tabs))
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c
+		}
+	}()
+
+	hostAddr, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	stallHost := hosts.Host{
+		ID:      "h-stall",
+		Name:    "等待握手节点",
+		Address: hostAddr,
+		Port:    port,
+		User:    "root",
+	}
+	h.a.connect(stallHost, nil)
+	h.tt.Frame()
+	if !h.tt.HasText("等待握手节点") {
+		t.Fatalf("已有标签时连接新主机，标签栏应展示连接中胶囊: %q", h.tt.Texts())
+	}
+
+	h.click("取消连接 等待握手节点")
+	h.pump("取消连接", func() bool { return len(h.a.connecting) == 0 })
+	h.tt.Frame()
+	if h.tt.HasText("等待握手节点") {
+		t.Fatalf("取消连接后连接中胶囊应消失: %q", h.tt.Texts())
+	}
+}
+
+func TestTabBarNewTabButtonAndOverflowScroll(t *testing.T) {
+	h := newHarness(t)
+	h.tt.SetSize(760, 420)
+	h.tt.Frame()
+
+	for i := 0; i < 8; i++ {
+		h.click("新建标签页")
+		h.tt.Frame()
+	}
+	if len(h.a.tabs) != 8 {
+		t.Fatalf("点击 8 次新建标签页后应有 8 个标签，实际 %d", len(h.a.tabs))
+	}
+
+	newBtn, ok := h.tt.Find("新建标签页")
+	if !ok {
+		t.Fatal("找不到新建标签页 + 按钮")
+	}
+	if newBtn.X+newBtn.W > 760 {
+		t.Fatalf("窄窗口大量标签下新建按钮被挤出窗口: %+v", newBtn)
+	}
+	searchBtn, ok := h.tt.Find("查找（" + shortcutText("F") + "）")
+	if !ok {
+		t.Fatal("找不到查找按钮")
+	}
+	if searchBtn.X+searchBtn.W > 760 {
+		t.Fatalf("窄窗口大量标签下右侧查找按钮被挤出窗口: %+v", searchBtn)
+	}
+}
+
+func TestPaneMoreMenuSplitReconnectAndClose(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+
+	h.click("窗格操作")
+	h.tt.Frame()
+	menuItems := h.tt.Menu()
+	if slices.Contains(menuItems, "用 AI 分析终端输出") {
+		t.Fatalf("窗格更多菜单不应再重复 AI 分析按钮: %q", menuItems)
+	}
+	if !slices.Contains(menuItems, "向右拆分") || !slices.Contains(menuItems, "重新连接会话") || !slices.Contains(menuItems, "关闭窗格") {
+		t.Fatalf("窗格更多菜单缺少拆分/重连/关闭操作: %q", menuItems)
+	}
+
+	if err := h.tt.ChooseMenuItem("向右拆分"); err != nil {
+		t.Fatalf("从窗格菜单拆分失败: %v", err)
+	}
+	h.pump("等待拆分完成", func() bool { return tb.root.leaves() == 2 })
+
+	second := tb.focus
+	h.click(fmt.Sprintf("窗格操作 %d", paneOrdinal(tb.root, second)))
+	h.tt.Frame()
+	if err := h.tt.ChooseMenuItem("关闭窗格"); err != nil {
+		t.Fatalf("从窗格菜单关闭窗格失败: %v", err)
+	}
+	h.tt.Frame()
+	if tb.root.leaves() != 1 {
+		t.Fatalf("关闭窗格后应恢复单窗格，实际 %d", tb.root.leaves())
 	}
 }

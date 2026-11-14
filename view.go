@@ -57,6 +57,9 @@ func (a *app) view(c *ui.Context) {
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			a.tabBar(c, colors)
+			if a.broadcastOn {
+				a.broadcastBar(c, colors)
+			}
 			a.workspace(c, colors)
 		})
 	})
@@ -733,31 +736,25 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 		if !a.sidebarOpen {
 			iconButton(c, colors, "panel-left", locales.ViewShowSidebar(), func() { a.sidebarOpen = true })
 		}
-		// 标签放不下时一起收窄到只剩斑纹，每个都还能点到、认得出。
-		// 先快照再遍历：右键菜单在渲染帧内重排或关闭标签时，不会造成同帧重复 key 或下标越界。
 		tabs := slices.Clone(a.tabs)
+		hasConnectingTabs := len(tabs) > 0 && len(a.connecting) > 0
 		ui.Row(c).Grow(1).MinWidth(0).Gap(4).AlignItems(ui.Center).Children(func() {
-			for i, t := range tabs {
-				a.tabItem(c, colors, i, t, tabs)
+			if len(tabs) > 0 || hasConnectingTabs {
+				ui.ScrollHorizontal(c).Key("tabScroll").Shrink(1).MinWidth(0).Height(32).
+					Scrollbars(false).Gap(4).AlignItems(ui.Center).Children(func() {
+					for i, t := range tabs {
+						a.tabItem(c, colors, i, t, tabs)
+					}
+					if hasConnectingTabs {
+						for _, hostID := range slices.Sorted(maps.Keys(a.connecting)) {
+							a.connectingTabPill(c, colors, hostID)
+						}
+					}
+				})
 			}
+			iconButton(c, colors, "plus", "新建标签页", func() { a.openLocalTerminal() }).
+				Key("newTabBtn").Tooltip("新建本地终端")
 		})
-		if a.broadcastOn {
-			theme := c.Theme()
-			b := ui.ButtonBase(c).Key("exitAllBroadcast").Label("退出广播").Tooltip("退出全部广播").
-				Height(24).Padding(0, 8).Gap(4).Radius(design.RadiusChip).AlignItems(ui.Center).Shrink(0).
-				Background(theme.Accent.Alpha(0.14)).Transition(design.Hover)
-			if b.Hovered() {
-				b.Background(theme.Accent.Alpha(0.22))
-			}
-			b.Children(func() {
-				ui.Icon(c, design.Icon("radio")).FontSize(12).TextColor(theme.Accent)
-				ui.Text(c, "退出广播").TextColor(theme.Accent).FontWeight(600).FontSize(design.TextSmall).NoWrap()
-				ui.Icon(c, design.Icon("x")).FontSize(11).TextColor(theme.Accent)
-			}).OnClick(func() {
-				a.clearBroadcast()
-				a.toast(ui.Toast{Title: "已关闭广播"})
-			})
-		}
 		if t := a.current(); t != nil {
 			if !t.local && !a.isSavedHost(t.host.ID) { // 本地终端不是主机，不能保存
 				ui.Button(c, locales.ViewSaveAsHost()).Key("saveAsHost").Height(28).Padding(0, 8).
@@ -776,6 +773,41 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 		if a.ai.open {
 			aiBtn.Background(c.Theme().Accent.Alpha(0.14))
 		}
+	})
+}
+
+func (a *app) connectingTabPill(c *ui.Context, colors design.Colors, hostID string) {
+	theme := c.Theme()
+	h, ok := a.connectingHost[hostID]
+	if !ok {
+		h, ok = a.hostByID(hostID)
+	}
+	name := h.Name
+	if !ok || name == "" {
+		name = h.Address
+	}
+	if name == "" {
+		name = hostID
+	}
+	phase := a.connectingPhase[hostID]
+	if phase == "" {
+		phase = locales.ViewConnecting()
+	}
+	cancel := a.connecting[hostID]
+	ui.Row(c).Key("connectingTab:"+hostID).Height(28).MinWidth(110).MaxWidth(240).Shrink(0).
+		Padding(0, 8, 0, 10).Gap(6).AlignItems(ui.Center).Radius(design.RadiusRow).
+		Background(colors.Card).Border(1, theme.Accent.Alpha(0.35)).Tooltip(phase).Children(func() {
+		design.DistroCoatView(c, h.ID, h.Distro, h.Production, 14)
+		ui.Text(c, name).TextColor(theme.Text).FontWeight(500).SingleLine().MinWidth(0).Shrink(1)
+		ui.Text(c, phase).TextColor(theme.TextMuted).FontSize(design.TextSmall - 0.5).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		ui.ButtonBase(c).Key("cancelConnectTab:"+hostID).Label("取消连接 "+name).Tooltip("取消连接").
+			Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
+			ui.Icon(c, design.Icon("x")).FontSize(12).TextColor(colors.TextFaint)
+		}).OnClick(func() {
+			if cancel != nil {
+				a.cancelConnect(hostID)
+			}
+		})
 	})
 }
 
@@ -852,8 +884,12 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs [
 	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
 	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
-		Height(28).MinWidth(36).MaxWidth(200).Shrink(1).Padding(0, 10).Gap(8).AlignItems(ui.Center).
+		Height(28).MinWidth(88).MaxWidth(200).Shrink(0).Padding(0, 10).Gap(8).AlignItems(ui.Center).
 		Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.tabMenu(t)).Drag(tabDrag{ID: t.id})
+	if selected && t.id != a.lastScrolledTabID {
+		a.lastScrolledTabID = t.id
+		item.ScrollIntoView(ui.ScrollIntoViewOptions{Inline: ui.ScrollNearest})
+	}
 	var tabInsertLine bool
 	if dragged, ok := ui.DragOver[tabDrag](item); ok && dragged.ID != t.id {
 		tabInsertLine = true
@@ -1018,7 +1054,15 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 		if len(a.connecting) > 0 {
 			for _, hostID := range slices.Sorted(maps.Keys(a.connecting)) {
 				cancel := a.connecting[hostID]
-				if h, ok := a.hostByID(hostID); ok {
+				h, ok := a.connectingHost[hostID]
+				if !ok {
+					h, ok = a.hostByID(hostID)
+				}
+				if ok {
+					name := h.Name
+					if name == "" {
+						name = h.Address
+					}
 					phase := a.connectingPhase[hostID]
 					if phase == "" {
 						phase = locales.ViewConnecting()
@@ -1026,9 +1070,9 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 					ui.Row(c).Padding(8, 12).Gap(10).AlignItems(ui.Center).Radius(design.RadiusRow).
 						Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
 						design.DistroCoatView(c, h.ID, h.Distro, h.Production, 18)
-						ui.Text(c, h.Name).FontWeight(500)
+						ui.Text(c, name).FontWeight(500)
 						ui.Text(c, phase).FontSize(design.TextSmall).TextColor(t.TextMuted)
-						ui.Button(c, "取消连接").Key("cancelConnect:"+h.ID).Height(24).Padding(0, 8).OnClick(cancel)
+						ui.Button(c, "取消连接").Key("cancelConnect:"+hostID).Height(24).Padding(0, 8).OnClick(cancel)
 					})
 				}
 			}
@@ -1316,8 +1360,23 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 			if m.Item(broadcastLabel).Disabled(p.ended && !a.broadcast[p.id]).Chosen() {
 				a.togglePaneBroadcast(t, p)
 			}
-			if m.Item(locales.AiAnalyzeOutput()).Chosen() {
-				a.openAIExplainFromActivePane()
+			m.Separator()
+			canSplit := t.local || t.client != nil
+			if m.Item("向右拆分").Disabled(!canSplit).Chosen() {
+				t.focus = p
+				a.split(t, false)
+			}
+			if m.Item("向下拆分").Disabled(!canSplit).Chosen() {
+				t.focus = p
+				a.split(t, true)
+			}
+			if !t.local && m.Item("重新连接会话").Chosen() {
+				a.reconnect(t)
+			}
+			m.Separator()
+			if m.Item("关闭窗格").Danger().Chosen() {
+				t.focus = p
+				a.closeFocused(t)
 			}
 		})
 	})
