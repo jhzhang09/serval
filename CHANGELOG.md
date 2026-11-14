@@ -1,6 +1,24 @@
 # Changelog
 
-All notable changes to Serval will be documented in this file.
+All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.2.0] - 2026-11-14
+
+### Added
+
+- **S3-Compatible Cloud Sync (`core/syncer/s3.go`)**: Added pure-Go AWS SigV4 sync support for Amazon S3, Cloudflare R2, MinIO, Alibaba OSS, Tencent COS, and Huawei OBS (`s3://bucket/vault.json`), with ETag optimistic locking, unified conflict overwrite option, and unified Settings Sync tab with draft auto-save and one-click **Sync Now**.
+- **Telnet & Cross-Platform Serial Transports (`core/telnet`, `core/serial`)**: Added Telnet and cross-platform Serial port connections (including Windows Win32 Overlapped I/O and registry COM port enumeration, macOS, and Linux) with terminal isolation and protocol-specific controls.
+- **Docked AI Agent & Quick Error Analysis (`core/ai`, `aiagent.go`, `aipanel.go`)**: Added a resizable right-hand AI Agent drawer (`⌘I` / `Ctrl+Shift+I`) and one-click terminal pane error analysis (`⌘E` / `Ctrl+Shift+E`), supporting OpenAI SSE streaming, collapsible thinking/tool cards, GFM Markdown tables, multi-profile provider switching (DeepSeek, OpenAI, Qwen, Kimi, Ollama, and custom OpenAI-compatible endpoints), `@` context mentions, `/` slash commands, and 3 permission levels (Auto with dangerous-command guard, Confirm, Observer) backed by encrypted keychain API keys.
+- **In-App Update Checker (`update.go`)**: Added asynchronous GitHub Releases version checking, startup auto-check toggle, release notes sheet, and one-click Homebrew upgrade command copy / GitHub download link.
+- **Lightweight SSH Server Monitor (`monitor.go`)**: Added a server health status bar displaying CPU load, memory, and disk usage for active SSH sessions.
+- **OS / Distro Auto-Detection (`core/hosts/distro.go`)**: Automatically detects remote OS/distributions and displays crisp distro icons alongside deterministic host coats.
+- **Host Drag-and-Drop Reordering & Persistent Custom Groups (`hostorder.go`)**: Added sidebar drag-and-drop host reordering within groups and across groups, plus persistent empty custom groups.
+- **SSH Workflow & 23-Item UI/UX Polish**: Added one-click `ssh-copy-id` public-key deployment, async TCP/RTT latency probing, multi-tag (`#tag`) filtering, logon scripts, `user@host[:port]` paste parsing, terminal copy-on-select & right-click behavior options, SFTP directory bookmarks & editable path bars, resizable sidebar, dedicated **Security** settings tab, global password/secret reveal toggles, scrollable tab bar with `+` Local Shell button and connection pills, `broadcastBar` with `#1..N` pane chips, sidebar Snippets entry with one-click run, local pane context operations in the dual-pane SFTP drawer, and queue retry/remove/clear-completed controls.
+
+### Fixed
+
+- **WebDAV Resilience & Proxy Compatibility**: Enforced HTTP/1.1 with transient 502/504/connection-reset retries, multi-layer transparent Gzip decompression, `PROPFIND` metadata probing, strong ETag normalization, automatic `MKCOL` parent directory creation, and stale temp cleanup.
+- **Cross-Platform & UI Stability**: Fixed Windows CI `TestExecContext` failure without `/bin/sh` (`TestExecContextCrossPlatform`), Windows backslash path shortening and loopback RTT/port checks, `ssh-keygen` comment preservation on OpenSSH private-key import, `@`/`/` AI quick menu layout alignment, narrow-window mutual exclusion between SFTP and AI drawers, and zero-tab `⌘W` window-close protection.
 
 ## [0.1.0] - 2026-11-09
 

@@ -429,7 +429,7 @@ func (c *Client) do(ctx context.Context, method string, body io.Reader, headers 
 		req.SetBasicAuth(c.User, c.Password)
 	}
 	// 避免反向代理或网盘服务识别到 Go-http-client 从而掐断流或限流
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.2.0")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -525,7 +525,7 @@ func (c *Client) cleanupStaleTemp(ctx context.Context) {
 	if c.User != "" || c.Password != "" {
 		req.SetBasicAuth(c.User, c.Password)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.2.0")
 	hc := c.HTTP
 	if hc == nil {
 		hc = defaultHTTPClient
@@ -589,7 +589,7 @@ func (c *Client) ensureParentDir(ctx context.Context) error {
 	if c.User != "" || c.Password != "" {
 		req.SetBasicAuth(c.User, c.Password)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Serval/0.2.0")
 	hc := c.HTTP
 	if hc == nil {
 		hc = defaultHTTPClient

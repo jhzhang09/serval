@@ -141,10 +141,10 @@ func TestAppCheckForUpdatesManualLatest(t *testing.T) {
 func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(githubReleaseResponse{
-			TagName:     "v0.2.0",
-			Name:        "Serval 0.2.0 新版本",
+			TagName:     "v0.3.0",
+			Name:        "Serval 0.3.0 新版本",
 			Body:        "## 更新日志\n- 支持检查更新与 Homebrew 升级引导",
-			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.2.0",
+			HTMLURL:     "https://github.com/jhzhang09/serval/releases/tag/v0.3.0",
 			PublishedAt: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC),
 		})
 	}))
@@ -169,7 +169,7 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	h.pump("发现新版本并弹出更新面板", func() bool { return h.a.update.sheetOpen })
 	h.tt.Frame()
 
-	if !h.tt.HasText("发现新版本 v0.2.0") {
+	if !h.tt.HasText("发现新版本 v0.3.0") {
 		t.Fatalf("更新浮层未显示版本号: texts=%q", h.tt.Texts())
 	}
 	if !h.tt.HasText("更新日志") {
@@ -189,7 +189,7 @@ func TestAppCheckForUpdatesDiscoversNewVersion(t *testing.T) {
 	if h.a.update.sheetOpen {
 		t.Fatal("点击下载后浮层应关闭")
 	}
-	if len(h.openedURLs) != 1 || h.openedURLs[0] != "https://github.com/jhzhang09/serval/releases/tag/v0.2.0" {
+	if len(h.openedURLs) != 1 || h.openedURLs[0] != "https://github.com/jhzhang09/serval/releases/tag/v0.3.0" {
 		t.Fatalf("打开的下载链接不匹配: got %v", h.openedURLs)
 	}
 }
