@@ -321,6 +321,8 @@ func (a *app) snippetsDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "代码片段").FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -332,12 +334,15 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, "把常用命令存下来，之后在命令面板里搜索，发到当前终端。").
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
+		} else {
+			ui.Scroll(c).Key("snippetsListScroll").MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, s := range a.sortedSnippets() {
+						a.snippetRow(c, colors, s)
+					}
+				})
+			})
 		}
-		ui.Column(c).Gap(2).Children(func() {
-			for _, s := range a.sortedSnippets() {
-				a.snippetRow(c, colors, s)
-			}
-		})
 		if p := &a.snippetPanel; p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
@@ -349,20 +354,48 @@ func (a *app) snippetListPage(c *ui.Context, colors design.Colors) {
 
 func (a *app) snippetRow(c *ui.Context, colors design.Colors, s snippet) {
 	t := c.Theme()
-	row := ui.ButtonBase(c).Key("snippet:"+s.ID).Label(s.Name).Height(44).Padding(8, 10).Gap(10).
-		Justify(ui.Start).AlignItems(ui.Center).Radius(design.RadiusRow).Transition(design.Hover)
-	if row.Hovered() {
-		row.Background(colors.Hover)
+	cur := a.current()
+	canSend := cur != nil && cur.focus != nil && cur.focus.term != nil && !cur.focus.ended
+	menu := func(m *ui.Menu) {
+		if m.Item("编辑").Chosen() {
+			a.editSnippet(s)
+		}
+		if m.Item("发送到当前终端").Disabled(!canSend).Chosen() {
+			a.sendSnippet(s)
+		}
+		m.Separator()
+		if m.Item("删除").Danger().Chosen() {
+			a.snippetPanel.deleting = &s
+		}
 	}
-	row.Children(func() {
-		ui.Icon(c, design.Icon("code")).FontSize(16).TextColor(t.TextMuted).Shrink(0)
-		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-			ui.Text(c, s.Name).FontWeight(500).SingleLine()
-			if sub := snippetSubtitle(s.Body); sub != "" {
-				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
-			}
-		})
-	}).OnClick(func() { a.editSnippet(s) })
+	line := ui.Row(c).Key("snippetline:"+s.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
+	if line.Hovered() {
+		line.Background(colors.Hover)
+	}
+	line.Children(func() {
+		row := ui.ButtonBase(c).Key("snippet:"+s.ID).Label(s.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
+			Justify(ui.Start).AlignItems(ui.Center)
+		row.Children(func() {
+			ui.Icon(c, design.Icon("code")).FontSize(16).TextColor(t.TextMuted).Shrink(0)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+				ui.Text(c, s.Name).FontWeight(500).SingleLine().Ellipsis("…")
+				if sub := snippetSubtitle(s.Body); sub != "" {
+					ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+				}
+			})
+		}).OnClick(func() { a.editSnippet(s) })
+		row.PopoverMenu(menu)
+		ui.Button(c, "执行").Key("snippetSendRow:" + s.ID).Label("发送片段 " + s.Name).
+			Tooltip("发送到当前终端").Disabled(!canSend).OnClick(func() { a.sendSnippet(s) })
+		more := ui.ButtonBase(c).Key("snippetMore:"+s.ID).Label("片段更多 "+s.Name).Tooltip("更多操作").
+			Size(26, 26).Center().Radius(6).Shrink(0)
+		if more.Hovered() {
+			more.Background(colors.Hover)
+		}
+		more.Children(func() {
+			ui.Icon(c, design.Icon("ellipsis")).FontSize(14).TextColor(t.TextMuted)
+		}).PopoverMenuButton(menu)
+	})
 }
 
 func (a *app) snippetEditPage(c *ui.Context) {

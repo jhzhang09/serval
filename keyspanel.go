@@ -313,6 +313,8 @@ func (a *app) keysDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.KeyTitle()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -323,12 +325,15 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.KeyEmptyTitle()).FontWeight(600)
 				ui.Text(c, locales.KeyEmptyBody()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
+		} else {
+			ui.Scroll(c).Key("keysListScroll").MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, k := range a.keys {
+						a.keyRow(c, colors, k)
+					}
+				})
+			})
 		}
-		ui.Column(c).Gap(2).Children(func() {
-			for _, k := range a.keys {
-				a.keyRow(c, colors, k)
-			}
-		})
 		if p := &a.keyPanel; p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}

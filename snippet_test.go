@@ -227,3 +227,43 @@ func (h *harness) snippetNamed(name string) snippet {
 	}
 	return snippet{}
 }
+
+func TestSnippetRowQuickExecuteAndMenu(t *testing.T) {
+	h := newHarness(t)
+	h.addSnippet("磁盘空间", "echo df-quick-run")
+	sn := h.snippetNamed("磁盘空间")
+
+	// 未连接终端时直接执行应禁用
+	h.openSnippetPanel()
+	h.click("发送片段 磁盘空间")
+	h.tt.Frame()
+	if h.tt.HasText("已发送到当前终端") {
+		t.Fatal("未连接终端时行内执行按钮应处于禁用态")
+	}
+	h.click("完成")
+	h.tt.Frame()
+
+	// 连接终端后，直接点行内执行按钮立即发送，无需经过编辑页
+	tb := h.connectDev()
+	h.openSnippetPanel()
+	h.click("发送片段 磁盘空间")
+	h.pump("行内直接执行片段", func() bool {
+		return strings.Contains(tb.focus.term.Text(), "df-quick-run")
+	})
+
+	// 行尾更多菜单支持触发删除确认弹窗
+	h.click("片段更多 磁盘空间")
+	h.tt.Frame()
+	if err := h.tt.ChooseMenuItem("删除"); err != nil {
+		t.Fatalf("选择片段更多菜单删除失败: %v menu=%q", err, h.tt.Menu())
+	}
+	h.tt.Frame()
+	if !h.tt.HasText("删除片段 磁盘空间？") {
+		t.Fatalf("应弹出删除确认框: %q", h.tt.Texts())
+	}
+	h.click("删除")
+	h.tt.Frame()
+	if len(h.a.snippets) != 0 || h.snippetNamed(sn.Name).ID != "" {
+		t.Fatalf("确认后应删除代码片段: %+v", h.a.snippets)
+	}
+}

@@ -168,6 +168,8 @@ func (a *app) proxiesDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.Proxy()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -179,12 +181,15 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.ProxyEmptyBody()).
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
+		} else {
+			ui.Scroll(c).Key("proxiesListScroll").MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, px := range a.proxies {
+						a.proxyRow(c, colors, px)
+					}
+				})
+			})
 		}
-		ui.Column(c).Gap(2).Children(func() {
-			for _, px := range a.proxies {
-				a.proxyRow(c, colors, px)
-			}
-		})
 		if p := &a.proxyPanel; p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}

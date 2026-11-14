@@ -62,6 +62,7 @@ type hostForm struct {
 	keyName                          string   // 选中的私钥名称，noKey 表示不用
 	production                       bool
 	forwardAgent                     bool
+	showSSHAdv                       bool // 是否展开高级设置（发行版、验证码、Agent 转发、登录脚本）
 
 	// jumps 是按顺序选择的跳板机（主机名称；旧记录里直接填写的地址原样保留）。
 	// 默认不显示，点“添加跳板机”后才出现。
@@ -148,6 +149,9 @@ func (a *app) formFrom(h hosts.Host) hostForm {
 	}
 	if h.DataBits != 0 && h.DataBits != 8 || (h.Parity != "" && h.Parity != "N") || (h.StopBits != 0 && h.StopBits != 1) {
 		f.showSerialAdv = true
+	}
+	if h.Distro != "" || h.TOTPSecret != "" || h.ForwardAgent || strings.TrimSpace(h.LogonScript) != "" {
+		f.showSSHAdv = true
 	}
 	switch h.EffectiveProtocol() {
 	case hosts.ProtocolTelnet:
@@ -359,6 +363,7 @@ func (a *app) saveForm() {
 	case strings.TrimSpace(f.totp) != "":
 		parsed, err := totp.Parse(f.totp)
 		if err != nil {
+			f.showSSHAdv = true
 			f.err = err.Error()
 			return
 		}
@@ -748,7 +753,15 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 								ui.Field(c, locales.Address(), func() {
 									c.Key("addAddress")
-									ui.TextInput(c, &f.address).Placeholder("example.com").AutoFocus()
+									if ui.TextInput(c, &f.address).Placeholder("example.com 或 user@host:port").AutoFocus().Changed() {
+										if user, addr, portStr, ok := parseHostAddressPaste(f.address); ok {
+											f.address = addr
+											f.user = user
+											if portStr != "" {
+												f.port = portStr
+											}
+										}
+									}
 								})
 							})
 							ui.Column(c).Width(76).Children(func() {
@@ -822,8 +835,6 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							}
 						})
 					}
-					a.distroField(c, f)
-
 					if f.protoIdx == 0 {
 						descriptions := []string{
 							locales.HostAuthAutoHint(),
@@ -841,24 +852,36 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 						}
 
 						a.routeFields(c, colors, f)
-						a.totpField(c, f)
 						ui.Column(c).Gap(2).Children(func() {
 							c.Key("addProduction")
 							ui.Checkbox(c, &f.production, locales.HostProduction())
 							ui.Text(c, "开启后显示红色警示标记；加入广播前需二次确认；AI 执行高危命令前强制拦截提示。").
 								FontSize(design.TextSmall).TextColor(t.TextMuted)
 						})
-						c.Key("addForwardAgent")
-						ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
-						if f.forwardAgent {
-							ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
-								FontSize(design.TextSmall).TextColor(colors.Danger)
+					}
+					advLabel := "▸ 高级设置"
+					if f.showSSHAdv {
+						advLabel = "▾ 高级设置"
+					}
+					ui.Button(c, advLabel).Key("addSSHAdvToggle").Height(26).Padding(0, 8).OnClick(func() {
+						f.showSSHAdv = !f.showSSHAdv
+					})
+					if f.showSSHAdv {
+						a.distroField(c, f)
+						if f.protoIdx == 0 {
+							a.totpField(c, f)
+							c.Key("addForwardAgent")
+							ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
+							if f.forwardAgent {
+								ui.Text(c, "远程上的程序可以用本机 ssh-agent 里的钥匙再登录其他服务器。只在信任这台机器时保持开启。").
+									FontSize(design.TextSmall).TextColor(colors.Danger)
+							}
+							ui.Field(c, "登录后自动执行脚本", func() {
+								c.Key("addLogonScript")
+								ui.TextArea(c, &f.logonScript).Height(68).Font(design.FontTerminal).FontSize(design.TextSmall).
+									Placeholder("每行一条命令，建立 SSH 终端后自动发送（可选）")
+							}).Description("适用于自动切换目录、激活环境或查看运行状态。")
 						}
-						ui.Field(c, "登录后自动执行脚本", func() {
-							c.Key("addLogonScript")
-							ui.TextArea(c, &f.logonScript).Height(68).Font(design.FontTerminal).FontSize(design.TextSmall).
-								Placeholder("每行一条命令，建立 SSH 终端后自动发送（可选）")
-						}).Description("适用于自动切换目录、激活环境或查看运行状态。")
 					}
 				})
 			})
@@ -1002,4 +1025,25 @@ func (a *app) distroField(c *ui.Context, f *hostForm) {
 			}
 		}
 	}).Description("用于展示系统徽标。留空或选择“自动识别”将在连接后自动探测。")
+}
+
+// parseHostAddressPaste 解析在主机地址栏输入/粘贴的 [ssh[://]]user@host[:port]。
+// 仅当文本里显式包含端口时才返回非空的 portStr，避免覆盖用户已选协议的默认端口或现有端口。
+func parseHostAddressPaste(raw string) (user, addr, portStr string, ok bool) {
+	s := strings.TrimSpace(raw)
+	for _, pfx := range []string{"ssh://", "ssh "} {
+		if len(s) > len(pfx) && strings.EqualFold(s[:len(pfx)], pfx) {
+			s = strings.TrimSpace(s[len(pfx):])
+			break
+		}
+	}
+	user, addr, port, ok := parseQuickConnect(s)
+	if !ok {
+		return "", "", "", false
+	}
+	at := strings.LastIndex(s, "@")
+	if at >= 0 && addr != s[at+1:] {
+		portStr = strconv.Itoa(port)
+	}
+	return user, addr, portStr, true
 }
