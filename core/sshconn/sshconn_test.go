@@ -792,6 +792,7 @@ func TestOTPPromptIsNotAnsweredWithPassword(t *testing.T) {
 }
 
 func TestExecContext(t *testing.T) {
+	requireDevShell(t)
 	server := startServer(t, devsshd.Options{Dir: t.TempDir()})
 	client := mustDial(t, dialConfig(server, acceptAll(t)))
 
@@ -828,5 +829,184 @@ func TestExecContext(t *testing.T) {
 	_, err = client.ExecContext(ctx, "sleep 5", 4096)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestExecContextCrossPlatform(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvCfg := &ssh.ServerConfig{
+		PasswordCallback: func(_ ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if string(pass) == testPassword {
+				return nil, nil
+			}
+			return nil, errors.New("bad password")
+		},
+	}
+	srvCfg.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan struct{})
+	var wg sync.WaitGroup
+	// t.Cleanup 按 LIFO 执行：先关闭连接和监听，最后等待 goroutine 退出。
+	t.Cleanup(wg.Wait)
+	t.Cleanup(func() {
+		close(serverDone)
+		_ = ln.Close()
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			rawConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer c.Close()
+				sconn, chans, reqs, err := ssh.NewServerConn(c, srvCfg)
+				if err != nil {
+					return
+				}
+				defer sconn.Close()
+				go ssh.DiscardRequests(reqs)
+				for newCh := range chans {
+					if newCh.ChannelType() != "session" {
+						_ = newCh.Reject(ssh.UnknownChannelType, "unknown")
+						continue
+					}
+					ch, reqs, err := newCh.Accept()
+					if err != nil {
+						continue
+					}
+					wg.Add(1)
+					go func(ch ssh.Channel, reqs <-chan *ssh.Request) {
+						defer wg.Done()
+						defer ch.Close()
+						for req := range reqs {
+							if req.Type != "exec" {
+								if req.WantReply {
+									_ = req.Reply(false, nil)
+								}
+								continue
+							}
+							var payload struct{ Command string }
+							if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+								_ = req.Reply(false, nil)
+								return
+							}
+							_ = req.Reply(true, nil)
+							switch payload.Command {
+							case "ok":
+								_, _ = io.WriteString(ch, "out-ok")
+								_, _ = io.WriteString(ch.Stderr(), "err-ok")
+								_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{0}))
+								_ = ch.CloseWrite()
+								return
+							case "fail":
+								_, _ = io.WriteString(ch.Stderr(), "bad\n")
+								_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{42}))
+								_ = ch.CloseWrite()
+								return
+							case "truncate":
+								_, _ = io.WriteString(ch, "0123456789abcdef")
+								_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{0}))
+								_ = ch.CloseWrite()
+								return
+							case "hang":
+								// 模拟长时间执行直到收到 signal、通道关闭或测试结束。
+								for {
+									select {
+									case r, ok := <-reqs:
+										if !ok || r.Type == "signal" {
+											return
+										}
+										if r.WantReply {
+											_ = r.Reply(false, nil)
+										}
+									case <-serverDone:
+										return
+									}
+								}
+							default:
+								_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{1}))
+								_ = ch.CloseWrite()
+								return
+							}
+						}
+					}(ch, reqs)
+				}
+			}(rawConn)
+		}
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	client, err := Dial(context.Background(), Config{
+		Host:     "127.0.0.1",
+		Port:     addr.Port,
+		User:     "tester",
+		Password: testPassword,
+		HostKeys: acceptAll(t),
+		Timeout:  5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	// 1. stdout/stderr 分离与退出码 0
+	res, err := client.ExecContext(context.Background(), "ok", 4096)
+	if err != nil {
+		t.Fatalf("ExecContext(ok) failed: %v", err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "out-ok" || res.Stderr != "err-ok" || res.Truncated {
+		t.Fatalf("unexpected ok result: %+v", res)
+	}
+
+	// 2. 非零退出码不作为错误返回
+	res, err = client.ExecContext(context.Background(), "fail", 4096)
+	if err != nil {
+		t.Fatalf("ExecContext(fail) should not error: %v", err)
+	}
+	if res.ExitCode != 42 || !strings.Contains(res.Stderr, "bad") {
+		t.Fatalf("unexpected fail result: %+v", res)
+	}
+
+	// 3. 输出截断
+	res, err = client.ExecContext(context.Background(), "truncate", 8)
+	if err != nil {
+		t.Fatalf("ExecContext(truncate) failed: %v", err)
+	}
+	if !res.Truncated || res.Stdout != "01234567" {
+		t.Fatalf("unexpected truncated result: %+v", res)
+	}
+
+	// 4. 超时取消
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err = client.ExecContext(ctx, "hang", 4096)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+
+	// 5. 空客户端与已取消上下文边界
+	if _, err := (*Client)(nil).ExecContext(context.Background(), "ok", 4096); err == nil {
+		t.Fatal("expected error for nil Client")
+	}
+	canceled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if _, err := client.ExecContext(canceled, "ok", 4096); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
