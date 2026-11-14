@@ -709,6 +709,10 @@ func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
 		t.Fatalf("跳板机应能选已保存的主机: %q", opts)
 	}
 	d.jumps[0] = "inner" // 选自己（名称相同）会形成循环
+	if box, ok := h.tt.Find("添加主机"); ok {
+		h.tt.Scroll(box.X+100, box.Y+120, 0, 140)
+		h.tt.Frame()
+	}
 	h.click("再加一台")
 	d.jumps[1] = "gw"
 	h.tt.Frame()
@@ -736,8 +740,8 @@ func TestAddHostChoosesJumpsAndProxy(t *testing.T) {
 	if !h.tt.HasText("不使用代理") || len(h.a.form.jumps) != 1 {
 		t.Fatalf("编辑时应展开已有设置: %q", h.tt.Texts())
 	}
-	if box, ok := h.tt.Find("协议"); ok {
-		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
+	if box, ok := h.tt.Find("编辑主机"); ok {
+		h.tt.Scroll(box.X+100, box.Y+120, 0, 360)
 		h.tt.Frame()
 	}
 	h.click("不使用代理")

@@ -122,3 +122,36 @@ func TestSidebarGroupCollapseIsLocal(t *testing.T) {
 		t.Fatalf("展开后应看到主机: %q", h.tt.Texts())
 	}
 }
+
+// 侧栏支持按主机标签胶囊点击筛选，以及通过搜索框匹配标签。
+func TestSidebarTagFiltering(t *testing.T) {
+	h := newHarness(t,
+		hosts.Host{ID: "web", Name: "web-01", Address: "10.0.0.3", Port: 22, User: "deploy", Tags: []string{"prod", "web"}},
+		hosts.Host{ID: "db", Name: "stage-db", Address: "10.0.0.9", Port: 22, User: "admin", Tags: []string{"staging"}},
+	)
+	h.tt.Frame()
+
+	// 标签筛选行应展示去重后的标签胶囊
+	h.click("筛选标签 prod")
+	h.tt.Frame()
+	texts := h.tt.Texts()
+	if textIndex(texts, "web-01") < 0 || textIndex(texts, "stage-db") >= 0 || textIndex(texts, "dev") >= 0 {
+		t.Fatalf("按标签 prod 筛选后应只显示 web-01: %q", texts)
+	}
+
+	// 点“清空”后同时清除关键字和标签筛选
+	h.click("清空")
+	h.tt.Frame()
+	texts = h.tt.Texts()
+	if h.a.activeTag != "" || textIndex(texts, "web-01") < 0 || textIndex(texts, "stage-db") < 0 {
+		t.Fatalf("清空后应恢复展示全部主机: activeTag=%q texts=%q", h.a.activeTag, texts)
+	}
+
+	// 搜索框也应能匹配主机标签
+	h.a.hostFilter = "staging"
+	h.tt.Frame()
+	texts = h.tt.Texts()
+	if textIndex(texts, "stage-db") < 0 || textIndex(texts, "web-01") >= 0 {
+		t.Fatalf("搜索框应能按标签过滤: %q", texts)
+	}
+}

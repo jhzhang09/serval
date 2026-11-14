@@ -179,7 +179,7 @@ func (a *app) paletteItems(query string) []paletteItem {
 	for i := range a.hosts {
 		h := &a.hosts[i]
 		add(paletteItem{key: "host:" + h.ID, section: "主机", title: h.Name, subtitle: h.Target(), host: h, run: func() { a.open(*h) }},
-			h.Name+" "+h.Target())
+			h.Name+" "+h.Target()+" "+strings.Join(h.Tags, " "))
 	}
 	// 同类内按分数稳定排序。查询为空时最近连接过的主机排在前面（本机记录，不同步），其余保持原有顺序。
 	recent := func(it paletteItem) int {
@@ -214,11 +214,15 @@ func (a *app) paletteItems(query string) []paletteItem {
 			action("columns-2", locales.PaletteSplitRight(), func() { a.split(t, false) })
 			action("rows-2", locales.ViewSplitDown(), func() { a.split(t, true) })
 		}
+		if len(a.tabs) > 1 {
+			actionWithShortcut("arrow-left", "左移标签页", shortcutText("⌥["), func() { a.moveTabStep(-1) })
+			actionWithShortcut("arrow-right", "右移标签页", shortcutText("⌥]"), func() { a.moveTabStep(1) })
+		}
 		action("x", locales.PaletteClosePane(), func() { a.closeFocused(t) })
 		if len(a.tabs) > 1 {
 			action("x", locales.PaletteCloseOtherTabs(), func() { a.closeOtherTabs(t) })
 		}
-		action("sparkles", locales.AiAnalyzeOutput(), a.openAIExplainFromActivePane)
+		actionWithShortcut("sparkles", locales.AiAnalyzeOutput(), shortcutText("E"), a.openAIExplainFromActivePane)
 	}
 	if a.broadcastOn {
 		action("radio", "关闭广播", a.toggleBroadcast)
@@ -227,6 +231,9 @@ func (a *app) paletteItems(query string) []paletteItem {
 	}
 	if t := a.current(); t != nil && !t.local && t.client != nil {
 		action("folder", locales.PaletteToggleFiles(), a.toggleFiles)
+	}
+	if len(a.hosts) > 0 {
+		action("activity", "探测主机连通性", func() { a.probeAllHosts(true) })
 	}
 	action("terminal", locales.PaletteNewLocalTerminal(), a.openLocalTerminal)
 	action("panel-left", locales.PaletteToggleSidebar(), func() { a.sidebarOpen = !a.sidebarOpen })

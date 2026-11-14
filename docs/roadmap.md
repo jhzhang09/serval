@@ -350,14 +350,15 @@
 - **验收**：单元测试与全量界面测试覆盖跳板机循环检测、代理增删改查、密码加密存储与删除级联修复。
 - **依赖**：无。
 
-### R1 Windows（M）
+### R1 Windows（M，进行中：`feat/ux-and-platform-expansion`）
 
-- **范围**：在 Windows 上构建、运行全部测试（devsshd 依赖 `creack/pty`，Windows 上需要替代方案或跳过相关测试并说明）；验证快捷键（Ctrl+Shift）、玻璃效果降级、系统安全存储（凭据管理器）、文件选择框默认目录。
-- **验收**：Windows 上冒烟流程截图；平台相关问题修复或记录到 README 已知问题。
+- **范围**：实现 Windows 原生串口驱动（`core/serial/serial_windows.go`，Win32 Overlapped I/O 与注册表 `HARDWARE\DEVICEMAP\SERIALCOMM` 枚举）、`app.go` `shortPath` 反斜杠路径兼容、`GOOS=windows go vet ./...` 与 `GOOS=windows go test -c` 编译验证，以及快捷键（Ctrl+Shift）、Windows 凭据管理器等平台适配。
+- **验证边界**：已在 Linux 环境下完成 Windows 交叉静态检查与测试二进制编译；Windows 桌面原生运行、COM 串口硬件读写及无 PTY 环境测试仍需在 Windows 机器/CI 完成并补充截图。
 
-### R2 Linux（M）
+### R2 Linux（M，已完成（headless/SSH 与降级测试）：`feat/ux-and-platform-expansion`）
 
-- **范围**：同 R1。重点：没有 Secret Service 时“记住”选项隐藏、每次输入主密码；Wayland 与 X11。
+- **范围**：同 R1。重点：无 Secret Service（`errors.ErrUnsupported`）时自动隐藏“在这台设备上记住主密钥”并优雅降级为每次输入主密码；Linux 桌面环境与全量测试通过。
+- **实现**：`library.go` 新增 `probeDeviceSecrets()` 与 `deviceAvailable()`，统一隔离处理 `errors.ErrUnsupported`；已在 Debian 12 Linux 环境下完成全量测试验证（全部子包与 195 个根包用例按无重叠分批完成 `-race -count=1` 覆盖，并执行单次完整 `go test -count=1 ./...`；`rz`/`sz` 互通测试因环境未安装 `lrzsz` 自动跳过；GTK3 真机图形桌面截图仍待桌面环境补充）。
 
 ### R3 签名与公证（S，需决策：暂时不做）
 
@@ -420,6 +421,23 @@
   - `core/ai`：新增 `agent.go`（OpenAI SSE 流式解析、`reasoning_content` / `<think>` 思考耗时解析、多轮 `tools`/`tool_calls` Agent 循环、`stream_options` 兼容回退）与 `markdown.go`（区块/行内 Markdown 及 GFM 表格解析）。
   - 应用层（`aiagent.go`、`aipanel.go`、`settings.go`）：新增 `host_info`、`terminal_read`、`ssh_exec`、`sftp_list`、`sftp_read`、`terminal_insert` 工具集；右侧可拖曳改宽停靠抽屉（`⌘I` / `Ctrl+Shift+I` 切换显隐并保留会话）；支持 DeepSeek / OpenAI / 通义千问 / Kimi / Ollama 多配置管理与即时切换。
 - **验收**：单元测试（`core/ai/agent_test.go`、`core/ai/markdown_test.go`、`core/sshconn/sshconn_test.go`）与真实 SSH Agent 界面流程测试（`aipanel_test.go`）全覆盖。
+
+---
+
+## 高频功能与交互体验增强（已完成：`feat/ux-and-platform-expansion`）
+
+- **SSH 公钥一键部署（ssh-copy-id）**：`core/sshconn/copyid.go` 校验并幂等写入远程 `~/.ssh/authorized_keys`（含 `0700`/`0600` 权限处理），在主机右键菜单（“部署公钥到服务器”）和密钥面板（“部署到主机”）双向触达。
+- **主机连通性与延迟异步探测**：`hostactions.go` 启动与手动一键触发并发 TCP/RTT 探测（信号量限流 6，串口检测可用设备），侧栏主机行冷调状态点与悬停 Tooltip 实时反馈；支持菜单单独检查、命令面板触发与退出/锁定安全取消。
+- **终端选中自动复制与右键行为**：设置面板“终端”页增加“选中文本时自动复制到剪贴板”与“右键点击行为（右键菜单 / 直接粘贴 / 有选中则复制否则粘贴）”，随保险库同步并实时作用于活动终端。
+- **标签页顺序调整与切换快捷键**：在已有拖拽调整基础上补充菜单（“左移标签页”/“右移标签页”）、命令面板及快捷键（`⌘[`/`⌘]` 切换，`⌘⌥[`/`⌘⌥]` 移动，非 macOS 用 `Ctrl+Shift`）。
+- **SFTP 目录书签与路径点击直达**：双栏文件抽屉本地与远程标题栏点击转为可编辑输入框（回车跳转、`Esc` 取消）；远程栏支持收藏目录书签进保险库（编辑主机保留书签）并支持快速跳转与删除。
+- **登录后自动执行脚本（Logon Script）**：主机配置支持多行初始化脚本，SSH 交互终端就绪（首段输出或短兜底定时器）后自动执行一次。
+- **主机多标签筛选与表单/交互体验全面打磨**：
+  - 主机支持多标签（`Tags`）编辑与侧栏 `#tag` 胶囊一键筛选及搜索匹配；
+  - 主机表单提供已有分组胶囊点选、生产模式清晰说明文字、跳板机与代理丰富信息展示（地址/协议端口）与可视化跳板链路预览、以及表单内直接从文件导入私钥（无口令直接选上、带口令联动密钥面板后自动回填）；
+  - 修复空状态（0 标签页）下按 `⌘W`/`Ctrl+Shift+W` 透传导致误关窗口的缺陷；
+  - 主机右键菜单补充“向右分屏打开”“向下分屏打开”“仅打开 SFTP”“复制 SSH 命令”；
+  - 终端窗格标题栏新增一键 AI 报错分析图标按钮与 `⌘E` / `Ctrl+Shift+E` 快捷键。
 
 ---
 

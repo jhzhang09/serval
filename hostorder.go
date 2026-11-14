@@ -223,6 +223,60 @@ func (a *app) moveTab(draggedID, targetID int) {
 	a.saveSessionLayout()
 }
 
+// moveTabStep 将当前激活标签页向左（delta < 0）或向右（delta > 0）移动一位。
+func (a *app) moveTabStep(delta int) {
+	if len(a.tabs) < 2 || a.active < 0 || a.active >= len(a.tabs) {
+		return
+	}
+	target := a.active + delta
+	if target < 0 || target >= len(a.tabs) {
+		return
+	}
+	next := slices.Clone(a.tabs)
+	next[a.active], next[target] = next[target], next[a.active]
+	a.tabs = next
+	a.active = target
+	a.saveSessionLayout()
+}
+
+// moveTabItem 将指定标签页向左（delta < 0）或向右（delta > 0）移动一位，并保持当前激活索引同步。
+func (a *app) moveTabItem(t *tab, delta int) {
+	idx := slices.Index(a.tabs, t)
+	if idx < 0 {
+		return
+	}
+	target := idx + delta
+	if target < 0 || target >= len(a.tabs) {
+		return
+	}
+	var activeTab *tab
+	if a.active >= 0 && a.active < len(a.tabs) {
+		activeTab = a.tabs[a.active]
+	}
+	next := slices.Clone(a.tabs)
+	next[idx], next[target] = next[target], next[idx]
+	a.tabs = next
+	if activeTab != nil {
+		if cur := slices.Index(a.tabs, activeTab); cur >= 0 {
+			a.active = cur
+		}
+	}
+	a.saveSessionLayout()
+}
+
+// switchTabStep 循环切换到上一个（delta < 0）或下一个（delta > 0）标签页。
+func (a *app) switchTabStep(delta int) {
+	if len(a.tabs) < 2 {
+		return
+	}
+	cur := a.active
+	if cur < 0 || cur >= len(a.tabs) {
+		cur = 0
+	}
+	a.active = (cur + delta + len(a.tabs)) % len(a.tabs)
+	a.saveSessionLayout()
+}
+
 type groupDialogState struct {
 	open, fresh, rename bool
 	oldName, name, err  string

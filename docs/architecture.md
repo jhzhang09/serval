@@ -42,6 +42,7 @@ flowchart TB
 | `shell.go` | 带 PTY 的交互 shell，实现 `io.ReadWriteCloser` 交给终端插件 | `Shell` |
 | `sftp.go` | 目录列表、流式上传下载、递归下载目录、文本文件读写 | `Files`、`Entry` |
 | `forward.go` | 本地转发、远程转发、动态转发（SOCKS5 CONNECT） | `Tunnel`、`ErrForwardDenied`、`ErrForwardInUse` |
+| `copyid.go` | 将公钥幂等部署到目标主机 `~/.ssh/authorized_keys`（含输入校验） | `DeployPublicKey`、`DeployPublicKeyResult`、`ErrInvalidPublicKey` |
 
 连接链路：`Config.Jumps` 依次是跳板机，最后连目标。第一跳可以走代理，后面每跳经上一跳的 `direct-tcpip` 通道。每跳独立认证、独立校验主机密钥。跳板机出错包成 `HopError{Hop: i}`，目标主机的错误原样返回，界面据此判断该向哪台机器要密码。通道连接不支持 `SetDeadline`，握手超时用 `time.AfterFunc` 实现。
 
@@ -62,7 +63,7 @@ flowchart TB
 ### core/keys、core/hosts
 
 - `keys.Key`：名称、类型、PEM 私钥、公钥、指纹、可选口令。`Parse` 导入时就校验口令；`Generate` 生成 Ed25519 或 RSA 4096。
-- `hosts.Host`：主机记录（包括密码）。`ResolveRoute` 把 `ProxyJump` 展开成跳板机链路，处理名称引用、`[user@]host[:port]` 写法、环路和级数上限。
+- `hosts.Host`：主机记录（包括密码、多标签、登录脚本与 SFTP 书签）。`ResolveRoute` 把 `ProxyJump` 展开成跳板机链路，处理名称引用、`[user@]host[:port]` 写法、环路和级数上限。
 - `hosts.Forward`：端口转发规则。监听地址空着时只使用 127.0.0.1。
 
 ### core/syncer
@@ -73,13 +74,15 @@ flowchart TB
 
 | 文件 | 职责 |
 |---|---|
-| `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post` |
-| `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉 |
-| `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住” |
+| `main.go` | 启动：配置目录、设备 ID、打开保险库、自动解锁、加载本机设置、创建窗口、接上 `a.post`、探测系统安全存储可用性与后台主机连通性 |
+| `app.go` | `app` 状态结构；连接流程（`connect`、`connectFailed`、`askSecret`、`submitSecret`、`rememberCredentials`）；标签和窗格树（拆分、关闭、重连）；保活；文件抽屉；登录后脚本触发 |
+| `library.go` | 保险库与界面之间的数据层：`reload`、`apply`、`hostChange`/`keyChange`/`settingsChange`；本机设置（`device.json`）读写；设置主密码（`requireProtection`、`submitSetup`）；解锁和“在这台设备上记住”；探测系统安全存储是否受支持（`ErrUnsupported` 降级） |
 | `sync.go`、`syncdir.go` | WebDAV 同步的触发，以及同步文件夹：本地写入后导出、轮询合并、冲突副本确认后删除。密码只进出系统安全存储，文件夹路径在本机设置 |
 | `knownhosts.go` | 用保险库实现 `sshconn.TrustedKeys`；已知主机列表、指纹摘要与重置/删除主机密钥 |
-| `hostform.go` | 主机表单（添加、编辑、复制）、删除确认、主机菜单 |
-| `hostroute.go` | 主机表单中的跳板机选择链与代理按需展开/选择控件 |
+| `hostform.go` | 主机表单（添加、编辑、复制、已有分组/标签胶囊、生产模式说明、内联导入私钥、登录脚本）、删除确认、主机右键菜单 |
+| `hostactions.go` | 主机异步连通性/延迟探测、等价连接命令生成、公钥一键部署、分屏/SFTP 快捷打开、标签解析与聚合 |
+| `hostroute.go` | 主机表单中的跳板机选择链（丰富地址展示与链路可视化预览）及代理按需展开/选择控件 |
+| `hostorder.go` | 主机拖拽排序与标签页顺序移动（拖拽、菜单与快捷键） |
 | `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
 | `forwardpanel.go` | 端口转发面板：规则的增删改、手动启停；绑定主机的规则随连接自动开启 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |

@@ -3,10 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"serval/core/hosts"
+	"serval/core/keys"
 	"serval/core/vault"
 )
 
@@ -65,6 +67,10 @@ func TestPasswordHostUsesSavedPassword(t *testing.T) {
 	h.tt.Frame()
 	if !h.a.form.passwordSaved || !h.tt.HasText("清除") {
 		t.Fatalf("编辑表单应提示密码已保存: %q", h.tt.Texts())
+	}
+	if box, ok := h.tt.Find("编辑主机"); ok {
+		h.tt.Scroll(box.X+100, box.Y+120, 0, 260)
+		h.tt.Frame()
 	}
 	h.click("清除")
 	h.click("保存")
@@ -531,4 +537,140 @@ func TestNonSSHTabCapabilitiesSafety(t *testing.T) {
 	if tb.monitorOpen {
 		t.Fatal("非 SSH 标签不应开启服务器监控")
 	}
+}
+
+func TestHostFormGroupChipsTagsAndProductionHint(t *testing.T) {
+	h := newHarness(t,
+		hosts.Host{ID: "existing", Name: "existing", Address: "10.0.0.8", Port: 22, User: "ops", Group: "核心机房", Tags: []string{"prod", "db"}},
+	)
+	h.a.openAdd()
+	h.tt.Frame()
+
+	// 生产模式旁应有清晰说明
+	if !h.tt.HasText("开启后显示红色警示标记；加入广播前需二次确认；AI 执行高危命令前强制拦截提示。") {
+		t.Fatalf("表单缺少生产模式说明: %q", h.tt.Texts())
+	}
+
+	// 点击已有分组胶囊，自动填入分组输入
+	h.click("选择分组 核心机房")
+	h.tt.Frame()
+	if h.a.form.group != "核心机房" {
+		t.Fatalf("点击已有分组胶囊后 group=%q", h.a.form.group)
+	}
+
+	// 点击已有标签胶囊并再追加新标签，保存后写入 Host.Tags
+	h.click("标签 prod")
+	h.tt.Frame()
+	h.a.form.tagsText += ", canary"
+	h.a.form.address, h.a.form.user, h.a.form.name = "10.0.0.9", "ops", "canary-api"
+	h.tt.Frame()
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("保存失败: %s", h.a.form.err)
+	}
+	saved := h.host("canary-api")
+	if saved.Group != "核心机房" || !slices.Equal(saved.Tags, []string{"prod", "canary"}) {
+		t.Fatalf("分组或标签未正确保存: %+v", saved)
+	}
+}
+
+func TestHostFormImportKeyInlineAndJumpRoutePreview(t *testing.T) {
+	plainKey, err := keys.Generate(keys.Ed25519, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainPath := filepath.Join(t.TempDir(), "plain_ed25519")
+	if err := os.WriteFile(plainPath, []byte(plainKey.PrivateKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	encKey, err := keys.Generate(keys.Ed25519, "", "", "kp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encPath := filepath.Join(t.TempDir(), "enc_ed25519")
+	if err := os.WriteFile(encPath, []byte(encKey.PrivateKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t, hosts.Host{ID: "gw", Name: "gw", Address: "10.1.1.1", Port: 2222, User: "jump"})
+	h.a.chooseKeyFile = func() (string, error) { return plainPath, nil }
+
+	// 1. 添加表单内无私钥时点击“从文件导入私钥”，导入无口令私钥直接选上且不退出主机表单
+	h.a.openAdd()
+	h.tt.Frame()
+	if box, ok := h.tt.Find("添加主机"); ok {
+		h.tt.Scroll(box.X+100, box.Y+120, 0, 260)
+		h.tt.Frame()
+	}
+	h.click("从文件导入私钥")
+	h.pump("内联导入无口令私钥", func() bool { return len(h.a.keys) == 1 })
+	if !h.a.form.open || h.a.keyPanel.open {
+		t.Fatalf("导入无口令私钥后应停留在主机表单: form.open=%v keyPanel.open=%v", h.a.form.open, h.a.keyPanel.open)
+	}
+	if h.a.form.keyName != "plain_ed25519" {
+		t.Fatalf("导入后未自动选中新私钥: keyName=%q", h.a.form.keyName)
+	}
+
+	// 2. 表单内已有私钥时点击“导入”导入带口令私钥：转到密钥面板输口令后自动回到主机表单并选中它
+	h.a.chooseKeyFile = func() (string, error) { return encPath, nil }
+	h.click("导入")
+	h.pump("打开密钥面板填写口令", func() bool { return h.a.keyPanel.open && h.a.keyPanel.pem != "" })
+	if !h.a.keyPanel.fromHostForm {
+		t.Fatal("从主机表单打开密钥面板应标记 fromHostForm")
+	}
+	h.a.keyPanel.passphrase = "kp"
+	h.tt.Frame()
+	h.click("添加")
+	h.pump("带口令私钥保存并回到主机表单", func() bool { return !h.a.keyPanel.open && h.a.form.open })
+	if h.a.form.keyName != "enc_ed25519" {
+		t.Fatalf("回到主机表单后应选中新导入私钥，实际 %q", h.a.form.keyName)
+	}
+
+	// 3. 跳板机展示标签包含地址信息，同时跳板链路预览可见，且保存回 Host.ProxyJump 的仍是规范主机名
+	f := &h.a.form
+	f.name, f.address, f.user = "app-inner", "10.2.2.2", "ops"
+	if box, ok := h.tt.Find("添加主机"); ok {
+		h.tt.Scroll(box.X+100, box.Y+120, 0, 300)
+		h.tt.Frame()
+	}
+	h.click("添加跳板机")
+	h.tt.Frame()
+	vals, labels := h.a.jumpChoices(f, 0)
+	gwIdx := slices.Index(vals, "gw")
+	if gwIdx < 0 || !strings.Contains(labels[gwIdx], "jump@10.1.1.1:2222") {
+		t.Fatalf("跳板机选项标签应带出地址信息: vals=%v labels=%v", vals, labels)
+	}
+	f.jumps[0] = "gw"
+	h.tt.Frame()
+	if !h.tt.HasText("本机") || !h.tt.HasText("app-inner") {
+		t.Fatalf("应展示跳板机链路预览: %q", h.tt.Texts())
+	}
+	h.click("添加")
+	h.tt.Frame()
+	if h.a.form.open {
+		t.Fatalf("保存主机失败: %s", h.a.form.err)
+	}
+	if got := h.host("app-inner"); got.ProxyJump != "gw" || got.KeyID != h.a.keys[1].ID {
+		t.Fatalf("规范名称或私钥 ID 未正确保存: %+v", got)
+	}
+}
+
+func TestLogonScriptAutoRunsInSSH(t *testing.T) {
+	h := newHarness(t)
+	h.a.openEdit(h.devHost())
+	h.tt.Frame()
+	h.a.form.logonScript = "echo LOGON_OK-$((10+5))"
+	h.tt.Frame()
+	h.click("保存")
+	h.tt.Frame()
+	if h.host("dev").LogonScript != "echo LOGON_OK-$((10+5))" {
+		t.Fatalf("登录后脚本未保存: %+v", h.host("dev"))
+	}
+
+	tb := h.connectDev()
+	h.pump("登录后自动执行脚本输出", func() bool {
+		return tb.focus != nil && tb.focus.term != nil && strings.Contains(tb.focus.term.Text(), "LOGON_OK-15")
+	})
 }

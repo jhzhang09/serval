@@ -57,6 +57,7 @@ func main() {
 	}
 	a.devicePath = filepath.Join(dir, "device.json")
 	a.device = mygo.Secrets
+	a.probeDeviceSecrets()
 	if !a.unlockWithRemembered() {
 		a.reload() // 未加密时直接读出；锁定时 reload 什么都读不到，界面显示解锁页面
 	}
@@ -64,7 +65,7 @@ func main() {
 	if a.vault.State() != vault.Locked {
 		a.restoreSession()
 	}
-	a.unlock.remember = true
+	a.unlock.remember = a.deviceAvailable()
 	installSystemDialogs(a)
 	if u, err := user.Current(); err == nil {
 		a.localUser = u.Username
@@ -92,6 +93,7 @@ func main() {
 		a.idleTime = mygo.Power.IdleTime
 		a.startAutoLock()
 		a.onVaultReady()
+		a.probeAllHosts(false)
 		win.OnClosed(func() {
 			stop()
 			a.stopSyncLoop()

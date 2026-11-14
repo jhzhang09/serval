@@ -133,10 +133,14 @@ func (a *app) configureSync(rawURL, user, password string, enabled bool) error {
 		return errors.New("请填写同步地址")
 	}
 	if password != "" {
-		if a.device == nil {
-			return errors.New("这台设备没有安全存储，无法保存同步密码")
+		if !a.deviceAvailable() {
+			return errors.New("当前系统未提供安全存储（Secret Service / 凭据管理器），无法保存同步密码")
 		}
 		if err := a.device.Set(syncSecretName, []byte(password)); err != nil {
+			if errors.Is(err, errors.ErrUnsupported) {
+				a.deviceSupported = false
+				return errors.New("当前系统未提供安全存储（Secret Service / 凭据管理器），无法保存同步密码")
+			}
 			return errors.New("没能把同步密码放进系统安全存储")
 		}
 	}

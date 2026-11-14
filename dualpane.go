@@ -149,6 +149,47 @@ func drawerPath(p string) string {
 	return shortPath(p)
 }
 
+// toggleRemoteBookmark 收藏或取消收藏当前远程目录到主机记录。
+func (a *app) toggleRemoteBookmark(t *tab) {
+	if t == nil || t.local || t.dir == "" {
+		return
+	}
+	h, ok := a.hostByID(t.host.ID)
+	if !ok {
+		return
+	}
+	dir := path.Clean(t.dir)
+	next := slices.Clone(h.Bookmarks)
+	if idx := slices.Index(next, dir); idx >= 0 {
+		next = slices.Delete(next, idx, idx+1)
+	} else {
+		next = append(next, dir)
+	}
+	h.Bookmarks = next
+	if err := a.apply(hostChange(h)); err != nil {
+		a.toast(ui.Toast{Title: "保存目录书签失败", Description: err.Error(), Type: "error"})
+		return
+	}
+	t.host.Bookmarks = slices.Clone(next)
+}
+
+func (a *app) removeRemoteBookmark(t *tab, dir string) {
+	if t == nil {
+		return
+	}
+	h, ok := a.hostByID(t.host.ID)
+	if !ok {
+		return
+	}
+	next := slices.DeleteFunc(slices.Clone(h.Bookmarks), func(b string) bool { return b == dir })
+	h.Bookmarks = next
+	if err := a.apply(hostChange(h)); err != nil {
+		a.toast(ui.Toast{Title: "删除目录书签失败", Description: err.Error(), Type: "error"})
+		return
+	}
+	t.host.Bookmarks = slices.Clone(next)
+}
+
 func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
 	col := ui.Column(c).Key("localPane").Grow(1).MinWidth(0).MinHeight(0)
@@ -169,12 +210,37 @@ func (a *app) localColumn(c *ui.Context, colors design.Colors, t *tab) {
 		})
 		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+			if a.editingLocalPath {
+				c.Key("localPathInput")
+				in := ui.TextInput(c, &a.localPathDraft).Height(22).Grow(1).MinWidth(0).
+					FontSize(design.TextSmall).AutoFocus()
+				in.OnShortcut(0, ui.KeyEscape, func() { a.editingLocalPath = false })
+				if in.Submitted() {
+					target := strings.TrimSpace(a.localPathDraft)
+					a.editingLocalPath = false
+					if target != "" {
+						a.openLocal(target)
+					}
+				}
+				return
+			}
 			title := drawerPath(filepath.ToSlash(a.localDir))
 			if a.localDir == "" || a.localDir == "." {
 				title = "本机"
 			}
-			ui.Text(c, title).Key("localTitle").FontSize(design.TextSmall).FontWeight(600).
-				Grow(1).MinWidth(0).SingleLine().Tooltip(a.localDir)
+			b := ui.ButtonBase(c).Key("editLocalPath").Label("编辑本地路径").Tooltip(a.localDir).
+				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
+				Disabled(a.localDir == "")
+			if b.Hovered() {
+				b.Background(colors.Hover)
+			}
+			b.Children(func() {
+				ui.Text(c, title).Key("localTitle").FontSize(design.TextSmall).FontWeight(600).
+					Grow(1).MinWidth(0).SingleLine()
+			}).OnClick(func() {
+				a.editingLocalPath = true
+				a.localPathDraft = a.localDir
+			})
 		})
 		if a.localErr != "" {
 			ui.Text(c, a.localErr).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()
@@ -222,6 +288,13 @@ func (a *app) localFileRow(c *ui.Context, colors design.Colors, t *tab, entry lo
 
 func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 	theme := c.Theme()
+	curHost, saved := a.hostByID(t.host.ID)
+	var bookmarks []string
+	if saved {
+		bookmarks = curHost.Bookmarks
+	} else {
+		bookmarks = t.host.Bookmarks
+	}
 	col := ui.Column(c).Key("remotePane").Grow(1).MinWidth(0).MinHeight(0)
 	if item, ok := ui.Drop[paneDrag](col); ok {
 		a.acceptPaneDrop(t, false, t.dir, item)
@@ -235,17 +308,80 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			iconButton(c, colors, "plus", "上传文件", func() { a.startUpload(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-up", "上传文件夹", func() { a.startUploadFolder(t) }).Disabled(t.dir == "" || t.local)
 			iconButton(c, colors, "folder-plus", "新建文件夹", func() { a.openNewFolder(t) }).Disabled(t.dir == "" || t.local)
+			bmBtn := ui.ButtonBase(c).Key("remoteBookmarks").Size(28, 28).Center().Radius(design.RadiusRow).
+				Label("远程目录书签").Tooltip("远程目录书签").Shrink(0).Disabled(t.dir == "" || t.local || !saved)
+			if bmBtn.Hovered() {
+				bmBtn.Background(colors.Hover)
+			}
+			if saved && t.dir != "" && slices.Contains(bookmarks, path.Clean(t.dir)) {
+				bmBtn.Background(theme.Accent.Alpha(0.14))
+			}
+			bmBtn.Children(func() {
+				ui.Icon(c, design.Icon("bookmark")).FontSize(15).TextColor(theme.TextMuted)
+			}).PopoverMenuButton(func(m *ui.Menu) {
+				curDir := path.Clean(t.dir)
+				toggleLabel := "收藏当前目录"
+				if slices.Contains(bookmarks, curDir) {
+					toggleLabel = "取消收藏当前目录"
+				}
+				if m.Item(toggleLabel).Disabled(t.dir == "").Chosen() {
+					a.toggleRemoteBookmark(t)
+				}
+				if len(bookmarks) > 0 {
+					m.Separator()
+					for _, bm := range bookmarks {
+						dir := bm
+						if m.Item(dir).Chosen() {
+							a.openDir(t, dir)
+						}
+					}
+					m.Separator()
+					m.Submenu("删除书签", func(sub *ui.Menu) {
+						for _, bm := range bookmarks {
+							dir := bm
+							if sub.Item(dir).Chosen() {
+								a.removeRemoteBookmark(t, dir)
+							}
+						}
+					})
+				}
+			})
 			iconButton(c, colors, "arrow-up", "上一级", func() { a.openDir(t, path.Dir(t.dir)) }).Disabled(t.dir == "" || t.dir == "/")
 			iconButton(c, colors, "refresh-cw", "刷新", func() { a.openDir(t, t.dir) }).Disabled(t.dir == "")
 		})
 		ui.Row(c).Height(26).Shrink(0).Padding(0, 10, 4, 14).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(colors.Hairline).Children(func() {
+			if a.editingRemotePath && !t.local && t.files != nil {
+				c.Key("remotePathInput")
+				in := ui.TextInput(c, &a.remotePathDraft).Height(22).Grow(1).MinWidth(0).
+					FontSize(design.TextSmall).AutoFocus()
+				in.OnShortcut(0, ui.KeyEscape, func() { a.editingRemotePath = false })
+				if in.Submitted() {
+					target := strings.TrimSpace(a.remotePathDraft)
+					a.editingRemotePath = false
+					if target != "" {
+						a.openDir(t, target)
+					}
+				}
+				return
+			}
 			title := drawerPath(t.dir)
 			if t.dir == "" {
 				title = "文件"
 			}
-			ui.Text(c, title).Key("filesTitle").FontSize(design.TextSmall).FontWeight(600).
-				Grow(1).MinWidth(0).SingleLine().Tooltip(t.dir)
+			b := ui.ButtonBase(c).Key("editRemotePath").Label("编辑远程路径").Tooltip(t.dir).
+				Height(22).Grow(1).MinWidth(0).Justify(ui.Start).AlignItems(ui.Center).Radius(4).
+				Disabled(t.dir == "" || t.local || t.files == nil)
+			if b.Hovered() {
+				b.Background(colors.Hover)
+			}
+			b.Children(func() {
+				ui.Text(c, title).Key("filesTitle").FontSize(design.TextSmall).FontWeight(600).
+					Grow(1).MinWidth(0).SingleLine()
+			}).OnClick(func() {
+				a.editingRemotePath = true
+				a.remotePathDraft = t.dir
+			})
 		})
 		if t.filesError != "" {
 			ui.Text(c, t.filesError).TextColor(colors.Danger).FontSize(design.TextSmall).Padding(8, 14).Selectable()

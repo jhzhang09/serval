@@ -52,6 +52,12 @@ type Host struct {
 	Parity string `json:"parity,omitempty"`
 	// StopBits 是串口停止位（1/2），默认 1。
 	StopBits int `json:"stopBits,omitempty"`
+	// Tags 是主机的分类标签列表，用于侧栏筛选。
+	Tags []string `json:"tags,omitempty"`
+	// LogonScript 是会话建立后自动发送到远端终端的初始化脚本（多行文本）。
+	LogonScript string `json:"logonScript,omitempty"`
+	// Bookmarks 是 SFTP 文件抽屉为这台主机收藏的常用远程目录路径。
+	Bookmarks []string `json:"bookmarks,omitempty"`
 }
 
 // 支持的连接协议常量

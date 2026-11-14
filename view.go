@@ -116,13 +116,23 @@ func (a *app) shortcuts(c *ui.Context) {
 			a.openSettings()
 		}
 	})
+	c.OnShortcut(mods, ui.KeyE, a.openAIExplainFromActivePane)
+	c.OnShortcut(mods, ui.KeyBracketLeft, func() { a.switchTabStep(-1) })
+	c.OnShortcut(mods, ui.KeyBracketRight, func() { a.switchTabStep(1) })
+	c.OnShortcut(mods|ui.Alt, ui.KeyBracketLeft, func() { a.moveTabStep(-1) })
+	c.OnShortcut(mods|ui.Alt, ui.KeyBracketRight, func() { a.moveTabStep(1) })
+	// KeyW 始终拦截在应用层：没有任何标签页时也不交给系统默认关闭整个窗口。
+	c.OnShortcut(mods, ui.KeyW, func() {
+		if t := a.current(); t != nil {
+			a.closeFocused(t)
+		}
+	})
 	if t := a.current(); t != nil {
 		c.OnShortcut(mods, ui.KeyF, func() { a.openSearch(t) })
 		if t.local || t.client != nil {
 			c.OnShortcut(mods, ui.KeyD, func() { a.split(t, false) })
 			c.OnShortcut(mods|ui.Alt, ui.KeyD, func() { a.split(t, true) })
 		}
-		c.OnShortcut(mods, ui.KeyW, func() { a.closeFocused(t) })
 	}
 }
 
@@ -278,10 +288,52 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						a.openNewGroup()
 					}
 				})
+				if len(a.hosts) > 0 {
+					probeBtn := ui.ButtonBase(c).Key("probeHosts").Label("检测连通性").Tooltip("检测全部主机连通性").
+						Size(30, 30).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
+					if probeBtn.Hovered() {
+						probeBtn.Background(colors.Hover)
+					}
+					probeBtn.Children(func() {
+						ui.Icon(c, design.Icon("activity")).FontSize(14).TextColor(t.TextMuted)
+					}).OnClick(func() { a.probeAllHosts(true) })
+				}
 			})
+			if allTags := a.allTags(); len(allTags) > 0 {
+				if a.activeTag != "" && !slices.Contains(allTags, a.activeTag) {
+					a.activeTag = ""
+				}
+				ui.Row(c).Key("tagFilterRow").Padding(6, 0, 0, 0).Gap(5).Wrap().Children(func() {
+					for _, tag := range allTags {
+						tagName := tag
+						selected := a.activeTag == tagName
+						fg, bg := t.TextMuted, colors.Chip
+						if selected {
+							fg, bg = t.Accent, t.Accent.Alpha(0.16)
+						}
+						b := ui.ButtonBase(c).Key("tagFilter:"+tagName).Label("筛选标签 "+tagName).
+							Height(22).Padding(0, 8).Radius(design.RadiusChip).AlignItems(ui.Center).
+							Background(bg).Transition(design.Hover)
+						if !selected && b.Hovered() {
+							b.Background(colors.Hover)
+						}
+						b.Children(func() {
+							ui.Text(c, "#"+tagName).FontSize(design.TextSmall - 1).TextColor(fg).FontWeight(500).NoWrap()
+						}).OnClick(func() {
+							if a.activeTag == tagName {
+								a.activeTag = ""
+							} else {
+								a.activeTag = tagName
+							}
+						})
+					}
+				})
+			} else if a.activeTag != "" {
+				a.activeTag = ""
+			}
 		})
 
-		filtering := strings.TrimSpace(a.hostFilter) != ""
+		filtering := strings.TrimSpace(a.hostFilter) != "" || a.activeTag != ""
 		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).Padding(0, 10, 10, 10).Gap(12).Children(func() {
 				if filtering {
@@ -289,7 +341,10 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						ui.Text(c, locales.HostFilterSortHint()).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Grow(1)
 						ui.ButtonBase(c).Key("clearHostFilter").Label("清空").Children(func() {
 							ui.Text(c, "清空").FontSize(design.TextSmall - 1).TextColor(t.Accent).FontWeight(600)
-						}).OnClick(func() { a.hostFilter = "" })
+						}).OnClick(func() {
+							a.hostFilter = ""
+							a.activeTag = ""
+						})
 					})
 				}
 				if len(a.hosts) == 0 && len(a.customGroups) == 0 {
@@ -430,7 +485,7 @@ func (a *app) sidebarEmpty(c *ui.Context) {
 	})
 }
 
-func hostTooltip(h hosts.Host) string {
+func hostTooltip(h hosts.Host, health hostHealth) string {
 	proto := "SSH"
 	switch h.EffectiveProtocol() {
 	case hosts.ProtocolTelnet:
@@ -445,6 +500,25 @@ func hostTooltip(h hosts.Host) string {
 	if jumps := hosts.SplitJumps(h.ProxyJump); len(jumps) > 0 {
 		parts = append(parts, "跳板: "+strings.Join(jumps, " → "))
 	}
+	if len(h.Tags) > 0 {
+		parts = append(parts, "标签: "+strings.Join(h.Tags, ", "))
+	}
+	switch health.state {
+	case probeChecking:
+		parts = append(parts, "连通性: 正在检测…")
+	case probeOK:
+		if health.latency > 0 {
+			parts = append(parts, "连通性: 可达 · "+formatLatency(health.latency))
+		} else {
+			parts = append(parts, "连通性: 可用")
+		}
+	case probeFail:
+		if health.err != "" {
+			parts = append(parts, "连通性: 不可达（"+health.err+"）")
+		} else {
+			parts = append(parts, "连通性: 不可达")
+		}
+	}
 	if h.Production {
 		parts = append(parts, "生产环境")
 	}
@@ -457,7 +531,9 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 	selected := current != nil && current.host.ID == h.ID
 	connected := slices.ContainsFunc(a.tabs, func(tb *tab) bool { return tb.host.ID == h.ID })
 	_, busy := a.connecting[h.ID]
-	menu := a.hostMenu(h)
+	health := a.health[h.ID]
+	menu := a.hostMenu(c, h)
+	filtering := strings.TrimSpace(a.hostFilter) != "" || a.activeTag != ""
 
 	// 外层负责背景、悬停和选中高亮，里面并排放主机按钮和“更多”按钮。
 	// 两个按钮不能嵌套：嵌在按钮里的按钮，读屏软件和键盘都找不到。
@@ -468,7 +544,7 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		line.Background(colors.Hover)
 	}
 	var showInsertLine bool
-	if strings.TrimSpace(a.hostFilter) == "" {
+	if !filtering {
 		if dragged, ok := ui.DragOver[hostDrag](line); ok && dragged.ID != h.ID {
 			showInsertLine = true
 		}
@@ -487,9 +563,9 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 		if selected {
 			selectionPill(c, colors, "hosts", colors.Selected, true)
 		}
-		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Tooltip(hostTooltip(h)).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
+		row := ui.ButtonBase(c).Key("host:"+h.ID).Label(h.Name).Tooltip(hostTooltip(h, health)).Grow(1).MinWidth(0).Padding(6, 4, 6, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
-		if strings.TrimSpace(a.hostFilter) == "" {
+		if !filtering {
 			row.Drag(hostDrag{ID: h.ID})
 		}
 		if busy {
@@ -511,7 +587,32 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 				ui.Text(c, sub).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine()
 			})
 			if connected {
-				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label(locales.ViewConnected())
+				tip := locales.ViewConnected()
+				if cur := slices.IndexFunc(a.tabs, func(tb *tab) bool { return tb.host.ID == h.ID }); cur >= 0 && a.tabs[cur].latency > 0 {
+					tip += " · " + formatLatency(a.tabs[cur].latency)
+				}
+				ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0).Label(locales.ViewConnected()).Tooltip(tip)
+			} else if health.state != probeUnknown {
+				switch health.state {
+				case probeChecking:
+					ui.Box(c).Size(6, 6).Radius(3).Background(colors.TextFaint).Shrink(0).Label("正在检测").Tooltip("正在检测连通性")
+				case probeOK:
+					dotColor := colors.Live
+					if health.latency >= 150*time.Millisecond {
+						dotColor = t.Accent
+					}
+					tip := "可达"
+					if health.latency > 0 {
+						tip = "可达 · " + formatLatency(health.latency)
+					}
+					ui.Box(c).Size(6, 6).Radius(3).Background(dotColor).Shrink(0).Label("可达").Tooltip(tip)
+				case probeFail:
+					tip := "不可达"
+					if health.err != "" {
+						tip = "不可达：" + health.err
+					}
+					ui.Box(c).Size(6, 6).Radius(3).Border(1.5, colors.TextFaint).Shrink(0).Label("不可达").Tooltip(tip)
+				}
 			}
 		}).OnClick(func() { a.open(h) })
 		row.PopoverMenu(menu)
@@ -543,9 +644,11 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 			iconButton(c, colors, "panel-left", locales.ViewShowSidebar(), func() { a.sidebarOpen = true })
 		}
 		// 标签放不下时一起收窄到只剩斑纹，每个都还能点到、认得出。
+		// 先快照再遍历：右键菜单在渲染帧内重排或关闭标签时，不会造成同帧重复 key 或下标越界。
+		tabs := slices.Clone(a.tabs)
 		ui.Row(c).Grow(1).MinWidth(0).Gap(4).AlignItems(ui.Center).Children(func() {
-			for i, t := range a.tabs {
-				a.tabItem(c, colors, i, t)
+			for i, t := range tabs {
+				a.tabItem(c, colors, i, t, tabs)
 			}
 		})
 		if a.broadcastOn {
@@ -615,11 +718,20 @@ func displayTabTitle(tabs []*tab, idx int) string {
 	return base
 }
 
-// tabMenu 是标签页右键菜单，提供复制标签页和关闭等快捷操作。
+// tabMenu 是标签页右键菜单，提供复制标签页、移动顺序和关闭等快捷操作。
 func (a *app) tabMenu(t *tab) func(m *ui.Menu) {
 	return func(m *ui.Menu) {
 		if m.Item(locales.ViewTabDuplicate()).Chosen() {
 			a.duplicateTab(t)
+		}
+		if len(a.tabs) > 1 {
+			idx := slices.Index(a.tabs, t)
+			if m.Item("左移标签页").Disabled(idx <= 0).Chosen() {
+				a.moveTabItem(t, -1)
+			}
+			if m.Item("右移标签页").Disabled(idx < 0 || idx >= len(a.tabs)-1).Chosen() {
+				a.moveTabItem(t, 1)
+			}
 		}
 		m.Separator()
 		if m.Item(locales.ViewCloseTab(tabLabel(t))).Chosen() {
@@ -643,10 +755,10 @@ func (a *app) tabMenu(t *tab) func(m *ui.Menu) {
 	}
 }
 
-func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
+func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab, tabs []*tab) {
 	theme := c.Theme()
-	selected := i == a.active
-	title := displayTabTitle(a.tabs, i)
+	selected := a.active >= 0 && a.active < len(a.tabs) && a.tabs[a.active] == t
+	title := displayTabTitle(tabs, i)
 	// 只告诉辅助技术“已选中”。不用 Selected()：它会给按钮画一层强调色背景，
 	// 平时被高亮盖住，高亮滑走的那一瞬间会露出一闪的靛蓝色。
 	item := ui.ButtonBase(c).Key(fmt.Sprintf("tab:%d", t.id)).Label(title).AccessSelected(selected).
@@ -684,8 +796,10 @@ func (a *app) tabItem(c *ui.Context, colors design.Colors, i int, t *tab) {
 			}).OnClick(func() { a.closeTab(t) })
 		}
 	}).OnClick(func() {
-		a.active = i
-		a.saveSessionLayout()
+		if idx := slices.Index(a.tabs, t); idx >= 0 {
+			a.active = idx
+			a.saveSessionLayout()
+		}
 	})
 }
 
@@ -998,6 +1112,22 @@ func (a *app) paneHeader(c *ui.Context, colors design.Colors, t *tab, p *pane) {
 				a.togglePaneBroadcast(t, p)
 			})
 		}
+		aiLabel := locales.AiAnalyzeOutput()
+		if t.root.leaves() > 1 {
+			aiLabel = fmt.Sprintf("%s %d", locales.AiAnalyzeOutput(), paneOrdinal(t.root, p))
+		}
+		aiPaneBtn := ui.ButtonBase(c).Key(fmt.Sprintf("paneAI:%d", p.id)).Label(aiLabel).
+			Tooltip(locales.AiAnalyzeOutput()+"（"+shortcutText("E")+"）").
+			Size(26, 26).Center().Radius(design.RadiusRow).Shrink(0).Transition(design.Hover)
+		if aiPaneBtn.Hovered() {
+			aiPaneBtn.Background(colors.Hover)
+		}
+		aiPaneBtn.Children(func() {
+			ui.Icon(c, design.Icon("sparkles")).FontSize(13).TextColor(theme.TextMuted)
+		}).OnClick(func() {
+			t.focus = p
+			a.openAIExplainFromActivePane()
+		})
 		moreLabel := locales.PaneMoreActions()
 		if t.root.leaves() > 1 {
 			moreLabel = fmt.Sprintf("%s %d", locales.PaneMoreActions(), paneOrdinal(t.root, p))
