@@ -94,12 +94,17 @@ type app struct {
 	reconnectBaseDelay time.Duration
 
 	sidebarOpen bool
-	filesOpen   bool
+	// sidebarWidth 是左侧主机列表宽度（DIP），默认 240，范围 200~360。
+	sidebarWidth    float32
+	sidebarResizing bool
+	filesOpen       bool
 	// filesWidth 是文件抽屉的宽度（DIP），filesSplit 是抽屉内本地栏所占百分比。
 	filesWidth float32
 	filesSplit float32
 	// aiWidth 是右侧 AI Agent 侧栏的宽度（DIP）。
 	aiWidth float32
+	// lastDrawer 记录最近一次主动打开的右侧抽屉（"files" 或 "ai"），窄窗口两者放不下时保留它。
+	lastDrawer string
 	// hostFilter 是侧栏过滤框的内容，只留在内存里，重启后清空。
 	hostFilter string
 
@@ -110,10 +115,12 @@ type app struct {
 	arrived map[int]bool
 
 	// connecting 记录正在连接的主机和取消函数，同一台主机不重复发起连接。
-	connecting      map[string]context.CancelFunc
-	connectingPhase map[string]string
-	customGroups    []string
-	groupSheet      groupDialogState
+	connecting        map[string]context.CancelFunc
+	connectingPhase   map[string]string
+	connectingHost    map[string]hosts.Host
+	lastScrolledTabID int
+	customGroups      []string
+	groupSheet        groupDialogState
 	// notice 显示最近一次连接失败的原因。
 	notice string
 
@@ -232,6 +239,8 @@ type authSheet struct {
 	via    bool
 	creds  map[int]credential
 	secret string
+	// showSecret 控制当前是否明文显示输入的密码或口令。
+	showSecret bool
 	// passphrase 为 true 时询问的是私钥口令，否则是登录密码。
 	// 两者不能混用：把私钥口令当密码发给服务器会造成泄露。
 	passphrase bool
@@ -251,6 +260,7 @@ type challengeSheet struct {
 	instruction string
 	questions   []sshconn.Question
 	answers     []string
+	showAnswers []bool
 	answerChan  chan challengeResult
 }
 
@@ -433,10 +443,16 @@ func (a *app) lockVault() {
 	a.groupSheet = groupDialogState{}
 	a.customGroups = nil
 	a.connectingPhase = nil
+	a.connectingHost = nil
+	a.lastScrolledTabID = 0
 	a.clearBroadcast()
 	a.unlock = unlockState{remember: remembered}
 	a.askingLock = false
 	a.editor = editorState{}
+	a.fileOp = fileOpState{}
+	a.fileDelete = nil
+	a.lastDrawer = ""
+	a.sidebarResizing = false
 	a.toast(ui.Toast{Title: locales.AppVaultLocked()})
 }
 
@@ -525,6 +541,10 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在建立连接与验证身份…"
 
 	leafCount := 1
@@ -563,6 +583,7 @@ func (a *app) connectWithLayout(h hosts.Host, creds map[int]credential, layout *
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				a.connectFailed(ctx, h, route, used, err)
 				return
@@ -941,6 +962,10 @@ func (a *app) connectTelnet(h hosts.Host) {
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在连接 Telnet…"
 
 	port := h.Port
@@ -955,6 +980,7 @@ func (a *app) connectTelnet(h hosts.Host) {
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -981,6 +1007,10 @@ func (a *app) connectSerial(h hosts.Host) {
 	if a.connectingPhase == nil {
 		a.connectingPhase = make(map[string]string)
 	}
+	if a.connectingHost == nil {
+		a.connectingHost = make(map[string]hosts.Host)
+	}
+	a.connectingHost[h.ID] = h
 	a.connectingPhase[h.ID] = "正在打开串口…"
 
 	stopBits := serial.StopBits1
@@ -1001,6 +1031,7 @@ func (a *app) connectSerial(h hosts.Host) {
 			defer cancel()
 			delete(a.connecting, h.ID)
 			delete(a.connectingPhase, h.ID)
+			delete(a.connectingHost, h.ID)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -2062,6 +2093,7 @@ func (a *app) toggleFiles() {
 	}
 	a.filesOpen = !a.filesOpen
 	if a.filesOpen {
+		a.lastDrawer = "files"
 		a.ensureFiles(t)
 	}
 }

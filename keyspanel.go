@@ -38,6 +38,7 @@ type keyPanel struct {
 	genIndex       int  // 生成类型：0 Ed25519，1 RSA 4096
 	name, pem      string
 	passphrase     string
+	showPassphrase bool
 	savePassphrase bool
 	busy           bool // 正在生成 RSA 密钥（需要一两秒）
 	err            string
@@ -59,7 +60,7 @@ func (a *app) openKeys() {
 func (a *app) startAddKey() {
 	p := &a.keyPanel
 	p.page, p.err = keyAdd, ""
-	p.name, p.pem, p.passphrase, p.savePassphrase, p.generate, p.addingMode, p.genIndex = "", "", "", true, false, 0, 0
+	p.name, p.pem, p.passphrase, p.showPassphrase, p.savePassphrase, p.generate, p.addingMode, p.genIndex = "", "", "", false, true, false, 0, 0
 }
 
 func (a *app) showKey(id string) {
@@ -298,7 +299,7 @@ func (a *app) keysDialog(c *ui.Context, colors design.Colors) {
 	sheet(c, colors, &p.open, &p.fresh, 520, 22, func() {
 		switch p.page {
 		case keyAdd:
-			a.keyAddPage(c)
+			a.keyAddPage(c, colors)
 		case keyDetail:
 			a.keyDetailPage(c, colors)
 		default:
@@ -313,6 +314,8 @@ func (a *app) keysDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.KeyTitle()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -323,12 +326,15 @@ func (a *app) keyListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.KeyEmptyTitle()).FontWeight(600)
 				ui.Text(c, locales.KeyEmptyBody()).FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
+		} else {
+			ui.Scroll(c).Key("keysListScroll").MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, k := range a.keys {
+						a.keyRow(c, colors, k)
+					}
+				})
+			})
 		}
-		ui.Column(c).Gap(2).Children(func() {
-			for _, k := range a.keys {
-				a.keyRow(c, colors, k)
-			}
-		})
 		if p := &a.keyPanel; p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
@@ -404,7 +410,7 @@ func (a *app) keyRow(c *ui.Context, colors design.Colors, k keys.Key) {
 	})
 }
 
-func (a *app) keyAddPage(c *ui.Context) {
+func (a *app) keyAddPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	p := &a.keyPanel
 	ui.Column(c).Gap(12).Children(func() {
@@ -426,8 +432,7 @@ func (a *app) keyAddPage(c *ui.Context) {
 				ui.Segmented(c, &p.genIndex, "Ed25519", "RSA 4096")
 			}).Description(locales.KeyTypeHint())
 			ui.Field(c, locales.KeyPassphraseOptional(), func() {
-				c.Key("keyPassphrase")
-				ui.TextInput(c, &p.passphrase).Password()
+				passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, nil)
 			}).Description(locales.KeyPassphraseHint())
 		} else {
 			ui.Field(c, locales.PrivateKey(), func() {
@@ -443,8 +448,7 @@ func (a *app) keyAddPage(c *ui.Context) {
 			}).Description(locales.KeyPemHint())
 			if keys.Encrypted([]byte(strings.TrimSpace(p.pem) + "\n")) {
 				ui.Field(c, locales.Passphrase(), func() {
-					c.Key("keyPassphrase")
-					ui.TextInput(c, &p.passphrase).Password()
+					passwordInput(c, colors, "keyPassphrase", "私钥口令", &p.passphrase, &p.showPassphrase, nil)
 				})
 				c.Key("keySavePassphrase")
 				ui.Checkbox(c, &p.savePassphrase, locales.KeySavePassphrase())
@@ -459,7 +463,7 @@ func (a *app) keyAddPage(c *ui.Context) {
 					a.keyPanel = keyPanel{}
 					return
 				}
-				p.page, p.err = keyList, ""
+				p.page, p.err, p.showPassphrase = keyList, "", false
 			})
 			label := locales.Add()
 			switch {

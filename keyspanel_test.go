@@ -250,3 +250,59 @@ func TestPastingPublicKeyIsExplained(t *testing.T) {
 		t.Fatalf("err=%q", h.a.keyPanel.err)
 	}
 }
+
+func TestPanelsOverflowScrollAndLayout(t *testing.T) {
+	h := newHarness(t)
+	h.tt.SetSize(1100, 720)
+	var changes []keys.Key
+	_ = changes
+	baseKey, _ := keys.Generate(keys.Ed25519, "base", "", "")
+	for i := 0; i < 15; i++ {
+		k := baseKey
+		k.ID = fmt.Sprintf("k-%02d", i)
+		k.Name = fmt.Sprintf("key-%02d", i)
+		if err := h.a.apply(keyChange(k)); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.a.apply(proxyChange(hosts.Proxy{
+			ID:      fmt.Sprintf("px-%02d", i),
+			Name:    fmt.Sprintf("proxy-%02d", i),
+			Kind:    hosts.ProxySOCKS5,
+			Address: "127.0.0.1",
+			Port:    1080 + i,
+		})); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.a.apply(snippetChange(snippet{
+			ID:   fmt.Sprintf("sn-%02d", i),
+			Name: fmt.Sprintf("snippet-%02d", i),
+			Body: fmt.Sprintf("echo %d", i),
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	assertFits := func(name string) {
+		t.Helper()
+		h.tt.Frame()
+		doneBox, ok := h.tt.Find("完成")
+		if !ok {
+			t.Fatalf("%s 找不到完成按钮", name)
+		}
+		if doneBox.Y+doneBox.H > 720 {
+			t.Fatalf("%s 过多条目把完成按钮挤出窗口: doneBox=%+v", name, doneBox)
+		}
+	}
+
+	h.a.openKeys()
+	assertFits("密钥列表")
+	h.a.keyPanel = keyPanel{}
+
+	h.a.openProxies()
+	assertFits("代理列表")
+	h.a.proxyPanel = proxyPanel{}
+
+	h.a.openSnippets()
+	assertFits("片段列表")
+	h.a.snippetPanel = snippetPanel{}
+}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"serval/core/hosts"
 )
 
 func localEcho(t *testing.T) (host string, port int) {
@@ -197,5 +199,41 @@ func TestForwardRuleAddStartStopDelete(t *testing.T) {
 	h.tt.Frame()
 	if len(h.a.forwards) != 0 || len(h.a.tunnels) != 0 {
 		t.Fatalf("删除后应没有规则和监听: forwards=%d tunnels=%d err=%q", len(h.a.forwards), len(h.a.tunnels), h.a.forwardPanel.err)
+	}
+}
+
+func TestForwardLongNameAndHostSelect(t *testing.T) {
+	h := newHarness(t)
+	h.tt.SetSize(1100, 720)
+	longName := strings.Repeat("超长端口转发规则名称-", 5) + "tail"
+	if err := h.a.apply(forwardChange(hosts.Forward{
+		ID:         "f-long",
+		Name:       longName,
+		Kind:       hosts.ForwardLocal,
+		BindHost:   "127.0.0.1",
+		BindPort:   freeLoopbackPort(t),
+		TargetHost: "127.0.0.1",
+		TargetPort: 5432,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	h.click("端口转发")
+	h.tt.Frame()
+	runBox, okRun := h.tt.Find("启动 " + longName)
+	delBox, okDel := h.tt.Find("删除 " + longName)
+	if !okRun || !okDel {
+		t.Fatalf("找不到启停或删除按钮: okRun=%v okDel=%v texts=%q", okRun, okDel, h.tt.Texts())
+	}
+	if delBox.X+delBox.W > 1100 || delBox.W > 40 {
+		t.Fatalf("删除图标按钮布局异常（未保持紧凑或超出窗口）: run=%+v del=%+v", runBox, delBox)
+	}
+	if runBox.W > 90 {
+		t.Fatalf("启停按钮应保持紧凑文案: run=%+v", runBox)
+	}
+	// 编辑页绑定主机下拉框显示主机名与目标地址
+	h.click(longName)
+	h.tt.Frame()
+	if !h.tt.HasText("不自动开启") {
+		t.Fatalf("编辑页应展示自动开启下拉框: %q", h.tt.Texts())
 	}
 }

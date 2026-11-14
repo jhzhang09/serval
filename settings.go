@@ -104,6 +104,9 @@ type settings struct {
 	AIKey           string      `json:"aiKey,omitempty"`
 	AIProfiles      []aiProfile `json:"aiProfiles,omitempty"`
 	ActiveAIProfile string      `json:"activeAIProfile,omitempty"`
+
+	// 侧栏空自定义分组（随保险库同步）
+	CustomGroups []string `json:"customGroups,omitempty"`
 }
 
 // aiProfile 保存单个 AI 服务商与模型配置，密钥随保险库加密存储。
@@ -131,6 +134,8 @@ type deviceSettings struct {
 	SavedSession *savedSession `json:"savedSession,omitempty"`
 	// CollapsedGroups 是侧栏里折叠起来的分组名。只记在本机，不随保险库同步。
 	CollapsedGroups []string `json:"collapsedGroups,omitempty"`
+	// SidebarWidth 是本机侧栏宽度（DIP），0 表示使用默认值 240。
+	SidebarWidth float32 `json:"sidebarWidth,omitempty"`
 	// DisableDefaultMonitor 为真时，新建 SSH 会话不默认开启顶栏服务器监控。
 	DisableDefaultMonitor bool `json:"disableDefaultMonitor,omitempty"`
 	// HostMonitor 记录各台主机上次的监控开关状态。
@@ -200,6 +205,7 @@ type settingsTab int
 
 const (
 	settingsTabGeneral settingsTab = iota
+	settingsTabSecurity
 	settingsTabTerminal
 	settingsTabSync
 	settingsTabAI
@@ -219,6 +225,9 @@ type settingsPanel struct {
 	currentPassword string
 	newPassword     string
 	confirmPassword string
+	showCurrentPw   bool
+	showNewPw       bool
+	showConfirmPw   bool
 	changePwErr     string
 	// changePwBusy 表示正在后台派生密钥（两次 Argon2id），期间按钮禁用。
 	changePwBusy bool
@@ -226,22 +235,25 @@ type settingsPanel struct {
 	revealChangePw bool
 	restoreSession bool
 
-	// 同步页的草稿。密码只在点保存时写入系统安全存储，空着表示保留已有密码。
-	syncKind     string // "WebDAV" 或 "S3 兼容存储"
-	syncVendor   string // 厂商预设
-	syncSubDir   string // 远程根目录，如 serval
-	syncOn       bool
-	probeBusy    bool
-	probeOK      bool
-	probeMsg     string
-	askSyncMerge bool
-	allowMerge   bool
+	// 同步页的草稿。密码只在保存或离开同步页/关闭设置时写入系统安全存储，空着表示保留已有密码。
+	syncKind         string // "WebDAV" 或 "S3 兼容存储"
+	syncVendor       string // 厂商预设
+	syncSubDir       string // 远程根目录，如 serval
+	syncOn           bool
+	probeBusy        bool
+	probeOK          bool
+	probeMsg         string
+	askSyncMerge     bool
+	allowMerge       bool
+	showSyncPassword bool
+	showS3Secret     bool
 
 	// AI 助手页草稿
 	aiProfileName string
 	aiBaseURL     string
 	aiModel       string
 	aiKey         string
+	showAIKey     bool
 	aiTestBusy    bool
 	aiTestOK      bool
 	aiTestMsg     string
@@ -266,12 +278,13 @@ type settingsPanel struct {
 
 // restorePanel 是空设备“从同步恢复”的面板。
 type restorePanel struct {
-	open, fresh bool
-	url         string
-	user        string
-	password    string
-	busy        bool
-	err         string
+	open, fresh  bool
+	url          string
+	user         string
+	password     string
+	showPassword bool
+	busy         bool
+	err          string
 }
 
 // openSettings 打开设置面板。
@@ -490,6 +503,7 @@ func (a *app) submitChangePassword() {
 			default:
 				p.changePwOpen = false
 				p.currentPassword, p.newPassword, p.confirmPassword, p.changePwErr = "", "", "", ""
+				p.showCurrentPw, p.showNewPw, p.showConfirmPw = false, false, false
 				a.noteVaultChanged()
 				a.toast(ui.Toast{Title: locales.SetPasswordChanged()})
 			}
@@ -542,17 +556,25 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.Settings()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
 				tabIdx := int(p.tab)
 				c.Key("settingsTab")
-				ui.Segmented(c, &tabIdx, locales.SetGeneral(), locales.SetTerminal(), "同步", "AI").OnChange(func() {
-					if p.tab == settingsTabAI && settingsTab(tabIdx) != settingsTabAI {
+				ui.Segmented(c, &tabIdx, locales.SetGeneral(), "安全", locales.SetTerminal(), "同步", "AI").OnChange(func() {
+					nextTab := settingsTab(tabIdx)
+					if p.tab == settingsTabAI && nextTab != settingsTabAI {
 						a.commitAISettings()
 					}
-					p.tab = settingsTab(tabIdx)
+					if p.tab == settingsTabSync && nextTab != settingsTabSync {
+						a.commitSyncDraft()
+					}
+					p.tab = nextTab
 				})
 				if int(p.tab) != tabIdx {
+					nextTab := settingsTab(tabIdx)
 					if p.tab == settingsTabAI {
 						a.commitAISettings()
 					}
-					p.tab = settingsTab(tabIdx)
+					if p.tab == settingsTabSync {
+						a.commitSyncDraft()
+					}
+					p.tab = nextTab
 				}
 			})
 			ui.Scroll(c).Key("settingsScroll").MaxHeight(max(windowHeight-165, 120)).Children(func() {
@@ -565,21 +587,6 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 								a.setAppearance(appearanceModes[mode])
 							})
 						}).Description(locales.SetAppearanceHint())
-
-						autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
-						if autoLockIdx < 0 {
-							autoLockIdx = 0
-						}
-						ui.Field(c, locales.SetAutoLock(), func() {
-							c.Key("settingsAutoLock")
-							ui.Segmented(c, &autoLockIdx, locales.SetNever(), locales.SetLock5Min(), locales.SetLock15Min(), locales.SetLock30Min(), locales.SetLock1Hour()).OnChange(func() {
-								next := a.local
-								next.AutoLockMinutes = autoLockChoices[autoLockIdx]
-								if err := a.saveLocal(next); err != nil {
-									p.err = err.Error()
-								}
-							})
-						}).Description(locales.SetAutoLockHint())
 
 						ui.Field(c, locales.SetSessionRestore(), func() {
 							c.Key("settingsRestoreSession")
@@ -638,76 +645,12 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 							})
 						}).Description("连接后会在远端执行一次只读命令读取 /etc/os-release。对审计严格的服务器可关闭此项，改在主机编辑里手动指定。")
 
-						if a.deviceAvailable() && a.vault != nil && a.vault.State() != vault.Unprotected {
-							ui.Field(c, locales.SetRememberMasterPassword(), func() {
-								c.Key("settingsRemember")
-								ui.Checkbox(c, &p.rememberDevice, locales.SetRememberOnDevice()).OnChange(func() {
-									a.rememberOnDevice(p.rememberDevice)
-									if p.rememberDevice {
-										a.toast(ui.Toast{Title: locales.SetRemembered()})
-									} else {
-										a.toast(ui.Toast{Title: locales.SetRememberCleared()})
-									}
-								})
-							}).Description(locales.SetRememberHint())
-						}
-
-						if a.vault != nil && a.vault.State() != vault.Unprotected {
-							if !p.changePwOpen {
-								ui.Row(c).Children(func() {
-									ui.Button(c, locales.SetChangeMasterPassword()).Key("settingsOpenChangePw").OnClick(func() {
-										p.changePwOpen = true
-										p.revealChangePw = true
-										p.currentPassword = ""
-										p.newPassword = ""
-										p.confirmPassword = ""
-										p.changePwErr = ""
-									})
-								})
-							} else {
-								form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
-								if p.revealChangePw {
-									p.revealChangePw = false
-									form.ScrollIntoView()
-								}
-								form.Children(func() {
-									ui.Text(c, locales.SetChangeMasterPasswordTitle()).FontWeight(600)
-									ui.Field(c, locales.SetCurrentMasterPassword(), func() {
-										c.Key("settingsCurrentPw")
-										ui.TextInput(c, &p.currentPassword).Password().AutoFocus()
-									})
-									ui.Field(c, locales.SetNewMasterPassword(), func() {
-										c.Key("settingsNewPw")
-										ui.TextInput(c, &p.newPassword).Password()
-									}).Description(locales.PasswordMin(vault.MinPasswordLength))
-									ui.Field(c, locales.SetConfirmMasterPassword(), func() {
-										c.Key("settingsConfirmPw")
-										ui.TextInput(c, &p.confirmPassword).Password()
-									})
-									if p.changePwErr != "" {
-										ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
-									}
-									ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-										ui.Button(c, locales.Cancel()).Key("settingsCancelPw").OnClick(func() {
-											p.changePwOpen = false
-											p.changePwErr = ""
-										})
-										label := locales.SetSaveNewPassword()
-										if p.changePwBusy {
-											label = locales.SetSaving()
-										}
-										ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
-											a.submitChangePassword()
-										})
-									})
-								})
-							}
-						}
-
-						ui.Divider(c)
-						a.knownHostsSection(c, colors)
 						ui.Divider(c)
 						a.aboutAndUpdatesSection(c, colors)
+						return
+					}
+					if p.tab == settingsTabSecurity {
+						a.settingsSecuritySection(c, colors)
 						return
 					}
 					if p.tab == settingsTabSync {
@@ -793,6 +736,7 @@ func (a *app) settingsDialog(c *ui.Context, colors design.Colors) {
 func (a *app) closeSettings() {
 	p := &a.settingsPanel
 	a.commitAISettings()
+	a.commitSyncDraft()
 	if a.setup.open {
 		p.open = true
 		p.active = true
@@ -808,6 +752,95 @@ func (a *app) closeSettings() {
 		return
 	}
 	a.settingsPanel = settingsPanel{}
+}
+
+// settingsSecuritySection 是设置里的“安全”页：自动锁定、设备记住密钥、修改主密码、已知主机。
+func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
+	p := &a.settingsPanel
+	autoLockIdx := slices.Index(autoLockChoices, a.local.AutoLockMinutes)
+	if autoLockIdx < 0 {
+		autoLockIdx = 0
+	}
+	ui.Field(c, locales.SetAutoLock(), func() {
+		c.Key("settingsAutoLock")
+		ui.Segmented(c, &autoLockIdx, locales.SetNever(), locales.SetLock5Min(), locales.SetLock15Min(), locales.SetLock30Min(), locales.SetLock1Hour()).OnChange(func() {
+			next := a.local
+			next.AutoLockMinutes = autoLockChoices[autoLockIdx]
+			if err := a.saveLocal(next); err != nil {
+				p.err = err.Error()
+			}
+		})
+	}).Description(locales.SetAutoLockHint())
+
+	if a.deviceAvailable() && a.vault != nil && a.vault.State() != vault.Unprotected {
+		ui.Field(c, locales.SetRememberMasterPassword(), func() {
+			c.Key("settingsRemember")
+			ui.Checkbox(c, &p.rememberDevice, locales.SetRememberOnDevice()).OnChange(func() {
+				a.rememberOnDevice(p.rememberDevice)
+				if p.rememberDevice {
+					a.toast(ui.Toast{Title: locales.SetRemembered()})
+				} else {
+					a.toast(ui.Toast{Title: locales.SetRememberCleared()})
+				}
+			})
+		}).Description(locales.SetRememberHint())
+	}
+
+	if a.vault != nil && a.vault.State() != vault.Unprotected {
+		if !p.changePwOpen {
+			ui.Row(c).Children(func() {
+				ui.Button(c, locales.SetChangeMasterPassword()).Key("settingsOpenChangePw").OnClick(func() {
+					p.changePwOpen = true
+					p.revealChangePw = true
+					p.currentPassword = ""
+					p.newPassword = ""
+					p.confirmPassword = ""
+					p.showCurrentPw, p.showNewPw, p.showConfirmPw = false, false, false
+					p.changePwErr = ""
+				})
+			})
+		} else {
+			form := ui.Column(c).Key("settingsChangePwForm").Gap(10).Padding(12).Radius(design.RadiusRow).Background(colors.Hover)
+			if p.revealChangePw {
+				p.revealChangePw = false
+				form.ScrollIntoView()
+			}
+			form.Children(func() {
+				ui.Text(c, locales.SetChangeMasterPasswordTitle()).FontWeight(600)
+				ui.Field(c, locales.SetCurrentMasterPassword(), func() {
+					passwordInput(c, colors, "settingsCurrentPw", locales.SetCurrentMasterPassword(), &p.currentPassword, &p.showCurrentPw, func(el ui.Element) {
+						el.AutoFocus()
+					})
+				})
+				ui.Field(c, locales.SetNewMasterPassword(), func() {
+					passwordInput(c, colors, "settingsNewPw", locales.SetNewMasterPassword(), &p.newPassword, &p.showNewPw, nil)
+				}).Description(locales.PasswordMin(vault.MinPasswordLength))
+				ui.Field(c, locales.SetConfirmMasterPassword(), func() {
+					passwordInput(c, colors, "settingsConfirmPw", locales.SetConfirmMasterPassword(), &p.confirmPassword, &p.showConfirmPw, nil)
+				})
+				if p.changePwErr != "" {
+					ui.Text(c, p.changePwErr).Key("settingsChangePwError").TextColor(colors.Danger).FontSize(design.TextSmall)
+				}
+				ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+					ui.Button(c, locales.Cancel()).Key("settingsCancelPw").OnClick(func() {
+						p.changePwOpen = false
+						p.showCurrentPw, p.showNewPw, p.showConfirmPw = false, false, false
+						p.changePwErr = ""
+					})
+					label := locales.SetSaveNewPassword()
+					if p.changePwBusy {
+						label = locales.SetSaving()
+					}
+					ui.PrimaryButton(c, label).Key("settingsSavePw").Disabled(p.changePwBusy).OnClick(func() {
+						a.submitChangePassword()
+					})
+				})
+			})
+		}
+	}
+
+	ui.Divider(c)
+	a.knownHostsSection(c, colors)
 }
 
 var (
@@ -861,8 +894,9 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		})
 
 		ui.Field(c, "WebDAV 密码", func() {
-			c.Key("webdavPassword")
-			ui.TextInput(c, &p.webdavPassword).Password().Placeholder("应用密码（坚果云请使用“第三方应用密码”）")
+			passwordInput(c, colors, "webdavPassword", "WebDAV 密码", &p.webdavPassword, &p.showSyncPassword, func(el ui.Element) {
+				el.Placeholder("应用密码（坚果云请使用“第三方应用密码”）")
+			})
 		}).Description("密码保存在系统安全存储中，不会以明文保存。")
 
 	} else {
@@ -917,8 +951,9 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		})
 
 		ui.Field(c, "Secret Access Key", func() {
-			c.Key("s3Secret")
-			ui.TextInput(c, &p.s3Secret).Password().Placeholder("留空则保持现有密钥")
+			passwordInput(c, colors, "s3Secret", "Secret Access Key", &p.s3Secret, &p.showS3Secret, func(el ui.Element) {
+				el.Placeholder("留空则保持现有密钥")
+			})
 		}).Description("密钥保存在系统安全存储中，不会以明文保存。")
 
 		ui.Field(c, "Endpoint 终端节点", func() {
@@ -960,6 +995,8 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 				p.s3AccessID = ""
 				p.s3Secret = ""
 				p.s3Endpoint = ""
+				p.showSyncPassword = false
+				p.showS3Secret = false
 				a.configureSync("", "", "", false)
 				a.toast(ui.Toast{Title: "已清除同步配置"})
 			})
@@ -989,13 +1026,11 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	}
 
 	if a.syncConfigured() {
-		ui.Row(c).Gap(10).Children(func() {
-			ui.PrimaryButton(c, "上传到云端").Key("syncPush").Disabled(a.syncing).OnClick(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.PrimaryButton(c, "立即同步").Key("syncNowBtn").Disabled(a.syncing).OnClick(func() {
 				a.syncNow(true)
 			})
-			ui.Button(c, "从云端下载").Key("syncPull").Disabled(a.syncing).OnClick(func() {
-				a.syncNow(true)
-			})
+			ui.Text(c, "基于记录版本自动与远端双向合并同步").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 		})
 	}
 
@@ -1352,9 +1387,10 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 	}).Description("例如：deepseek-chat, gpt-4o-mini, qwen-plus 等")
 
 	ui.Field(c, "API Key (访问密钥)", func() {
-		c.Key("setAIKey")
-		ui.TextInput(c, &p.aiKey).Password().Placeholder("sk-...").OnSubmit(func() {
-			a.commitAISettings()
+		passwordInput(c, colors, "setAIKey", "API Key", &p.aiKey, &p.showAIKey, func(el ui.Element) {
+			el.Placeholder("sk-...").OnSubmit(func() {
+				a.commitAISettings()
+			})
 		})
 	}).Description("密钥会加密保存进保险库（随同步），修改后在关闭设置或回车时自动保存。")
 

@@ -573,8 +573,11 @@ func TestSyncS3SettingsUIAndManualTrigger(t *testing.T) {
 	if h.a.local.SyncUser != "AKIA123456" {
 		t.Fatalf("保存后 SyncUser=%q", h.a.local.SyncUser)
 	}
-	if !h.tt.HasText("上传到云端") || !h.tt.HasText("从云端下载") {
-		t.Fatalf("已配置同步时应展示手动上传和下载按钮: %q", h.tt.Texts())
+	if !h.tt.HasText("立即同步") {
+		t.Fatalf("已配置同步时应展示立即同步按钮: %q", h.tt.Texts())
+	}
+	if h.tt.HasText("上传到云端") || h.tt.HasText("从云端下载") {
+		t.Fatalf("不应再展示旧的上传/下载双按钮: %q", h.tt.Texts())
 	}
 
 	// 测试清除配置
@@ -582,6 +585,51 @@ func TestSyncS3SettingsUIAndManualTrigger(t *testing.T) {
 	h.tt.Frame()
 	if h.a.local.SyncOn || h.a.local.SyncURL != "" {
 		t.Fatal("清除后配置应为空")
+	}
+}
+
+func TestSyncDraftAutoSavesOnTabSwitchAndClose(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() {
+		h.a.stopSyncLoop()
+	})
+	h.click("设置")
+	h.tt.Frame()
+	h.click("同步")
+	h.tt.Frame()
+
+	// 在 WebDAV 草稿填写配置后，不点“保存配置”，直接切换分页到“安全”：草稿应自动持久化。
+	h.a.settingsPanel.webdavServer = "http://127.0.0.1:18080/dav"
+	h.a.settingsPanel.webdavUser = "alice"
+	h.a.settingsPanel.webdavPassword = "webdav-secret-1"
+	h.a.settingsPanel.showSyncPassword = true
+	h.tt.Frame()
+
+	h.click("安全")
+	h.tt.Frame()
+	if h.a.local.SyncURL != "http://127.0.0.1:18080/dav/serval/vault.json" {
+		t.Fatalf("切换分页应自动保存 WebDAV 地址，实际 %q", h.a.local.SyncURL)
+	}
+	if h.a.local.SyncUser != "alice" || h.a.syncPassword() != "webdav-secret-1" {
+		t.Fatalf("切换分页应自动保存账号与密码: user=%q pass=%q", h.a.local.SyncUser, h.a.syncPassword())
+	}
+	if h.a.settingsPanel.showSyncPassword {
+		t.Fatal("自动保存后应重置同步密码明文显示开关")
+	}
+
+	// 切回同步页修改账号并勾选“自动同步”（非空保险库尚未确认合并），直接点“完成”关闭设置：
+	// 修改的账号应保存，但不会跳过合并确认直接开启 SyncOn。
+	h.click("同步")
+	h.tt.Frame()
+	h.a.settingsPanel.webdavUser = "bob"
+	h.a.settingsPanel.syncOn = true
+	h.click("完成")
+	h.tt.Frame()
+	if h.a.local.SyncUser != "bob" {
+		t.Fatalf("关闭设置时应自动保存修改后的账号，实际 %q", h.a.local.SyncUser)
+	}
+	if h.a.local.SyncOn {
+		t.Fatal("非空保险库未经合并确认不应在关闭设置时直接开启自动同步")
 	}
 }
 

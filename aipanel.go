@@ -176,6 +176,7 @@ func (a *app) activeTargetOS() string {
 func (a *app) openAI() {
 	a.ai.open = true
 	a.ai.fresh = true
+	a.lastDrawer = "ai"
 	a.ai.targetOS = a.activeTargetOS()
 }
 
@@ -661,7 +662,7 @@ func (a *app) runSlashCommand(sc aiSlashCommand) {
 }
 
 // aiDrawer 在右侧渲染可拖拽调节宽度的 AI Agent 停靠面板。
-func (a *app) aiDrawer(c *ui.Context, colors design.Colors) {
+func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32) {
 	p := &a.ai
 	if !p.open {
 		return
@@ -669,18 +670,22 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors) {
 	if a.aiWidth <= 0 {
 		a.aiWidth = 430
 	}
+	if width <= 0 {
+		width = a.aiWidth
+	}
+	if maxW < 340 {
+		maxW = 340
+	}
 
 	// 左侧拖拽手柄（不做宽度动画，避免终端连续收到 SIGWINCH）
 	grip := ui.Box(c).Key("aiDrawerResize").Width(8).Shrink(0).Margin(design.Gap/2, -4).
 		Cursor(ui.CursorResizeEW).Focusable().Label("调整 AI 面板宽度")
 	dx, _, held := grip.Dragged()
-	windowWidth, _ := c.Size()
-	maxW := max(float32(340), windowWidth-360)
 	switch {
 	case grip.DoubleClicked():
 		a.aiWidth = 430
 	case held && dx != 0:
-		a.aiWidth = min(max(a.aiWidth-dx, 340), maxW)
+		a.aiWidth = min(max(width-dx, 340), maxW)
 	}
 	if held || grip.Hovered() {
 		accent := c.Theme().Accent
@@ -689,7 +694,7 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors) {
 		})
 	}
 
-	drawer := raised(ui.Column(c).Key("aiDrawer").Width(a.aiWidth).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
+	drawer := raised(ui.Column(c).Key("aiDrawer").Width(width).Shrink(0).Margin(design.Gap/2).Clip(), colors, design.RadiusCard)
 	drawer.Transition(design.SlideIn(18)).Children(func() {
 		a.aiDrawerHeader(c, colors)
 		a.aiMessageStream(c, colors)

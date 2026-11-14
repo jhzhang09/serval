@@ -309,3 +309,51 @@ func dragRow(t *testing.T, h *harness, label string) {
 	h.tt.Key(0, ui.KeyEscape)
 	h.tt.Frame()
 }
+
+func TestTransferQueueRetryDismissAndClearFinished(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	h.click(locales.ViewFilesShortcut(shortcutText("J")))
+	h.pump("打开文件抽屉", func() bool { return tb.dir != "" })
+
+	// 触发一次必然失败的下载（远端文件尚不存在）
+	remoteMissing := filepath.Join(tb.dir, "retry-target.txt")
+	localDst := filepath.Join(t.TempDir(), "retry-target.txt")
+	h.a.runTransfer(tb, transferDownload, remoteMissing, localDst, "retry-target.txt", false)
+	h.pump("下载失败进入队列", func() bool {
+		return len(tb.transfers) == 1 && tb.transfers[0].done.Load() && tb.transfers[0].err != ""
+	})
+	h.tt.Frame()
+	if !h.tt.HasText("清除已完成") {
+		t.Fatalf("队列有已结束项时应显示清除已完成: %q", h.tt.Texts())
+	}
+
+	// 补齐远端文件后点重试
+	if err := os.WriteFile(remoteMissing, []byte("recovered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(remoteMissing) })
+	h.click("重试 retry-target.txt")
+	h.pump("重试下载成功", func() bool {
+		got, err := os.ReadFile(localDst)
+		return err == nil && string(got) == "recovered" &&
+			len(tb.transfers) == 1 && tb.transfers[0].done.Load() && tb.transfers[0].err == ""
+	})
+
+	// 再增加一条完成记录，先单条移除一条，再用“清除已完成”清空队列
+	doneItem := &fileTransfer{id: 99999, kind: transferUpload, fileName: "second-done.txt"}
+	doneItem.done.Store(true)
+	tb.transfers = append(tb.transfers, doneItem)
+	h.tt.Frame()
+	h.click("移除传输记录 retry-target.txt")
+	h.tt.Frame()
+	if len(tb.transfers) != 1 || tb.transfers[0].fileName != "second-done.txt" {
+		t.Fatalf("单条移除后应只剩 second-done.txt: %+v", tb.transfers)
+	}
+
+	h.click("清除已完成")
+	h.tt.Frame()
+	if len(tb.transfers) != 0 {
+		t.Fatalf("清除已完成后队列应为空，实际 %d", len(tb.transfers))
+	}
+}

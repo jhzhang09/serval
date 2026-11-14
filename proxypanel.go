@@ -24,6 +24,7 @@ type proxyPanel struct {
 	fromForm bool
 
 	name, address, port, user, password string
+	showPassword                        bool
 	kind                                int // 0 SOCKS5，1 HTTP
 	passwordSaved, clearPassword        bool
 	err                                 string
@@ -44,6 +45,7 @@ func (a *app) editProxy(p hosts.Proxy) {
 	pp := &a.proxyPanel
 	pp.editing, pp.id, pp.err = true, p.ID, ""
 	pp.name, pp.address, pp.user, pp.password = p.Name, p.Address, p.User, ""
+	pp.showPassword = false
 	pp.port = strconv.Itoa(p.Port)
 	pp.kind = max(slices.Index(proxyKinds, p.Kind), 0)
 	pp.passwordSaved, pp.clearPassword = p.Password != "", false
@@ -75,7 +77,7 @@ func (a *app) closeProxyEdit() {
 		return
 	}
 	p := &a.proxyPanel
-	p.editing, p.id, p.err, p.password = false, "", "", ""
+	p.editing, p.id, p.err, p.password, p.showPassword = false, "", "", "", false
 }
 
 // saveProxy 校验并保存代理。填了密码而保险库还没有主密码时，先设置主密码。
@@ -155,7 +157,7 @@ func (a *app) proxiesDialog(c *ui.Context, colors design.Colors) {
 	}
 	sheet(c, colors, &p.open, &p.fresh, 480, 22, func() {
 		if p.editing {
-			a.proxyEditPage(c)
+			a.proxyEditPage(c, colors)
 		} else {
 			a.proxyListPage(c, colors)
 		}
@@ -168,6 +170,8 @@ func (a *app) proxiesDialog(c *ui.Context, colors design.Colors) {
 
 func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
+	_, windowHeight := c.Size()
+	maxListH := max(min(windowHeight-240, 340), 120)
 	ui.Column(c).Gap(14).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, locales.Proxy()).FontSize(design.TextHeading).FontWeight(600).Grow(1)
@@ -179,12 +183,15 @@ func (a *app) proxyListPage(c *ui.Context, colors design.Colors) {
 				ui.Text(c, locales.ProxyEmptyBody()).
 					FontSize(design.TextSmall).TextColor(t.TextMuted)
 			})
+		} else {
+			ui.Scroll(c).Key("proxiesListScroll").MaxHeight(maxListH).Children(func() {
+				ui.Column(c).Gap(2).Padding(0, 4, 0, 0).Children(func() {
+					for _, px := range a.proxies {
+						a.proxyRow(c, colors, px)
+					}
+				})
+			})
 		}
-		ui.Column(c).Gap(2).Children(func() {
-			for _, px := range a.proxies {
-				a.proxyRow(c, colors, px)
-			}
-		})
 		if p := &a.proxyPanel; p.err != "" {
 			ui.Text(c, p.err).TextColor(t.Danger)
 		}
@@ -234,7 +241,7 @@ func (a *app) proxyRow(c *ui.Context, colors design.Colors, px hosts.Proxy) {
 	})
 }
 
-func (a *app) proxyEditPage(c *ui.Context) {
+func (a *app) proxyEditPage(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	p := &a.proxyPanel
 	title, submit := locales.AddProxy(), locales.Add()
@@ -282,8 +289,9 @@ func (a *app) proxyEditPage(c *ui.Context) {
 			ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 					ui.Field(c, locales.Password(), func() {
-						c.Key("proxyPassword")
-						ui.TextInput(c, &p.password).Password().Placeholder(placeholder)
+						passwordInput(c, colors, "proxyPassword", "代理密码", &p.password, &p.showPassword, func(el ui.Element) {
+							el.Placeholder(placeholder)
+						})
 					})
 				})
 				if p.passwordSaved {

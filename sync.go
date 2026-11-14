@@ -194,10 +194,52 @@ func (a *app) saveSyncSettings() {
 	p.syncPassword = ""
 	p.webdavPassword = ""
 	p.s3Secret = ""
+	p.showSyncPassword = false
+	p.showS3Secret = false
 	p.syncURL = a.local.SyncURL
 	p.syncUser = a.local.SyncUser
 	p.syncOn = a.local.SyncOn
 	a.toast(ui.Toast{Title: "已保存同步设置"})
+}
+
+// commitSyncDraft 在离开同步分页或关闭设置面板时，若用户填写/修改了有效的同步配置草稿则自动持久化。
+// 若从关闭改为开启同步且本机保险库已有数据、尚未确认合并，仅保存服务器与凭据草稿而不跳过合并确认。
+func (a *app) commitSyncDraft() {
+	p := &a.settingsPanel
+	if p.askSyncMerge {
+		return
+	}
+	fileURL, user, password, err := p.buildDraftConfig()
+	if err != nil {
+		return
+	}
+	user = strings.TrimSpace(user)
+	wantOn := p.syncOn
+	if wantOn && !a.local.SyncOn && a.vault != nil && !a.vault.Empty() && !p.allowMerge {
+		wantOn = false
+	}
+	changed := fileURL != a.local.SyncURL ||
+		user != a.local.SyncUser ||
+		password != "" ||
+		wantOn != a.local.SyncOn ||
+		(a.local.SyncVendor != "" && strings.TrimSpace(p.syncVendor) != a.local.SyncVendor) ||
+		(a.local.SyncKind != "" && strings.TrimSpace(p.syncKind) != a.local.SyncKind) ||
+		(a.local.SyncURL != "" && strings.TrimSpace(p.syncSubDir) != a.local.SyncSubDir)
+	if !changed {
+		return
+	}
+	if err := a.configureSync(fileURL, user, password, wantOn); err != nil {
+		p.err = err.Error()
+		return
+	}
+	p.syncURL = a.local.SyncURL
+	p.syncUser = a.local.SyncUser
+	p.syncOn = a.local.SyncOn
+	p.syncPassword = ""
+	p.webdavPassword = ""
+	p.s3Secret = ""
+	p.showSyncPassword = false
+	p.showS3Secret = false
 }
 
 // testSyncFromPanel 用当前草稿试一次连接，不保存、不上传。密码留空时用已保存的密码。
@@ -291,8 +333,7 @@ func (a *app) restoreDialog(c *ui.Context, colors design.Colors) {
 				ui.TextInput(c, &p.user).Placeholder(userDesc)
 			})
 			ui.Field(c, passLabel, func() {
-				c.Key("restorePassword")
-				ui.TextInput(c, &p.password).Password()
+				passwordInput(c, colors, "restorePassword", passLabel, &p.password, &p.showPassword, nil)
 			}).Description("凭据只存放在这台设备的系统安全存储里。")
 			if p.err != "" {
 				ui.Text(c, p.err).Key("restoreError").FontSize(design.TextSmall).TextColor(colors.Danger).Selectable()

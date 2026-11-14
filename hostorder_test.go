@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"serval/core/hosts"
+	"serval/core/vault"
 )
 
 func TestSortHosts(t *testing.T) {
@@ -162,5 +163,57 @@ func TestRenameAndDeleteGroup(t *testing.T) {
 		if g == "Staging" {
 			t.Fatalf("空分组未删除: %+v", h.a.customGroups)
 		}
+	}
+}
+
+func TestCustomGroupsPersistAcrossReopenAndLock(t *testing.T) {
+	h := newHarness(t)
+	h.a.rememberOnDevice(true)
+
+	h.a.openNewGroup()
+	h.a.groupSheet.name = "EmptyGroup"
+	h.a.submitGroupDialog()
+	h.tt.Frame()
+	if !h.tt.HasText("EmptyGroup") {
+		t.Fatalf("新建空分组后应在侧栏显示: %q", h.tt.Texts())
+	}
+
+	// 重启后空分组应仍在侧栏。
+	h.reopen()
+	if !h.tt.HasText("EmptyGroup") {
+		t.Fatalf("重启后空分组应保留: %q", h.tt.Texts())
+	}
+
+	// 锁定后应清空内存中的分组列表，再次解锁后恢复。
+	h.a.lockVault()
+	h.tt.Frame()
+	if len(h.a.customGroups) != 0 {
+		t.Fatalf("锁库后不应保留 customGroups: %+v", h.a.customGroups)
+	}
+	h.a.unlock.password = masterPassword
+	h.a.submitUnlock()
+	h.pump("重新解锁", func() bool { return !h.a.unlock.busy && h.a.vault.State() == vault.Unlocked })
+	h.tt.Frame()
+	if !h.tt.HasText("EmptyGroup") {
+		t.Fatalf("重新解锁后空分组应恢复: %q", h.tt.Texts())
+	}
+}
+
+func TestMoveHostToEndOfOwnGroup(t *testing.T) {
+	h := newHarness(t)
+	h1 := hosts.Host{ID: "h1", Name: "Host-A", Address: "10.0.0.1", Group: "Servers"}
+	h2 := hosts.Host{ID: "h2", Name: "Host-B", Address: "10.0.0.2", Group: "Servers"}
+	h3 := hosts.Host{ID: "h3", Name: "Host-C", Address: "10.0.0.3", Group: "Servers"}
+	if err := h.a.apply(hostChange(h1), hostChange(h2), hostChange(h3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 将首位主机拖到同组末尾（targetHostID 为空）。
+	if err := h.a.moveHostOrder("h1", "", "Servers"); err != nil {
+		t.Fatal(err)
+	}
+	reordered := h.a.hostsInGroup("Servers")
+	if len(reordered) != 3 || reordered[0].ID != "h2" || reordered[1].ID != "h3" || reordered[2].ID != "h1" {
+		t.Fatalf("移到同组末尾后顺序错误: %+v", reordered)
 	}
 }

@@ -50,6 +50,50 @@ func (a *app) hostKeyDialog(c *ui.Context) {
 	a.prompts = a.prompts[1:]
 }
 
+// passwordInput 构建带“显示/隐藏”眼睛切换按钮的密码输入框。
+// reveal 为 nil 时始终密文显示。关闭对应弹窗或锁定保险库时由状态结构体清零。
+func passwordInput(c *ui.Context, colors design.Colors, key, fieldLabel string, value *string, reveal *bool, configure func(ui.Element)) ui.Element {
+	if reveal == nil {
+		c.Key(key)
+		el := ui.TextInput(c, value).Password()
+		if configure != nil {
+			configure(el)
+		}
+		return el
+	}
+	t := c.Theme()
+	var el ui.Element
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+			c.Key(key)
+			el = ui.TextInput(c, value)
+			if !*reveal {
+				el.Password()
+			}
+			if configure != nil {
+				configure(el)
+			}
+		})
+		iconName := "eye"
+		btnLabel := "显示" + fieldLabel
+		if *reveal {
+			iconName = "eye-off"
+			btnLabel = "隐藏" + fieldLabel
+		}
+		btn := ui.ButtonBase(c).Key(key+"Reveal").Label(btnLabel).Tooltip(btnLabel).
+			Size(28, 28).Center().Radius(6).Shrink(0)
+		if btn.Hovered() {
+			btn.Background(colors.Hover)
+		}
+		btn.Children(func() {
+			ui.Icon(c, design.Icon(iconName)).FontSize(14).TextColor(t.TextMuted)
+		}).OnClick(func() {
+			*reveal = !*reveal
+		})
+	})
+	return el
+}
+
 // authDialog 询问密码或私钥口令。勾选“记住”时，连接成功后才存进保险库。
 func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 	if !a.auth.open || a.setup.open {
@@ -71,8 +115,9 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 			}
 			var input ui.Element
 			field := ui.Field(c, label, func() {
-				c.Key("secret")
-				input = ui.TextInput(c, &a.auth.secret).Password().AutoFocus()
+				input = passwordInput(c, colors, "secret", label, &a.auth.secret, &a.auth.showSecret, func(el ui.Element) {
+					el.AutoFocus()
+				})
 			}).Error(a.auth.message)
 			// 为跳板机询问时要说清楚：用户点的是另一台主机，别把目标主机的密码填到这里。
 			if a.auth.via {
@@ -99,9 +144,10 @@ func (a *app) authDialog(c *ui.Context, colors design.Colors) {
 			})
 		})
 	})
-	// 点击外部或按 Esc 关闭时，同样不能把已输入的内容留在内存里。
+	// 点击外部或按 Esc 关闭时，同样不能把已输入的内容和可见开关留在内存里。
 	if !a.auth.open {
 		a.auth.secret = ""
+		a.auth.showSecret = false
 	}
 }
 
@@ -118,13 +164,13 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 			ui.Text(c, locales.SheetMasterPasswordIntro()).
 				TextColor(t.TextMuted)
 			ui.Field(c, locales.MasterPassword(), func() {
-				c.Key("setupPassword")
-				ui.TextInput(c, &s.password).Password().AutoFocus()
+				passwordInput(c, colors, "setupPassword", locales.MasterPassword(), &s.password, &s.showPassword, func(el ui.Element) {
+					el.AutoFocus()
+				})
 			}).Description(locales.SheetMinLength(vault.MinPasswordLength))
 			var confirm ui.Element
 			ui.Field(c, locales.SheetEnterAgain(), func() {
-				c.Key("setupConfirm")
-				confirm = ui.TextInput(c, &s.confirm).Password()
+				confirm = passwordInput(c, colors, "setupConfirm", locales.SheetEnterAgain(), &s.confirm, &s.showConfirm, nil)
 			})
 			if a.deviceAvailable() {
 				c.Key("setupRemember")
@@ -245,8 +291,9 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 			})
 			var input ui.Element
 			ui.Field(c, locales.MasterPassword(), func() {
-				c.Key("unlockPassword")
-				input = ui.TextInput(c, &u.password).Password().AutoFocus()
+				input = passwordInput(c, colors, "unlockPassword", locales.MasterPassword(), &u.password, &u.showPassword, func(el ui.Element) {
+					el.AutoFocus()
+				})
 			}).Error(u.err)
 			if a.deviceAvailable() {
 				c.Key("unlockRemember")
@@ -288,6 +335,9 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 	if ch == nil || !ch.open {
 		return
 	}
+	for len(ch.showAnswers) < len(ch.questions) {
+		ch.showAnswers = append(ch.showAnswers, false)
+	}
 	title := locales.SheetChallenge()
 	if ch.name != "" {
 		title = ch.name
@@ -317,13 +367,19 @@ func (a *app) challengeDialog(c *ui.Context, colors design.Colors) {
 					}
 					var input ui.Element
 					ui.Field(c, label, func() {
-						c.Key(fmt.Sprintf("challengeInput:%d", idx))
-						input = ui.TextInput(c, &ch.answers[idx])
+						key := fmt.Sprintf("challengeInput:%d", idx)
 						if !q.Echo {
-							input.Password()
-						}
-						if idx == 0 {
-							input.AutoFocus()
+							input = passwordInput(c, colors, key, label, &ch.answers[idx], &ch.showAnswers[idx], func(el ui.Element) {
+								if idx == 0 {
+									el.AutoFocus()
+								}
+							})
+						} else {
+							c.Key(key)
+							input = ui.TextInput(c, &ch.answers[idx])
+							if idx == 0 {
+								input.AutoFocus()
+							}
 						}
 					})
 					if idx == len(ch.questions)-1 && input.Submitted() {

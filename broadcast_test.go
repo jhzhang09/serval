@@ -276,10 +276,82 @@ func TestBroadcastOneClickExit(t *testing.T) {
 		t.Fatalf("点击窗格广播芯片后应仅移出该窗格: on=%v members=%v", h.a.broadcastOn, h.a.broadcast)
 	}
 
-	// 再点顶栏的“退出广播”按钮可一键退出全部广播
+	// 再点广播条的“退出广播”按钮可一键退出全部广播
 	h.click("退出广播")
 	h.tt.Frame()
 	if h.a.broadcastOn || len(h.a.broadcast) != 0 {
 		t.Fatalf("点击退出广播后应全部退出: on=%v members=%v", h.a.broadcastOn, h.a.broadcast)
+	}
+}
+
+func TestBroadcastBarSelectAllAndChips(t *testing.T) {
+	h := newHarness(t)
+	tb := h.connectDev()
+	p1 := tb.focus
+
+	h.click("向右拆分（" + shortcutText("D") + "）")
+	h.pump("第一次拆分", func() bool { return tb.root.leaves() == 2 })
+	p2 := tb.focus
+
+	h.click("向下拆分")
+	h.pump("第二次拆分", func() bool { return tb.root.leaves() == 3 })
+	p3 := tb.focus
+
+	// 开启广播时默认只加入当前焦点窗格 p3。
+	h.click("搜索主机和操作")
+	h.a.pal.query = "广播输入"
+	h.tt.Frame()
+	h.click("广播输入")
+	h.tt.Frame()
+	if !h.tt.HasText("广播中 · 1 个窗格") {
+		t.Fatalf("广播条应显示当前参与窗格数量: %q", h.tt.Texts())
+	}
+
+	// 点击广播条上的 #1 芯片，将 p1 加入广播。
+	h.click("切换广播窗格 1")
+	h.tt.Frame()
+	if !h.a.broadcast[p1.id] || h.a.broadcast[p2.id] || !h.a.broadcast[p3.id] {
+		t.Fatalf("点芯片 1 后应仅加入 p1 和 p3: %v", h.a.broadcast)
+	}
+	if !h.tt.HasText("广播中 · 2 个窗格") {
+		t.Fatalf("广播条人数应更新为 2: %q", h.tt.Texts())
+	}
+
+	// 点击“全选当前窗格”，p2 也应立即加入。
+	h.click("全选当前窗格")
+	h.tt.Frame()
+	if !h.a.broadcast[p1.id] || !h.a.broadcast[p2.id] || !h.a.broadcast[p3.id] {
+		t.Fatalf("全选当前窗格后 3 个窗格都应加入: %v", h.a.broadcast)
+	}
+	if !h.tt.HasText("广播中 · 3 个窗格") {
+		t.Fatalf("广播条人数应更新为 3: %q", h.tt.Texts())
+	}
+
+	// 退出广播后将主机标为生产环境，再次全选必须触发生产确认弹窗。
+	h.click("退出广播")
+	h.tt.Frame()
+	tb.host.Production = true
+	h.a.broadcastOn = true
+	h.tt.Frame()
+
+	h.click("全选当前窗格")
+	h.tt.Frame()
+	if h.a.broadcastAsk == nil || len(h.a.broadcast) != 0 {
+		t.Fatalf("生产环境全选当前窗格必须先弹窗确认: ask=%v members=%v", h.a.broadcastAsk, h.a.broadcast)
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if len(h.a.broadcast) != 0 {
+		t.Fatalf("取消生产确认后不应加入任何窗格: %v", h.a.broadcast)
+	}
+
+	h.a.broadcastOn = true
+	h.tt.Frame()
+	h.click("全选当前窗格")
+	h.tt.Frame()
+	h.click("全部加入")
+	h.tt.Frame()
+	if !h.a.broadcast[p1.id] || !h.a.broadcast[p2.id] || !h.a.broadcast[p3.id] {
+		t.Fatalf("确认全部加入后 3 个生产窗格都应加入: %v", h.a.broadcast)
 	}
 }

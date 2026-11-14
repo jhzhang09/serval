@@ -482,9 +482,9 @@ func (a *app) forwardListPage(c *ui.Context, colors design.Colors) {
 func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 	t := c.Theme()
 	_, running := a.tunnels[f.ID]
-	verb := "启动 "
+	actionText, verb := "启动", "启动 "
 	if running {
-		verb = "停止 "
+		actionText, verb = "停止", "停止 "
 	}
 	line := ui.Row(c).Key("forwardline:"+f.ID).AlignItems(ui.Center).Gap(6).Padding(0, 4, 0, 0).Radius(design.RadiusRow).Transition(design.Hover)
 	if line.Hovered() {
@@ -494,14 +494,21 @@ func (a *app) forwardRow(c *ui.Context, colors design.Colors, f hosts.Forward) {
 		row := ui.ButtonBase(c).Key("forward:"+f.ID).Label(f.Name).Grow(1).MinWidth(0).Padding(8, 10).Gap(10).
 			Justify(ui.Start).AlignItems(ui.Center)
 		row.Children(func() {
-			ui.Icon(c, design.Icon("arrow-left-right")).FontSize(18).TextColor(t.TextMuted)
+			ui.Icon(c, design.Icon("arrow-left-right")).FontSize(18).TextColor(t.TextMuted).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-				ui.Text(c, f.Name).FontWeight(500).SingleLine()
+				ui.Text(c, f.Name).FontWeight(500).SingleLine().Ellipsis("…")
 				ui.Text(c, f.Summary()+"  "+a.forwardStatus(f)).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
 			})
 		}).OnClick(func() { a.editForward(f) })
-		ui.Button(c, verb+f.Name).Key("forwardRun:" + f.ID).OnClick(func() { a.toggleForward(f) })
-		ui.Button(c, "删除 "+f.Name).Key("forwardDelete:" + f.ID).OnClick(func() { a.forwardPanel.deleting = &f })
+		ui.Button(c, actionText).Key("forwardRun:" + f.ID).Label(verb + f.Name).Shrink(0).OnClick(func() { a.toggleForward(f) })
+		delBtn := ui.ButtonBase(c).Key("forwardDelete:"+f.ID).Label("删除 "+f.Name).Tooltip("删除 "+f.Name).
+			Size(26, 26).Center().Radius(6).Shrink(0)
+		if delBtn.Hovered() {
+			delBtn.Background(colors.Hover)
+		}
+		delBtn.Children(func() {
+			ui.Icon(c, design.Icon("trash-2")).FontSize(14).TextColor(colors.Danger)
+		}).OnClick(func() { a.forwardPanel.deleting = &f })
 	})
 }
 
@@ -554,25 +561,29 @@ func (a *app) forwardEditPage(c *ui.Context) {
 		}
 		ui.Field(c, "自动开启", func() {
 			c.Key("forwardHost")
-			ui.Scroll(c).MaxHeight(120).Children(func() {
-				ui.Column(c).Gap(4).Children(func() {
-					// 选中的那一个用主按钮，没选中的用普通按钮。不能两个都建，否则文字重复、点击会点错。
-					if p.hostID == "" {
-						ui.PrimaryButton(c, "不自动开启").Key("forwardHostNone").OnClick(func() { p.hostID = "" })
-					} else {
-						ui.Button(c, "不自动开启").Key("forwardHostNone").OnClick(func() { p.hostID = "" })
-					}
+			const noAutoHost = "不自动开启"
+			labels := make([]string, 0, len(a.hosts)+1)
+			labels = append(labels, noAutoHost)
+			selected := noAutoHost
+			for _, h := range a.hosts {
+				lbl := h.Name + " (" + h.Target() + ")"
+				labels = append(labels, lbl)
+				if h.ID == p.hostID {
+					selected = lbl
+				}
+			}
+			if ui.Select(c, &selected, labels).Changed() {
+				if selected == noAutoHost {
+					p.hostID = ""
+				} else {
 					for _, h := range a.hosts {
-						label := "绑定 " + h.Name
-						hostID := h.ID
-						if p.hostID == hostID {
-							ui.PrimaryButton(c, label).Key("forwardHost:" + hostID).OnClick(func() { p.hostID = hostID })
-						} else {
-							ui.Button(c, label).Key("forwardHost:" + hostID).OnClick(func() { p.hostID = hostID })
+						if h.Name+" ("+h.Target()+")" == selected {
+							p.hostID = h.ID
+							break
 						}
 					}
-				})
-			})
+				}
+			}
 		}).Description("绑定主机后，连上它就自动开启，最后一条相关会话断开后关闭。")
 		if p.err != "" {
 			ui.Text(c, p.err).Key("forwardError").TextColor(t.Danger)

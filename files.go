@@ -45,6 +45,7 @@ type fileTransfer struct {
 	filesDone  atomic.Int64
 	filesTotal atomic.Int64
 	err        string
+	guardLocal bool
 	cancel     context.CancelFunc
 }
 
@@ -237,7 +238,7 @@ func (a *app) runTransfer(t *tab, kind transferKind, remotePath, localPath, file
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.nextID++
-	tr := &fileTransfer{id: a.nextID, kind: kind, remotePath: remotePath, localPath: localPath, fileName: fileName, cancel: cancel}
+	tr := &fileTransfer{id: a.nextID, kind: kind, remotePath: remotePath, localPath: localPath, fileName: fileName, guardLocal: guardLocal, cancel: cancel}
 	t.transfers = append(t.transfers, tr)
 	files := t.files
 	go func() {
@@ -317,6 +318,44 @@ func (a *app) cancelTransfer(tr *fileTransfer) {
 	}
 }
 
+func (a *app) dismissTransfer(t *tab, id int) {
+	if t == nil {
+		return
+	}
+	t.transfers = slices.DeleteFunc(t.transfers, func(tr *fileTransfer) bool {
+		return tr.id == id && tr.done.Load()
+	})
+}
+
+func (a *app) clearFinishedTransfers(t *tab) {
+	if t == nil {
+		return
+	}
+	t.transfers = slices.DeleteFunc(t.transfers, func(tr *fileTransfer) bool {
+		return tr.done.Load()
+	})
+}
+
+func (a *app) retryTransfer(t *tab, item *fileTransfer) {
+	if t == nil || item == nil || !item.done.Load() || item.err == "" || t.files == nil {
+		return
+	}
+	a.dismissTransfer(t, item.id)
+	if item.folder {
+		if item.kind == transferDownload {
+			a.runFolderDownload(t, item.remotePath, item.localPath, item.fileName)
+		} else {
+			a.planFolderUpload(t, item.localPath, path.Dir(item.remotePath))
+		}
+		return
+	}
+	if item.kind == transferDownload {
+		a.runTransfer(t, transferDownload, item.remotePath, item.localPath, item.fileName, item.guardLocal)
+		return
+	}
+	a.runTransfer(t, transferUpload, item.remotePath, item.localPath, item.fileName, false)
+}
+
 type fileOpKind int
 
 const (
@@ -330,6 +369,7 @@ type fileOpState struct {
 	open  bool
 	fresh bool
 	kind  fileOpKind
+	local bool
 	tab   *tab
 	path  string
 	name  string
@@ -340,6 +380,7 @@ type fileOpState struct {
 }
 
 type fileDeleteState struct {
+	local bool
 	tab   *tab
 	path  string
 	name  string
@@ -360,6 +401,20 @@ func (a *app) openNewFolder(t *tab) {
 	}
 }
 
+func (a *app) openLocalNewFolder() {
+	if a.localDir == "" {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpNewFolder,
+		local: true,
+		path:  a.localDir,
+		input: locales.NewFolder(),
+	}
+}
+
 func (a *app) openRenameFile(t *tab, fullPath, name string) {
 	if t.files == nil {
 		return
@@ -369,6 +424,21 @@ func (a *app) openRenameFile(t *tab, fullPath, name string) {
 		fresh: true,
 		kind:  fileOpRename,
 		tab:   t,
+		path:  fullPath,
+		name:  name,
+		input: name,
+	}
+}
+
+func (a *app) openLocalRenameFile(fullPath, name string) {
+	if a.localDir == "" || fullPath == "" {
+		return
+	}
+	a.fileOp = fileOpState{
+		open:  true,
+		fresh: true,
+		kind:  fileOpRename,
+		local: true,
 		path:  fullPath,
 		name:  name,
 		input: name,
@@ -404,14 +474,18 @@ func validateFileName(name string) error {
 	return nil
 }
 
-// submitFileOp 执行新建文件夹、重命名、修改权限。这些都是网络操作，放在后台，
+// submitFileOp 执行新建文件夹、重命名、修改权限。网络操作或本地磁盘操作放在后台，
 // 期间面板显示处理中，结果回到主线程。
 func (a *app) submitFileOp() {
 	op := &a.fileOp
-	if !op.open || op.busy || op.tab == nil || op.tab.files == nil {
+	if !op.open || op.busy {
 		return
 	}
-	t, files := op.tab, op.tab.files
+	if !op.local && (op.tab == nil || op.tab.files == nil) {
+		return
+	}
+	t := op.tab
+	isLocal := op.local
 	input := strings.TrimSpace(op.input)
 	var run func() error
 	var done string
@@ -421,20 +495,43 @@ func (a *app) submitFileOp() {
 			op.err = err.Error()
 			return
 		}
-		if op.kind == fileOpNewFolder {
-			dir := path.Join(op.path, input)
-			run, done = func() error { return files.Mkdir(dir) }, locales.FileFolderCreatedNamed(input)
+		if isLocal {
+			if op.kind == fileOpNewFolder {
+				dir := filepath.Join(op.path, input)
+				run, done = func() error { return os.Mkdir(dir, 0o755) }, locales.FileFolderCreatedNamed(input)
+			} else {
+				from, to := op.path, filepath.Join(filepath.Dir(op.path), input)
+				run, done = func() error {
+					if from == to {
+						return nil
+					}
+					if _, err := os.Lstat(to); err == nil {
+						return errors.New("目标名称已存在")
+					}
+					return os.Rename(from, to)
+				}, locales.FileRenamedNamed(input)
+			}
 		} else {
-			from, to := op.path, path.Join(path.Dir(op.path), input)
-			run, done = func() error { return files.Rename(from, to) }, locales.FileRenamedNamed(input)
+			files := t.files
+			if op.kind == fileOpNewFolder {
+				dir := path.Join(op.path, input)
+				run, done = func() error { return files.Mkdir(dir) }, locales.FileFolderCreatedNamed(input)
+			} else {
+				from, to := op.path, path.Join(path.Dir(op.path), input)
+				run, done = func() error { return files.Rename(from, to) }, locales.FileRenamedNamed(input)
+			}
 		}
 	case fileOpPermissions:
+		if isLocal || t == nil || t.files == nil {
+			return
+		}
+		files := t.files
+		target := op.path
 		perm, err := strconv.ParseUint(input, 8, 32)
 		if err != nil || perm > 0o7777 {
 			op.err = locales.FileModeInvalid()
 			return
 		}
-		target := op.path
 		run, done = func() error { return files.Chmod(target, fs.FileMode(perm)) }, locales.FileModeChanged(fmt.Sprintf("%04o", perm))
 	default:
 		return
@@ -451,6 +548,12 @@ func (a *app) submitFileOp() {
 			}
 			a.fileOp = fileOpState{}
 			a.toast(ui.Toast{Title: done})
+			if isLocal {
+				if a.localDir != "" {
+					a.openLocal(a.localDir)
+				}
+				return
+			}
 			if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
 			}
@@ -462,20 +565,30 @@ func (a *app) askDeleteFile(t *tab, fullPath, name string, isDir bool) {
 	a.fileDelete = &fileDeleteState{tab: t, path: fullPath, name: name, isDir: isDir}
 }
 
-// confirmDeleteFile 在后台删除文件或空目录。
+func (a *app) askDeleteLocalFile(fullPath, name string, isDir bool) {
+	a.fileDelete = &fileDeleteState{local: true, path: fullPath, name: name, isDir: isDir}
+}
+
+// confirmDeleteFile 在后台删除文件或空目录（支持本地与远程）。
 func (a *app) confirmDeleteFile() {
 	del := a.fileDelete
 	a.fileDelete = nil
-	if del == nil || del.tab == nil || del.tab.files == nil {
+	if del == nil || (!del.local && (del.tab == nil || del.tab.files == nil)) {
 		return
 	}
-	t, files := del.tab, del.tab.files
+	t := del.tab
+	isLocal := del.local
 	go func() {
 		var err error
-		if del.isDir {
-			err = files.RemoveDirectory(del.path)
+		if isLocal {
+			err = os.Remove(del.path)
 		} else {
-			err = files.Remove(del.path)
+			files := t.files
+			if del.isDir {
+				err = files.RemoveDirectory(del.path)
+			} else {
+				err = files.Remove(del.path)
+			}
 		}
 		a.post(func() {
 			if err != nil {
@@ -487,6 +600,12 @@ func (a *app) confirmDeleteFile() {
 				return
 			}
 			a.toast(ui.Toast{Title: locales.FileDeletedNamed(del.name)})
+			if isLocal {
+				if a.localDir != "" {
+					a.openLocal(a.localDir)
+				}
+				return
+			}
 			if slices.Contains(a.tabs, t) {
 				a.openDir(t, t.dir)
 			}

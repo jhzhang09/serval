@@ -371,19 +371,25 @@ func TestRenameHostUpdatesJumpReferences(t *testing.T) {
 	}
 }
 
-// 转发 ssh-agent 默认关闭；勾选后能看到风险提示，保存后写进主机记录，再次编辑仍然勾选。
+// 转发 ssh-agent 默认折叠在高级设置里且关闭；展开并勾选后能看到风险提示，保存后写进主机记录，再次编辑自动展开并仍然勾选。
 func TestForwardAgentOptionWarnsAndPersists(t *testing.T) {
 	h := newHarness(t)
 	h.a.openEdit(h.devHost())
 	h.tt.Frame()
-	if h.a.form.forwardAgent {
-		t.Fatal("转发 ssh-agent 应默认关闭")
+	if h.a.form.forwardAgent || h.a.form.showSSHAdv {
+		t.Fatalf("转发 ssh-agent 和高级设置应默认关闭: forward=%v adv=%v", h.a.form.forwardAgent, h.a.form.showSSHAdv)
 	}
-	if h.tt.HasText("只在信任这台机器时保持开启。") {
-		t.Fatal("未开启时不应展示风险提示")
+	if h.tt.HasText("只在信任这台机器时保持开启。") || h.tt.HasText("转发 ssh-agent") {
+		t.Fatal("未展开高级设置且未开启时不应展示高级项和风险提示")
 	}
 	if box, ok := h.tt.Find("协议"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 400)
+		h.tt.Frame()
+	}
+	h.click("▸ 高级设置")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("▾ 高级设置"); ok {
+		h.tt.Scroll(box.X+20, box.Y+10, 0, 400)
 		h.tt.Frame()
 	}
 	h.click("转发 ssh-agent")
@@ -401,8 +407,40 @@ func TestForwardAgentOptionWarnsAndPersists(t *testing.T) {
 	}
 	h.a.openEdit(h.devHost())
 	h.tt.Frame()
-	if !h.a.form.forwardAgent || !h.tt.HasText("只在信任这台机器时保持开启。") {
-		t.Fatal("再次编辑应保持开启并继续提示风险")
+	if !h.a.form.showSSHAdv || !h.a.form.forwardAgent || !h.tt.HasText("只在信任这台机器时保持开启。") {
+		t.Fatal("再次编辑应自动展开高级设置并继续提示风险")
+	}
+}
+
+func TestParseHostAddressPaste(t *testing.T) {
+	tests := []struct {
+		raw      string
+		wantOK   bool
+		wantUser string
+		wantAddr string
+		wantPort string
+	}{
+		{raw: "deploy@10.0.0.8:2222", wantOK: true, wantUser: "deploy", wantAddr: "10.0.0.8", wantPort: "2222"},
+		{raw: "ssh ops@bastion.example.com", wantOK: true, wantUser: "ops", wantAddr: "bastion.example.com", wantPort: ""},
+		{raw: "ssh://root@db.internal:2200", wantOK: true, wantUser: "root", wantAddr: "db.internal", wantPort: "2200"},
+		{raw: "example.com", wantOK: false},
+	}
+	for _, tc := range tests {
+		u, addr, port, ok := parseHostAddressPaste(tc.raw)
+		if ok != tc.wantOK || u != tc.wantUser || addr != tc.wantAddr || port != tc.wantPort {
+			t.Fatalf("parseHostAddressPaste(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+				tc.raw, u, addr, port, ok, tc.wantUser, tc.wantAddr, tc.wantPort, tc.wantOK)
+		}
+	}
+
+	// 验证在主机地址输入框内输入 user@host:port 后自动拆分为用户名、地址与端口。
+	h := newHarness(t)
+	h.a.openAdd()
+	h.tt.Frame()
+	h.tt.Type("ops@192.168.10.20:2222")
+	h.tt.Frame()
+	if h.a.form.user != "ops" || h.a.form.address != "192.168.10.20" || h.a.form.port != "2222" {
+		t.Fatalf("地址栏自动拆分失败: user=%q address=%q port=%q", h.a.form.user, h.a.form.address, h.a.form.port)
 	}
 }
 
