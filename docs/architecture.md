@@ -86,16 +86,16 @@ flowchart TB
 | `proxypanel.go` | 代理独立管理面板（列表、添加、编辑、删除、密码管理） |
 | `forwardpanel.go` | 端口转发面板：规则的增删改、手动启停；绑定主机的规则随连接自动开启 |
 | `keyspanel.go` | 密钥面板（列表、导入、生成、详情、删除） |
-| `settings.go` | 设置结构（随同步 `settings` 与本机 `deviceSettings`）、设置面板（外观、终端、同步、已知主机）、本机最近使用主机记录 |
+| `settings.go` | 设置结构（随同步 `settings`含空自定义分组，与本机 `deviceSettings` 含侧栏宽度）、五分页设置面板（通用、安全、终端、同步、AI）与最近使用主机记录 |
 | `update.go` | GitHub Releases 最新版本检查、语义化版本比对、关于与更新设置区、新版本详情与 Homebrew 升级指引浮层 |
 | `sessionlog.go` | 远程终端输出的纯文本会话日志；开关和目录在本机 `device.json`，默认关闭 |
-| `view.go` | 根视图、侧栏、主机行、标签栏、窗格卡片、文件抽屉、快捷键 |
-| `files.go`、`folderupload.go`、`dragout.go`、`dualpane.go`、`dialogs.go` | 传输队列、文件夹上传下载、拖出到桌面、抽屉里的本机栏；系统文件选择框接线 |
-| `editor.go` | 远端文本编辑：读取上限、拒绝二进制、保存前核对大小和修改时间 |
-| `sheets.go` | 玻璃浮层 `sheet`、主机指纹确认、密码询问、设置主密码、锁定页面 |
+| `view.go` | 根视图、可拖拽调整宽度的侧栏、标签/分组过滤、可横向滚动标签栏与 `+` 新建、连接中胶囊、窗格卡片与自适应文件/AI 抽屉调度、快捷键 |
+| `files.go`、`folderupload.go`、`dragout.go`、`dualpane.go`、`dialogs.go` | 传输队列（含重试、移除与清理已完成）、文件夹上传下载、拖出到桌面、双栏本机右键操作与系统文件选择框接线 |
+| `editor.go` | 远端文本编辑：随窗口自适应尺寸、快捷键提示、读取上限、拒绝二进制、保存前核对大小和修改时间 |
+| `sheets.go` | 玻璃浮层 `sheet`、带显隐切换的 `passwordInput` 控件、主机指纹确认、密码询问、设置主密码、锁定页面 |
 | `palette.go` | 命令面板（⌘K）和模糊匹配 |
-| `snippet.go` | 代码片段：变量替换、管理面板、发送到当前窗格 |
-| `broadcast.go` | 广播输入：选择窗格、生产环境确认、把当前窗格的键盘输入镜像到其他窗格 |
+| `snippet.go` | 代码片段：侧栏/面板入口、列表行直接执行与更多菜单、变量替换、发送到当前窗格 |
+| `broadcast.go` | 广播输入：工作区控制条（窗格编号芯片与全选当前窗格）、生产环境确认、把当前窗格的键盘输入镜像到其他窗格 |
 | `paths.go` | `~/` 展开 |
 | `e2e.go` | 只在 `-tags e2e` 构建里引入自动化插件 |
 | `locales/` | 界面文案（简体中文、英文）。源语言是 `zh-Hans`，`catalog_gen.go` 由 `go tool mygo generate` 生成 |
@@ -156,17 +156,17 @@ view()
 ├── backdrop                       窗口底色渐变
 ├── lockScreen                     保险库锁定时只渲染它
 └── Row
-    ├── sidebar                    过滤主机、可折叠分组、添加主机、密钥
+    ├── sidebar                    可调整宽度、过滤主机/标签、可折叠分组、新建菜单、密钥/代理/转发/片段/AI/设置
     └── Column
-        ├── tabBar                 标签放在标题栏里
-        └── workspace              窗格卡片树（paneView）+ 文件抽屉 + AI Agent 抽屉，没有标签时是 emptyState + AI Agent 抽屉
+        ├── tabBar                 可横向滚动标签、+ 新建本机终端、连接中状态胶囊
+        └── workspace              broadcastBar + 窗格卡片树（paneView）+ 自适应文件抽屉 / AI Agent 抽屉（窄窗互斥），没有标签时是 emptyState
 浮层（按渲染顺序，后面的盖在上面）：
 hostKeyDialog → authDialog → challengeDialog → hostDialog → proxiesDialog → forwardsDialog → keysDialog → snippetsDialog → settingsDialog → setupDialog → deleteDialog → uploadConfirmDialog → folderConflictDialog → lockConfirmDialog → fileOpDialog → fileDeleteDialog → editorDialog → toasts → paletteDialog → broadcastDialog
 ```
 
 - 浮层的状态都在 `app` 上（`a.form`、`a.keyPanel`、`a.auth`、`a.setup` …），`open` 为假时渲染函数直接返回。
 - `fresh` 标记让浮层在打开的第一帧从 `Pop` 姿态弹出。
-- 关闭浮层时清空它的状态，不把输入过的密码留在内存里。
+- 关闭浮层或锁定时清空其输入状态和密码明文显隐开关，不把输入过的秘密或显隐偏好留在内存里。
 
 ## 测试架构
 
