@@ -241,11 +241,12 @@ func (a *app) hostByID(id string) (hosts.Host, bool) {
 
 // setupSheet 是“设置主密码”面板。第一次保存密码或私钥时出现。
 type setupSheet struct {
-	open, fresh       bool
-	password, confirm string
-	remember          bool
-	busy              bool
-	err               string
+	open, fresh               bool
+	password, confirm         string
+	showPassword, showConfirm bool
+	remember                  bool
+	busy                      bool
+	err                       string
 	// then 是设置成功后继续执行的操作（保存表单、添加私钥、带着“记住密码”重新连接）。
 	then func()
 }
@@ -371,10 +372,11 @@ func (a *app) unlockWithRemembered() bool {
 
 // unlockState 是锁定页面的输入。
 type unlockState struct {
-	password string
-	remember bool
-	busy     bool
-	err      string
+	password     string
+	showPassword bool
+	remember     bool
+	busy         bool
+	err          string
 }
 
 // submitUnlock 在后台派生主密码并解锁保险库，避免 Argon2id 阻塞主线程。
@@ -385,6 +387,7 @@ func (a *app) submitUnlock() {
 	}
 	password := u.password
 	u.password = ""
+	u.showPassword = false
 	u.busy, u.err = true, ""
 	go func() {
 		err := a.vault.Unlock(password)

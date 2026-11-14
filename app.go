@@ -239,6 +239,8 @@ type authSheet struct {
 	via    bool
 	creds  map[int]credential
 	secret string
+	// showSecret 控制当前是否明文显示输入的密码或口令。
+	showSecret bool
 	// passphrase 为 true 时询问的是私钥口令，否则是登录密码。
 	// 两者不能混用：把私钥口令当密码发给服务器会造成泄露。
 	passphrase bool
@@ -258,6 +260,7 @@ type challengeSheet struct {
 	instruction string
 	questions   []sshconn.Question
 	answers     []string
+	showAnswers []bool
 	answerChan  chan challengeResult
 }
 

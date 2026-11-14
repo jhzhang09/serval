@@ -215,6 +215,8 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	h := newHarness(t)
 	h.click("设置")
 	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
 	if !h.tt.HasText("还没有已信任的主机密钥。首次连接服务器并确认指纹后，记录会显示在这里。") {
 		t.Fatalf("未连接时已知主机应为空: %q", h.tt.Texts())
 	}
@@ -236,6 +238,8 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 
 	h.click("设置")
 	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
 	for _, want := range []string{addr, sums[0], known[0].Added.Local().Format("2006-01-02 15:04")} {
 		if !h.tt.HasText(want) {
 			t.Errorf("已知主机列表缺少 %q: %q", want, h.tt.Texts())
@@ -243,7 +247,7 @@ func TestKnownHostsListAndDelete(t *testing.T) {
 	}
 
 	// 删除该条已知主机记录（即使主机本身还在或已删都能独立删除）。
-	if box, ok := h.tt.Find("外观"); ok {
+	if box, ok := h.tt.Find("自动锁定"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 400)
 		h.tt.Frame()
 	}
@@ -269,7 +273,9 @@ func TestChangeMasterPasswordFlow(t *testing.T) {
 
 	h.click("设置")
 	h.tt.Frame()
-	if box, ok := h.tt.Find("外观"); ok {
+	h.click("安全")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("自动锁定"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
 		h.tt.Frame()
 	}
@@ -401,6 +407,8 @@ func TestAutoLockFollowsSystemIdleTime(t *testing.T) {
 	// 设置 15 分钟自动锁定
 	h.click("设置")
 	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
 	h.click("15分钟")
 	h.tt.Frame()
 	h.click("完成")
@@ -451,7 +459,9 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	// 打开设置，取消勾选“在这台设备上记住主密码”
 	h.click("设置")
 	h.tt.Frame()
-	if box, ok := h.tt.Find("外观"); ok {
+	h.click("安全")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("自动锁定"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
 		h.tt.Frame()
 	}
@@ -488,7 +498,9 @@ func TestRememberOnDeviceToggleInSettings(t *testing.T) {
 	// 再次在设置里打开“记住”
 	h.click("设置")
 	h.tt.Frame()
-	if box, ok := h.tt.Find("外观"); ok {
+	h.click("安全")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("自动锁定"); ok {
 		h.tt.Scroll(box.X+50, box.Y+50, 0, 300)
 		h.tt.Frame()
 	}
@@ -770,11 +782,13 @@ func TestUnsupportedDeviceSecretsGracefulOnLinux(t *testing.T) {
 	h.a.setup.open = false
 	h.tt.Frame()
 
-	// 打开设置面板时不应显示“在这台设备上记住主密钥”
+	// 打开设置面板并切换到安全页时不应显示“在这台设备上记住主密钥”
 	h.click("设置")
 	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
 	if h.tt.HasText("在这台设备上记住主密钥") {
-		t.Fatalf("系统安全存储不可用时设置页不应提供记住选项: %q", h.tt.Texts())
+		t.Fatalf("系统安全存储不可用时设置安全页不应提供记住选项: %q", h.tt.Texts())
 	}
 	h.click("完成")
 	h.tt.Frame()
@@ -783,5 +797,132 @@ func TestUnsupportedDeviceSecretsGracefulOnLinux(t *testing.T) {
 	h.a.rememberOnDevice(true)
 	if h.a.isRememberedOnDevice() {
 		t.Fatal("ErrUnsupported 下不应误认为已记住")
+	}
+}
+
+func TestSecurityTabPaletteAndNarrowLayout(t *testing.T) {
+	h := newHarness(t)
+	h.tt = ui.NewTester(h.a.view, 760, 420)
+	h.tt.Frame()
+
+	// 命令面板选“已知主机”应直接跳转到设置面板的“安全”分页
+	h.click("搜索主机和操作")
+	h.a.pal.query = "已知主机"
+	h.tt.Frame()
+	h.click("已知主机")
+	h.tt.Frame()
+	if !h.a.settingsPanel.open || h.a.settingsPanel.tab != settingsTabSecurity {
+		t.Fatalf("命令面板已知主机应打开安全设置分页: open=%v tab=%v", h.a.settingsPanel.open, h.a.settingsPanel.tab)
+	}
+	for _, tabLabel := range []string{"通用", "安全", "终端", "同步", "AI"} {
+		box, ok := h.tt.Find(tabLabel)
+		if !ok || box.X < 0 || box.Y < 0 || box.X+box.W > 760 || box.Y+box.H > 420 {
+			t.Fatalf("窄窗口下设置分页标签 %q 布局异常: ok=%v box=%+v", tabLabel, ok, box)
+		}
+	}
+	if !h.tt.HasText("自动锁定") {
+		t.Fatalf("安全分页应显示自动锁定设置: %q", h.tt.Texts())
+	}
+}
+
+func TestPasswordRevealToggleAndReset(t *testing.T) {
+	h := newHarness(t)
+	h.tt.Frame()
+
+	// 1. 设置 -> 安全 -> 修改主密码表单的密码显隐开关，取消后应重置
+	h.click("设置")
+	h.tt.Frame()
+	h.click("安全")
+	h.tt.Frame()
+	h.click("修改主密码…")
+	h.tt.Frame()
+	h.click("显示当前主密码")
+	h.tt.Frame()
+	if !h.a.settingsPanel.showCurrentPw {
+		t.Fatal("点击显示当前主密码后应展开明文开关")
+	}
+	h.click("隐藏当前主密码")
+	h.tt.Frame()
+	if h.a.settingsPanel.showCurrentPw {
+		t.Fatal("点击隐藏当前主密码后应恢复密文")
+	}
+	h.click("显示新主密码")
+	h.tt.Frame()
+	if !h.a.settingsPanel.showNewPw {
+		t.Fatal("点击显示新主密码后应展开明文开关")
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if h.a.settingsPanel.showNewPw {
+		t.Fatal("取消修改主密码后应重置明文开关")
+	}
+
+	// 2. AI 设置页 API Key 显隐开关，关闭设置后清空
+	h.click("AI")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("API 端点 (Base URL)"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 260)
+		h.tt.Frame()
+	}
+	h.click("显示API Key")
+	h.tt.Frame()
+	if !h.a.settingsPanel.showAIKey {
+		t.Fatal("点击显示API Key后应展开明文开关")
+	}
+	h.click("完成")
+	h.tt.Frame()
+	if h.a.settingsPanel.showAIKey {
+		t.Fatal("关闭设置后应重置 AI Key 明文开关")
+	}
+
+	// 3. 添加主机表单里的密码显隐开关，取消后重置
+	h.click("新建")
+	h.tt.Frame()
+	h.click("添加主机")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("名称"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 220)
+		h.tt.Frame()
+	}
+	h.click("密码")
+	h.tt.Frame()
+	if box, ok := h.tt.Find("认证方式"); ok {
+		h.tt.Scroll(box.X+50, box.Y+50, 0, 120)
+		h.tt.Frame()
+	}
+	h.click("显示密码")
+	h.tt.Frame()
+	if !h.a.form.showPassword {
+		t.Fatal("点击显示密码后应展开主机表单密码明文开关")
+	}
+	h.click("取消")
+	h.tt.Frame()
+	if h.a.form.showPassword {
+		t.Fatal("关闭主机表单后应重置密码明文开关")
+	}
+
+	// 4. 认证弹窗显隐开关，锁定保险库后重置；解锁页显隐开关正常切换
+	h.a.auth = authSheet{open: true, fresh: true, host: h.devHost(), secret: "s3cret"}
+	h.tt.Frame()
+	h.click("显示密码")
+	h.tt.Frame()
+	if !h.a.auth.showSecret {
+		t.Fatal("点击显示密码后应展开认证弹窗明文开关")
+	}
+	h.a.lockVault()
+	h.tt.Frame()
+	if h.a.auth.showSecret || h.a.auth.secret != "" {
+		t.Fatal("锁定后应清除认证弹窗密码与明文开关")
+	}
+
+	h.click("显示主密码")
+	h.tt.Frame()
+	if !h.a.unlock.showPassword {
+		t.Fatal("点击显示主密码后应展开解锁页明文开关")
+	}
+	h.click("隐藏主密码")
+	h.tt.Frame()
+	if h.a.unlock.showPassword {
+		t.Fatal("点击隐藏主密码后应恢复解锁页密文状态")
 	}
 }

@@ -75,12 +75,14 @@ type hostForm struct {
 	showProxy   bool
 
 	// password 是新输入的密码，留空表示保持保存的密码不变。
-	password string
+	password     string
+	showPassword bool
 	// passwordSaved 表示已经保存了密码；clearPassword 表示用户要求清除。
 	passwordSaved, clearPassword bool
 
 	// totp 是新粘贴的验证码密钥或 otpauth 链接，留空表示保持已保存的密钥。
-	totp string
+	totp     string
+	showTOTP bool
 	// totpSaved 表示已经保存了密钥；clearTOTP 表示用户要求清除。
 	totpSaved, clearTOTP bool
 
@@ -846,7 +848,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 							ui.Segmented(c, &f.auth, locales.HostAuthAuto(), locales.Password(), locales.PrivateKey())
 						}).Description(descriptions[f.auth])
 						if f.auth == 1 {
-							a.passwordField(c, f)
+							a.passwordField(c, colors, f)
 						} else {
 							a.keyField(c, f)
 						}
@@ -869,7 +871,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 					if f.showSSHAdv {
 						a.distroField(c, f)
 						if f.protoIdx == 0 {
-							a.totpField(c, f)
+							a.totpField(c, colors, f)
 							c.Key("addForwardAgent")
 							ui.Checkbox(c, &f.forwardAgent, "转发 ssh-agent")
 							if f.forwardAgent {
@@ -941,8 +943,8 @@ func (a *app) keyField(c *ui.Context, f *hostForm) {
 	})
 }
 
-// totpField 是验证码密钥。输入用密码框遮住，保存后不再回显，和登录密码一样。
-func (a *app) totpField(c *ui.Context, f *hostForm) {
+// totpField 是验证码密钥。输入用密码框遮住（可点眼睛临时查看），保存后不再回显，和登录密码一样。
+func (a *app) totpField(c *ui.Context, colors design.Colors, f *hostForm) {
 	placeholder := "粘贴 otpauth:// 链接或密钥"
 	switch {
 	case f.totpSaved && f.clearTOTP:
@@ -953,8 +955,9 @@ func (a *app) totpField(c *ui.Context, f *hostForm) {
 	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, "验证码", func() {
-				c.Key("addTOTP")
-				ui.TextInput(c, &f.totp).Password().Placeholder(placeholder)
+				passwordInput(c, colors, "addTOTP", "验证码", &f.totp, &f.showTOTP, func(el ui.Element) {
+					el.Placeholder(placeholder)
+				})
 			}).Description("多步验证问到验证码时自动填写。")
 		})
 		if f.totpSaved {
@@ -973,7 +976,7 @@ func (a *app) totpField(c *ui.Context, f *hostForm) {
 }
 
 // passwordField 是密码输入框。已保存密码时，留空表示保持不变，并可以清除。
-func (a *app) passwordField(c *ui.Context, f *hostForm) {
+func (a *app) passwordField(c *ui.Context, colors design.Colors, f *hostForm) {
 	placeholder := locales.HostPasswordPrompt()
 	switch {
 	case f.passwordSaved && f.clearPassword:
@@ -984,8 +987,9 @@ func (a *app) passwordField(c *ui.Context, f *hostForm) {
 	ui.Row(c).Gap(8).AlignItems(ui.End).Children(func() {
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
 			ui.Field(c, locales.Password(), func() {
-				c.Key("addPassword")
-				ui.TextInput(c, &f.password).Password().Placeholder(placeholder)
+				passwordInput(c, colors, "addPassword", locales.Password(), &f.password, &f.showPassword, func(el ui.Element) {
+					el.Placeholder(placeholder)
+				})
 			})
 		})
 		if f.passwordSaved {
