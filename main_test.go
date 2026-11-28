@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -447,6 +450,46 @@ func TestChangedHostKeyIsExplained(t *testing.T) {
 	h.pump("重新核对指纹", func() bool { return len(h.a.prompts) > 0 })
 	h.click("信任并连接")
 	h.pump("会话建立", func() bool { return len(h.a.tabs) == 1 })
+}
+
+func TestFriendlySSHConnectError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "handshakeEOF",
+			err:  fmt.Errorf("SSH 握手失败: %w", fmt.Errorf("ssh: handshake failed: %w", io.EOF)),
+			want: "SSH 握手阶段断开了连接",
+		},
+		{
+			name: "refused",
+			err:  syscall.ECONNREFUSED,
+			want: "目标端口拒绝连接",
+		},
+		{
+			name: "timeout",
+			err:  context.DeadlineExceeded,
+			want: "连接超时",
+		},
+		{
+			name: "dns",
+			err:  &net.DNSError{Err: "no such host", Name: "bad.example.com"},
+			want: "无法解析主机域名",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := friendlySSHConnectError("prod-01", tc.err)
+			if !strings.Contains(got, "prod-01") || !strings.Contains(got, tc.want) {
+				t.Fatalf("unexpected message: %q (want substring %q)", got, tc.want)
+			}
+			if strings.Contains(strings.ToLower(got), "handshake failed") || strings.Contains(got, "EOF") {
+				t.Fatalf("should not expose raw English error: %q", got)
+			}
+		})
+	}
 }
 
 // 主机信任记录存在保险库里（随同步到其他设备），并且是加密的。

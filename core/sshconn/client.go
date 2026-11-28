@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -457,34 +458,69 @@ type ExecResult struct {
 }
 
 type limitedWriter struct {
+	mu        sync.Mutex
 	buf       bytes.Buffer
 	limit     int
 	truncated bool
+	onWrite   func(string)
 }
 
 func (w *limitedWriter) Write(p []byte) (int, error) {
+	var chunk string
+	w.mu.Lock()
 	if w.limit <= 0 {
 		w.buf.Write(p)
-		return len(p), nil
-	}
-	rem := w.limit - w.buf.Len()
-	if rem > 0 {
-		if len(p) > rem {
-			w.buf.Write(p[:rem])
-			w.truncated = true
-		} else {
-			w.buf.Write(p)
+		if w.onWrite != nil && len(p) > 0 {
+			chunk = string(p)
 		}
-	} else if len(p) > 0 {
-		w.truncated = true
+	} else {
+		rem := w.limit - w.buf.Len()
+		if rem > 0 {
+			if len(p) > rem {
+				w.buf.Write(p[:rem])
+				w.truncated = true
+				if w.onWrite != nil {
+					chunk = string(p[:rem])
+				}
+			} else {
+				w.buf.Write(p)
+				if w.onWrite != nil && len(p) > 0 {
+					chunk = string(p)
+				}
+			}
+		} else if len(p) > 0 {
+			w.truncated = true
+		}
+	}
+	cb := w.onWrite
+	w.mu.Unlock()
+	if cb != nil && chunk != "" {
+		cb(chunk)
 	}
 	// 消费全部字节，避免远端因管道阻塞而无法退出。
 	return len(p), nil
 }
 
+func (w *limitedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func (w *limitedWriter) Truncated() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.truncated
+}
+
 // ExecContext 在远端执行一条单次命令，分别收集标准输出与标准错误，并支持超时或取消。
 // 命令成功送达远端并返回非零退出码时，err 为 nil，通过 ExitCode 体现结果。
 func (c *Client) ExecContext(ctx context.Context, cmd string, maxBytes int) (ExecResult, error) {
+	return c.ExecContextStream(ctx, cmd, maxBytes, nil)
+}
+
+// ExecContextStream 与 ExecContext 相同，但通过 onChunk 实时回调 stdout/stderr 增量片段。
+func (c *Client) ExecContextStream(ctx context.Context, cmd string, maxBytes int, onChunk func(stream, text string)) (ExecResult, error) {
 	if c == nil || c.conn == nil {
 		return ExecResult{}, errors.New("sshconn: 客户端未连接")
 	}
@@ -500,8 +536,13 @@ func (c *Client) ExecContext(ctx context.Context, cmd string, maxBytes int) (Exe
 	}
 	defer sess.Close()
 
-	stdout := &limitedWriter{limit: maxBytes}
-	stderr := &limitedWriter{limit: maxBytes}
+	var stdoutCB, stderrCB func(string)
+	if onChunk != nil {
+		stdoutCB = func(s string) { onChunk("stdout", s) }
+		stderrCB = func(s string) { onChunk("stderr", s) }
+	}
+	stdout := &limitedWriter{limit: maxBytes, onWrite: stdoutCB}
+	stderr := &limitedWriter{limit: maxBytes, onWrite: stderrCB}
 	sess.Stdout = stdout
 	sess.Stderr = stderr
 
@@ -525,17 +566,17 @@ func (c *Client) ExecContext(ctx context.Context, cmd string, maxBytes int) (Exe
 		case <-time.After(300 * time.Millisecond):
 		}
 		return ExecResult{
-			Stdout:    stdout.buf.String(),
-			Stderr:    stderr.buf.String(),
+			Stdout:    stdout.String(),
+			Stderr:    stderr.String(),
 			ExitCode:  -1,
-			Truncated: stdout.truncated || stderr.truncated,
+			Truncated: stdout.Truncated() || stderr.Truncated(),
 		}, ctx.Err()
 	}
 
 	res := ExecResult{
-		Stdout:    stdout.buf.String(),
-		Stderr:    stderr.buf.String(),
-		Truncated: stdout.truncated || stderr.truncated,
+		Stdout:    stdout.String(),
+		Stderr:    stderr.String(),
+		Truncated: stdout.Truncated() || stderr.Truncated(),
 	}
 	if waitErr != nil {
 		var exitErr *ssh.ExitError

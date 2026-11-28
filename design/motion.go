@@ -61,17 +61,6 @@ var Breathe = []ui.Keyframe{
 // BreatheOptions 让呼吸一直循环，直到元素不再显示（连接完成或取消）。
 var BreatheOptions = ui.KeyframeOptions{Repeat: ui.RepeatForever, NonMotion: true}
 
-// ReachableBreathe 是静默连通性探测可达时主机图标的轻微呼吸：透明度在 1 和 0.72 之间缓慢往返，
-// 比连接中的 Breathe 更轻缓，既体现“在线可连”，又不会在多台主机同时可达时喧宾夺主。
-var ReachableBreathe = []ui.Keyframe{
-	{Value: 1},
-	{At: 1300 * time.Millisecond, Value: 0.72, Ease: ui.EaseInOut},
-	{At: 2600 * time.Millisecond, Value: 1, Ease: ui.EaseInOut},
-}
-
-// ReachableBreatheOptions 让可达呼吸循环播放，同时尊重系统“减少动效”偏好。
-var ReachableBreatheOptions = ui.KeyframeOptions{Repeat: ui.RepeatForever}
-
 // Pulse 是连接成功时状态圆点的一次放大回弹，只播放一次。
 var Pulse = []ui.Keyframe{
 	{Value: 1},

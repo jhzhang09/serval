@@ -67,7 +67,7 @@ python3 tools/e2e/serval_e2e.py /tmp/serval-e2e smoke   # 终端 2：冒烟流�
 2. 新增依赖必须是宽松协议（MIT、BSD、Apache-2.0、ISC），并且在交付说明里写明理由。能用标准库、`golang.org/x/...` 或 MyGo 自带能力解决的，不加新依赖。
 
 **数据与安全**
-3. **所有用户数据只存进保险库**（`core/vault`），不写到别的文件，也不存进系统钥匙串。系统安全存储（`mygo.Secrets`）只用来“在这台设备上记住”保险库密钥。
+3. **所有用户数据只存进保险库**（`core/vault`，含独立 AI 会话加密分片 `aichat.vault.json`），不写到别的文件，也不存进系统钥匙串。系统安全存储（`mygo.Secrets`）只用来“在这台设备上记住”保险库密钥。
 4. **秘密（密码、私钥、口令、令牌）不能写进未加密的保险库**。保存秘密前调用 `a.requireProtection(...)`，由它弹出“设置主密码”。
 5. 写记录用 `hostChange`、`keyChange` 或 `vault.JSONChange`，不要手拼 `vault.Change{Data: ...}`：前者会保留其他版本客户端加的字段。新增记录类型、字段时遵守 [storage.md 的“格式演进”](docs/storage.md)。
 6. 不在日志、错误提示、toast、测试输出里打印密码、私钥、口令。

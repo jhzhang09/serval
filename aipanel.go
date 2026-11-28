@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"serval/design"
 	"serval/locales"
 
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/plugins/loading"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -29,13 +32,14 @@ const (
 )
 
 type aiToolRecord struct {
-	ID       string
-	Name     string
-	Summary  string
-	Args     string
-	Output   string
-	Status   aiToolStatus
-	Expanded bool
+	ID        string
+	Name      string
+	Summary   string
+	Args      string
+	Output    string
+	Status    aiToolStatus
+	Expanded  bool
+	StartedAt time.Time
 }
 
 type aiStepRecord struct {
@@ -48,51 +52,95 @@ type aiStepRecord struct {
 }
 
 type aiTurn struct {
-	query       string
-	prompt      string
-	attachedIDs []string
-	extraErr    string
-	contextTags []string
-	steps       []*aiStepRecord
-	usage       ai.Usage
-	running     bool
-	err         string
+	query           string
+	prompt          string
+	attachedIDs     []string
+	extraErr        string
+	contextTags     []string
+	steps           []*aiStepRecord
+	usage           ai.Usage
+	running         bool
+	startedAt       time.Time
+	modelName       string
+	err             string
+	historyStart    int
+	reachedMax      bool
+	compactedNotice string
 
 	// 兼容字段：从最终回答同步提取的主解释与可执行命令块
 	explanation string
 	commands    []string
 }
 
+type aiApprovalKind uint8
+
+const (
+	approvalExec aiApprovalKind = iota
+	approvalFileWrite
+	approvalInsert
+)
+
+type aiApprovalDecision struct {
+	approved     bool
+	editedCmd    string
+	allowSession bool
+}
+
 type aiApproval struct {
 	seq        uint64
 	tool       *aiToolRecord
+	kind       aiApprovalKind
 	command    string
 	reason     string
 	target     string
+	diff       string
+	filePath   string
+	baseProg   string
+	editing    bool
 	dangerous  bool
 	production bool
-	answer     chan bool
+	answer     chan aiApprovalDecision
+	scroll     ui.ScrollState
+}
+
+type aiPlanStatus string
+
+const (
+	planPending    aiPlanStatus = "pending"
+	planInProgress aiPlanStatus = "in_progress"
+	planCompleted  aiPlanStatus = "completed"
+	planFailed     aiPlanStatus = "failed"
+)
+
+type aiPlanStep struct {
+	Title  string       `json:"title"`
+	Status aiPlanStatus `json:"status"`
+	Note   string       `json:"note,omitempty"`
 }
 
 // aiConversation 表示某个终端标签页内的一条独立历史/当前 AI 对话会话。
 type aiConversation struct {
-	ID              string
-	Title           string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	Turns           []aiTurn
-	ChatHistory     []ai.Message
-	Explanation     string
-	Command         string
-	Commands        []string
-	Loading         bool
-	Cancel          context.CancelFunc
-	ReqSeq          uint64
-	Err             string
-	ContextError    string
-	Attached        []string
-	PendingApproval *aiApproval
-	ScrollY         float32
+	ID                  string
+	Title               string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	Turns               []aiTurn
+	ChatHistory         []ai.Message
+	Plan                []aiPlanStep
+	PlanExpanded        bool
+	Explanation         string
+	Command             string
+	Commands            []string
+	Loading             bool
+	Cancel              context.CancelFunc
+	ReqSeq              uint64
+	Err                 string
+	ContextError        string
+	Attached            []string
+	PendingApproval     *aiApproval
+	OutputStore         *ai.ToolOutputStore
+	SessionAllowedProgs map[string]bool
+	ScrollY             float32
 }
 
 type aiSavedTool struct {
@@ -134,6 +182,7 @@ type aiChatRecord struct {
 	UpdatedAt   time.Time     `json:"updatedAt"`
 	Turns       []aiSavedTurn `json:"turns,omitempty"`
 	ChatHistory []ai.Message  `json:"chatHistory,omitempty"`
+	Plan        []aiPlanStep  `json:"plan,omitempty"`
 	Explanation string        `json:"explanation,omitempty"`
 	Command     string        `json:"command,omitempty"`
 	Commands    []string      `json:"commands,omitempty"`
@@ -177,6 +226,10 @@ type aiPanel struct {
 
 	// 等待人工审批的工具执行请求
 	pendingApproval *aiApproval
+
+	// 结构化执行计划（Plan / Todo）
+	plan         []aiPlanStep
+	planExpanded bool
 
 	// 滚动状态
 	scroll     ui.ScrollState
@@ -367,7 +420,7 @@ func stopAIConversation(c *aiConversation) {
 			c.PendingApproval.tool.Status = toolDenied
 		}
 		select {
-		case c.PendingApproval.answer <- false:
+		case c.PendingApproval.answer <- aiApprovalDecision{}:
 		default:
 		}
 		c.PendingApproval = nil
@@ -392,7 +445,7 @@ func stopActiveAIConversation(s *aiPanel) {
 			s.pendingApproval.tool.Status = toolDenied
 		}
 		select {
-		case s.pendingApproval.answer <- false:
+		case s.pendingApproval.answer <- aiApprovalDecision{}:
 		default:
 		}
 		s.pendingApproval = nil
@@ -488,6 +541,8 @@ func saveActiveConversation(s *aiPanel) {
 	c.UpdatedAt = now
 	c.Turns = s.turns
 	c.ChatHistory = s.chatHistory
+	c.Plan = s.plan
+	c.PlanExpanded = s.planExpanded
 	c.Explanation = s.explanation
 	c.Command = s.command
 	c.Commands = s.commands
@@ -510,6 +565,8 @@ func loadConversationInto(s *aiPanel, c *aiConversation) {
 	s.convCreated = c.CreatedAt
 	s.turns = c.Turns
 	s.chatHistory = c.ChatHistory
+	s.plan = c.Plan
+	s.planExpanded = c.PlanExpanded
 	s.explanation = c.Explanation
 	s.command = c.Command
 	s.commands = c.Commands
@@ -648,7 +705,7 @@ func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
 			if s == nil {
 				continue
 			}
-			th, thTrunc := sanitizeToolText(s.Thinking, 16384)
+			th, thTrunc := sanitizeToolText(s.Thinking, 2048)
 			if thTrunc {
 				th += "\n...[思考过程已截断]"
 			}
@@ -663,7 +720,7 @@ func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
 				} else if st == toolWaitingApproval {
 					st = toolDenied
 				}
-				out, outTrunc := sanitizeToolText(tl.Output, 8192)
+				out, outTrunc := sanitizeToolText(tl.Output, 3072)
 				if outTrunc {
 					out += "\n...[历史保存已截断]"
 				}
@@ -697,7 +754,10 @@ func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
 			Commands:    slices.Clone(t.commands),
 		})
 	}
-	hist := compressChatHistory(c.ChatHistory)
+	hist := ai.SanitizeMessageSequence(compressChatHistory(c.ChatHistory))
+	if len(hist) > 24 {
+		hist = ai.SanitizeMessageSequence(hist[len(hist)-24:])
+	}
 	cleanHist := make([]ai.Message, len(hist))
 	for i, m := range hist {
 		m.ReasoningContent = ""
@@ -712,6 +772,7 @@ func conversationToRecord(scope string, c *aiConversation) aiChatRecord {
 		UpdatedAt:   c.UpdatedAt,
 		Turns:       turns,
 		ChatHistory: cleanHist,
+		Plan:        slices.Clone(c.Plan),
 		Explanation: c.Explanation,
 		Command:     c.Command,
 		Commands:    slices.Clone(c.Commands),
@@ -756,25 +817,28 @@ func recordToConversation(rec aiChatRecord) *aiConversation {
 		})
 	}
 	return &aiConversation{
-		ID:          rec.ID,
-		Title:       rec.Title,
-		CreatedAt:   rec.CreatedAt,
-		UpdatedAt:   rec.UpdatedAt,
-		Turns:       turns,
-		ChatHistory: slices.Clone(rec.ChatHistory),
-		Explanation: rec.Explanation,
-		Command:     rec.Command,
-		Commands:    slices.Clone(rec.Commands),
+		ID:           rec.ID,
+		Title:        rec.Title,
+		CreatedAt:    rec.CreatedAt,
+		UpdatedAt:    rec.UpdatedAt,
+		Turns:        turns,
+		ChatHistory:  slices.Clone(rec.ChatHistory),
+		Plan:         slices.Clone(rec.Plan),
+		PlanExpanded: len(rec.Plan) > 0,
+		Explanation:  rec.Explanation,
+		Command:      rec.Command,
+		Commands:     slices.Clone(rec.Commands),
 	}
 }
 
 func (a *app) persistAIConversation(tabID int, c *aiConversation) {
-	if c == nil || c.ID == "" || len(c.Turns) == 0 || a.vault == nil || a.vault.State() == vault.Locked {
+	a.syncAIVaultState()
+	if c == nil || c.ID == "" || len(c.Turns) == 0 || a.aiVault == nil || a.aiVault.State() != vault.Unlocked {
 		return
 	}
 	scope := a.aiScopeKeyForTabID(tabID)
 	rec := conversationToRecord(scope, c)
-	if err := a.vault.Apply([]vault.Change{aiChatChange(rec)}); err != nil {
+	if err := a.aiVault.Apply([]vault.Change{aiChatChange(rec)}); err != nil {
 		return
 	}
 	if idx := slices.IndexFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == rec.ID }); idx >= 0 {
@@ -791,7 +855,8 @@ func (a *app) persistAIConversation(tabID int, c *aiConversation) {
 		}
 		return cmp.Compare(x.ID, y.ID)
 	})
-	a.noteVaultChanged()
+	a.prunePersistedAIChats()
+	a.noteAIVaultChanged()
 
 	syncTarget := func(s *aiPanel, sTabID int) {
 		if s == nil || sTabID == tabID || a.aiScopeKeyForTabID(sTabID) != scope {
@@ -822,19 +887,20 @@ func (a *app) persistAIConversation(tabID int, c *aiConversation) {
 }
 
 func (a *app) deletePersistedAIConversation(id string) {
-	if id == "" || a.vault == nil || a.vault.State() == vault.Locked {
+	a.syncAIVaultState()
+	if id == "" || a.aiVault == nil || a.aiVault.State() != vault.Unlocked {
 		return
 	}
 	inMem := slices.ContainsFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == id })
-	_, inVault, _ := a.vault.Get(id)
+	_, inVault, _ := a.aiVault.Get(id)
 	if !inMem && !inVault {
 		return
 	}
-	if err := a.vault.Apply([]vault.Change{{Kind: kindAIChat, ID: id, Delete: true}}); err != nil {
+	if err := a.aiVault.Apply([]vault.Change{{Kind: kindAIChat, ID: id, Delete: true}}); err != nil {
 		return
 	}
 	a.aiChats = slices.DeleteFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == id })
-	a.noteVaultChanged()
+	a.noteAIVaultChanged()
 
 	dropFrom := func(s *aiPanel) {
 		if s == nil {
@@ -849,6 +915,51 @@ func (a *app) deletePersistedAIConversation(id string) {
 			resetActiveConversationDraft(s, s.targetOS)
 		}
 	}
+	for tid, s := range a.aiSessions {
+		if tid != a.aiActiveTabID {
+			dropFrom(s)
+		}
+	}
+}
+
+// prunePersistedAIChats 限制独立 AI 分片中会话历史的数量上限（单作用域最多 15 条、全局最多 60 条），避免分片体积无限膨胀。
+func (a *app) prunePersistedAIChats() {
+	const (
+		maxPerScope = 15
+		maxTotal    = 60
+	)
+	if a.aiVault == nil || a.aiVault.State() != vault.Unlocked || len(a.aiChats) <= maxPerScope {
+		return
+	}
+	scopeCount := make(map[string]int)
+	var changes []vault.Change
+	dropIDs := make(map[string]bool)
+	kept := 0
+	for _, rec := range a.aiChats {
+		scopeCount[rec.Scope]++
+		if scopeCount[rec.Scope] > maxPerScope || kept >= maxTotal {
+			dropIDs[rec.ID] = true
+			changes = append(changes, vault.Change{Kind: kindAIChat, ID: rec.ID, Delete: true})
+			continue
+		}
+		kept++
+	}
+	if len(changes) == 0 {
+		return
+	}
+	if err := a.aiVault.Apply(changes); err != nil {
+		return
+	}
+	a.aiChats = slices.DeleteFunc(a.aiChats, func(x aiChatRecord) bool { return dropIDs[x.ID] })
+	dropFrom := func(s *aiPanel) {
+		if s == nil {
+			return
+		}
+		s.convs = slices.DeleteFunc(s.convs, func(c *aiConversation) bool {
+			return c != nil && dropIDs[c.ID] && c.ID != s.convID && !c.Loading
+		})
+	}
+	dropFrom(&a.ai)
 	for tid, s := range a.aiSessions {
 		if tid != a.aiActiveTabID {
 			dropFrom(s)
@@ -1004,6 +1115,9 @@ func (a *app) buildAttachedContextBlock(snap aiSessionSnapshot, attached []strin
 				}
 			}
 			if tail != "" {
+				if !a.local.DisableAIRedact {
+					tail, _ = ai.RedactSecrets(tail)
+				}
 				parts = append(parts, "[附加终端输出]\n"+tail)
 			}
 		case "host":
@@ -1022,11 +1136,17 @@ func (a *app) buildAttachedContextBlock(snap aiSessionSnapshot, attached []strin
 		case "clipboard":
 			tags = append(tags, "@最近复制")
 			if clip := strings.TrimSpace(a.lastCopiedText); clip != "" {
+				if !a.local.DisableAIRedact {
+					clip, _ = ai.RedactSecrets(clip)
+				}
 				parts = append(parts, "[附加最近复制内容]\n"+clip)
 			}
 		}
 	}
 	if extraErr != "" && !seen["terminal"] {
+		if !a.local.DisableAIRedact {
+			extraErr, _ = ai.RedactSecrets(extraErr)
+		}
 		parts = append(parts, "[终端报错输出]\n"+extraErr)
 	}
 	return tags, strings.Join(parts, "\n\n")
@@ -1094,7 +1214,7 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 			a.ai.pendingApproval.tool.Status = toolDenied
 		}
 		select {
-		case a.ai.pendingApproval.answer <- false:
+		case a.ai.pendingApproval.answer <- aiApprovalDecision{}:
 		default:
 		}
 		a.ai.pendingApproval = nil
@@ -1112,6 +1232,7 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 
 	snap := a.captureAISessionSnapshot()
 	mode := a.ai.mode
+	redact := !a.local.DisableAIRedact
 	tags, ctxBlock := a.buildAttachedContextBlock(snap, attached, extraErr)
 
 	userContent := promptText
@@ -1119,13 +1240,30 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 		userContent = ctxBlock + "\n\n用户请求：" + promptText
 	}
 
+	if replaceTurnIdx >= 0 && replaceTurnIdx < len(a.ai.turns) {
+		hs := a.ai.turns[replaceTurnIdx].historyStart
+		if hs >= 0 && hs <= len(a.ai.chatHistory) {
+			a.ai.chatHistory = slices.Clone(a.ai.chatHistory[:hs])
+		}
+	}
+	historyStart := len(a.ai.chatHistory)
+
+	cfg := a.activeAIConfig()
+	modelName := strings.TrimSpace(cfg.Model)
+	if modelName == "" {
+		modelName = strings.TrimSpace(cfg.Name)
+	}
+
 	newTurn := aiTurn{
-		query:       displayQuery,
-		prompt:      promptText,
-		attachedIDs: slices.Clone(attached),
-		extraErr:    extraErr,
-		contextTags: tags,
-		running:     true,
+		query:        displayQuery,
+		prompt:       promptText,
+		attachedIDs:  slices.Clone(attached),
+		extraErr:     extraErr,
+		contextTags:  tags,
+		running:      true,
+		startedAt:    time.Now(),
+		modelName:    modelName,
+		historyStart: historyStart,
 	}
 	turnIdx := len(a.ai.turns)
 	if replaceTurnIdx >= 0 && replaceTurnIdx < len(a.ai.turns) {
@@ -1136,6 +1274,19 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 	}
 	saveActiveConversation(&a.ai)
 	targetConvID := a.ai.convID
+	curConv := a.ai.convByID(targetConvID)
+	if curConv != nil && curConv.OutputStore == nil {
+		curConv.OutputStore = ai.NewToolOutputStore()
+	}
+	var turnStore *ai.ToolOutputStore
+	var allowedProgs map[string]bool
+	if curConv != nil {
+		turnStore = curConv.OutputStore
+		allowedProgs = maps.Clone(curConv.SessionAllowedProgs)
+	}
+	if turnStore == nil {
+		turnStore = ai.NewToolOutputStore()
+	}
 
 	sysMsg := ai.Message{Role: "system", Content: agentSystemPrompt(snap, mode)}
 	compressed := compressChatHistory(a.ai.chatHistory)
@@ -1156,6 +1307,8 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 		if sess.convID == targetConvID {
 			sess.turns = c.Turns
 			sess.chatHistory = c.ChatHistory
+			sess.plan = c.Plan
+			sess.planExpanded = c.PlanExpanded
 			sess.loading = c.Loading
 			sess.cancel = c.Cancel
 			sess.err = c.Err
@@ -1187,20 +1340,56 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 		var mu sync.Mutex
 		lastProgressPost := time.Time{}
 		toolByID := map[string]*aiToolRecord{}
+		turnState := &aiTurnExecState{
+			outputStore:    turnStore,
+			sessionAllowed: allowedProgs,
+			redact:         redact,
+		}
+		defer turnState.close()
+
+		hbDone := make(chan struct{})
+		defer close(hbDone)
+		if a.post != nil {
+			go func() {
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-hbDone:
+						return
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						a.post(func() {})
+					}
+				}
+			}()
+		}
 
 		res, err := ai.RunAgent(ctx, ai.AgentRunConfig{
-			Client:   client,
-			Messages: history,
-			Tools:    tools,
-			MaxSteps: 12,
-			ExecuteTool: func(tctx context.Context, call ai.ToolCall) (string, bool) {
+			Client:           client,
+			Messages:         history,
+			Tools:            tools,
+			MaxSteps:         20,
+			EnableCompaction: true,
+			IsReadOnlyTool:   isReadOnlyAgentTool,
+			ExecuteToolStream: func(tctx context.Context, call ai.ToolCall, onProgress func(string)) (string, bool) {
 				mu.Lock()
 				rec := toolByID[call.ID]
 				mu.Unlock()
-				return a.executeAgentTool(tctx, targetConvID, seq, snap, mode, rec, call)
+				return a.executeAgentToolStream(tctx, targetConvID, seq, snap, mode, turnState, rec, call, onProgress)
 			},
 			OnEvent: func(ev ai.AgentEvent) {
 				switch ev.Kind {
+				case ai.EventCompacted:
+					notice := ev.CompactedNotice
+					a.post(func() {
+						updateConv(func(c *aiConversation) {
+							if turnIdx < len(c.Turns) {
+								c.Turns[turnIdx].compactedNotice = notice
+							}
+						})
+					})
 				case ai.EventStepStart:
 					stepNum := ev.Step
 					a.post(func() {
@@ -1236,11 +1425,12 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 				case ai.EventToolStart:
 					summary, args := summarizeToolCall(ev.ToolCall)
 					rec := &aiToolRecord{
-						ID:      ev.ToolCall.ID,
-						Name:    ev.ToolCall.Function.Name,
-						Summary: summary,
-						Args:    args,
-						Status:  toolRunning,
+						ID:        ev.ToolCall.ID,
+						Name:      ev.ToolCall.Function.Name,
+						Summary:   summary,
+						Args:      args,
+						Status:    toolRunning,
+						StartedAt: time.Now(),
 					}
 					mu.Lock()
 					toolByID[ev.ToolCall.ID] = rec
@@ -1253,6 +1443,19 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 								return
 							}
 							s.Tools = append(s.Tools, rec)
+						})
+					})
+				case ai.EventToolProgress:
+					mu.Lock()
+					rec := toolByID[ev.ToolCall.ID]
+					mu.Unlock()
+					partial := ev.ToolOutput
+					a.post(func() {
+						updateConv(func(c *aiConversation) {
+							if rec == nil || rec.Status != toolRunning {
+								return
+							}
+							rec.Output = partial
 						})
 					})
 				case ai.EventToolDone:
@@ -1298,6 +1501,22 @@ func (a *app) startAgentRunAt(displayQuery, promptText string, attached []string
 			canceled := ctx.Err() == context.Canceled
 			cancel()
 			if canceled {
+				// 即使中途停止，也将已完成的工具调用与部分上下文保留并落盘，方便用户追问继续。
+				sess := a.aiSessionForTab(targetTabID)
+				if c := sess.convByID(targetConvID); c != nil {
+					if res != nil && len(res.Messages) > 1 {
+						c.ChatHistory = ai.SanitizeMessageSequence(res.Messages[1:])
+					} else {
+						c.ChatHistory = append(c.ChatHistory,
+							ai.Message{Role: "user", Content: userContent},
+							ai.Message{Role: "assistant", Content: "（该轮回复已被用户中止）"},
+						)
+					}
+					if sess.convID == targetConvID {
+						sess.chatHistory = c.ChatHistory
+					}
+					a.persistAIConversation(targetTabID, c)
+				}
 				return
 			}
 			updateConv(func(c *aiConversation) {
@@ -1377,8 +1596,9 @@ func finishConversationTurn(c *aiConversation, turnIdx int, userContent string, 
 		c.Turns[turnIdx].explanation = explain
 		c.Turns[turnIdx].commands = cmds
 		c.Turns[turnIdx].usage = res.Usage
+		c.Turns[turnIdx].reachedMax = res.ReachedMax
 		if res.ReachedMax {
-			c.Turns[turnIdx].err = "已达到单轮最大工具调用步数（12 步），可继续追问让我深入排查。"
+			c.Turns[turnIdx].err = "已达到单轮最大工具调用步数（20 步），可点击「继续执行」或追问让我深入排查。"
 		}
 	}
 
@@ -1408,7 +1628,7 @@ func (a *app) stopAIRequest() {
 			a.ai.pendingApproval.tool.Status = toolDenied
 		}
 		select {
-		case a.ai.pendingApproval.answer <- false:
+		case a.ai.pendingApproval.answer <- aiApprovalDecision{}:
 		default:
 		}
 		a.ai.pendingApproval = nil
@@ -1554,6 +1774,9 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 			}
 			a.aiHistoryView(c, colors)
 		} else {
+			if len(p.plan) > 0 {
+				a.aiPlanBar(c, colors)
+			}
 			a.aiMessageStream(c, colors)
 			if p.pendingApproval != nil {
 				a.aiApprovalCard(c, colors, p.pendingApproval)
@@ -1578,6 +1801,126 @@ func (a *app) aiDrawer(c *ui.Context, colors design.Colors, width, maxW float32)
 	}
 }
 
+func (a *app) aiPlanBar(c *ui.Context, colors design.Colors) {
+	p := &a.ai
+	if len(p.plan) == 0 {
+		return
+	}
+	t := c.Theme()
+	total := len(p.plan)
+	done, failed := 0, 0
+	activeTitle := ""
+	for _, st := range p.plan {
+		switch st.Status {
+		case planCompleted:
+			done++
+		case planFailed:
+			failed++
+		case planInProgress:
+			if activeTitle == "" {
+				activeTitle = st.Title
+			}
+		}
+	}
+	barColor := t.Accent
+	if done == total {
+		barColor = colors.Live
+	} else if failed > 0 {
+		barColor = colors.Danger
+	}
+	hasActive := activeTitle != ""
+
+	ui.Column(c.Key("aiPlanBar")).Padding(8, 12).Gap(6).Background(colors.Hover).
+		BorderColor(colors.Hairline).BorderWidth(0, 0, 1, 0).Shrink(0).Children(func() {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			toggle := ui.ButtonBase(c.Key("aiPlanToggle")).Label("展开或折叠执行计划").
+				Grow(1).MinWidth(0).OnClick(func() {
+				p.planExpanded = !p.planExpanded
+				if conv := p.convByID(p.convID); conv != nil {
+					conv.PlanExpanded = p.planExpanded
+				}
+			})
+			toggle.Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
+					ui.Icon(c, design.Icon("activity")).FontSize(13).TextColor(barColor).Shrink(0)
+					ui.Text(c, "执行计划").FontSize(design.TextSmall).FontWeight(600).Shrink(0)
+					if !p.planExpanded && activeTitle != "" {
+						ui.Text(c, "· "+activeTitle).FontSize(design.TextSmall - 0.5).TextColor(t.TextMuted).
+							SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+					} else {
+						ui.Spacer(c)
+					}
+					ui.Text(c, fmt.Sprintf("%d/%d", done, total)).FontSize(design.TextSmall - 0.5).
+						TextColor(barColor).FontFeatures("tnum").Shrink(0)
+					chev := "chevron-right"
+					if p.planExpanded {
+						chev = "chevron-down"
+					}
+					ui.Icon(c, design.Icon(chev)).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
+				})
+			})
+			iconButton(c.Key("aiPlanClearBtn"), colors, "x", "清除执行计划", func() {
+				p.plan = nil
+				p.planExpanded = false
+				if conv := p.convByID(p.convID); conv != nil {
+					conv.Plan = nil
+					conv.PlanExpanded = false
+					a.persistAIConversation(a.currentAITabID(), conv)
+				}
+			}).Tooltip("清除执行计划")
+		})
+
+		// 4px 细进度条
+		ui.Box(c).Height(4).Radius(2).Background(colors.Chip).Draw(func(painter *ui.Painter, r ui.Rect) {
+			if r.W <= 0 || r.H <= 0 || total <= 0 {
+				return
+			}
+			fillW := r.W * float32(done) / float32(total)
+			if done == 0 && hasActive {
+				fillW = min(r.W*0.08, 24)
+			}
+			if fillW > 0 {
+				painter.Fill(ui.Rect{X: r.X, Y: r.Y, W: min(fillW, r.W), H: r.H}, barColor, 2)
+			}
+		})
+
+		if p.planExpanded {
+			ui.Scroll(c.Key("aiPlanScroll")).MaxHeight(160).Children(func() {
+				ui.Column(c).Gap(4).Padding(2, 0, 0, 0).Children(func() {
+					for _, st := range p.plan {
+						step := st
+						ui.Row(c).Gap(7).AlignItems(ui.Center).Children(func() {
+							switch step.Status {
+							case planCompleted:
+								ui.Box(c).Size(7, 7).Radius(4).Background(colors.Live).Shrink(0)
+							case planInProgress:
+								loading.Arc(c, loading.Options{Size: 11, Color: t.Accent}).Label("进行中").Shrink(0)
+							case planFailed:
+								ui.Box(c).Size(7, 7).Radius(4).Background(colors.Danger).Shrink(0)
+							default:
+								ui.Box(c).Size(7, 7).Radius(4).Border(1, colors.TextFaint).Shrink(0)
+							}
+							titleEl := ui.Text(c, step.Title).FontSize(design.TextSmall).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							switch step.Status {
+							case planInProgress:
+								titleEl.FontWeight(600).TextColor(t.Text)
+							case planFailed:
+								titleEl.TextColor(colors.Danger)
+							default:
+								titleEl.TextColor(t.TextMuted)
+							}
+							if step.Note != "" {
+								ui.Text(c, step.Note).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).
+									SingleLine().Ellipsis("…").MaxWidth(140).Shrink(0)
+							}
+						})
+					}
+				})
+			})
+		}
+	})
+}
+
 func (a *app) aiDrawerHeader(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Row(c).Padding(10, 12).Gap(8).AlignItems(ui.Center).BorderColor(colors.Hairline).BorderWidth(0, 0, 1, 0).Shrink(0).Children(func() {
@@ -1600,6 +1943,13 @@ func (a *app) aiDrawerHeader(c *ui.Context, colors design.Colors) {
 		ui.Box(c).Padding(2, 8).Radius(design.RadiusChip).Background(chipBg).Shrink(1).MinWidth(0).Children(func() {
 			ui.Text(c, targetText).FontSize(design.TextSmall).TextColor(chipFg).SingleLine().Ellipsis("…")
 		})
+		if a.ai.loading {
+			ui.Row(c.Key("aiHeaderRunning")).Padding(2, 7).Gap(5).Radius(design.RadiusChip).
+				Background(t.Accent.Alpha(0.12)).AlignItems(ui.Center).Shrink(0).Children(func() {
+				loading.Pulse(c, loading.Options{Size: 10, Color: t.Accent}).Label("AI 执行中")
+				ui.Text(c, "执行中").FontSize(design.TextSmall - 1).FontWeight(500).TextColor(t.Accent).NoWrap()
+			})
+		}
 		ui.Spacer(c)
 
 		histBtn := iconButton(c.Key("aiHistoryBtn"), colors, "history", locales.AiHistoryTitle(), func() {
@@ -1702,7 +2052,12 @@ func (a *app) aiHistoryView(c *ui.Context, colors design.Colors) {
 								if item.Loading {
 									meta += " · 进行中"
 								}
-								ui.Text(c, meta).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+								ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+									if item.Loading {
+										loading.BouncingDots(c, loading.Options{Size: 10, Color: t.Accent}).Label("会话执行中").Shrink(0)
+									}
+									ui.Text(c, meta).FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+								})
 							})
 						})
 						iconButton(c.Key("aiRenameConv:"+item.ID), colors, "pencil", "重命名会话 "+item.ID, func() {
@@ -1728,46 +2083,70 @@ func (a *app) aiMessageStream(c *ui.Context, colors design.Colors) {
 	}
 	pinnedBottom := p.scroll.MaxY <= 0 || p.scroll.Y >= p.scroll.MaxY-24
 
-	ui.Scroll(c.Key("aiScroll")).Grow(1).MinHeight(0).TrackScroll(&p.scroll).Children(func() {
-		ui.Column(c).Padding(12).Gap(14).Children(func() {
-			if len(p.turns) == 0 && p.contextError == "" {
-				a.aiWelcomeView(c, colors)
-			}
+	ui.Box(c).Grow(1).MinHeight(0).Clip().Children(func() {
+		ui.Scroll(c.Key("aiScroll")).Fill().TrackScroll(&p.scroll).Children(func() {
+			ui.Column(c).Padding(12).Gap(14).Children(func() {
+				if len(p.turns) == 0 && p.contextError == "" {
+					a.aiWelcomeView(c, colors)
+				}
 
-			if p.contextError != "" && len(p.turns) == 0 {
-				ui.Column(c).Padding(10).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
-					ui.Text(c, "已捕获终端输出上下文").FontSize(design.TextSmall).FontWeight(600).TextColor(t.Accent)
-					ui.Text(c, p.contextError).FontSize(design.TextSmall).Font(design.FontTerminal).TextColor(t.TextMuted).Selectable()
-				})
-			}
-
-			for i := range p.turns {
-				a.renderAITurn(c, colors, i, &p.turns[i])
-			}
-
-			if p.err != "" && (len(p.turns) == 0 || p.turns[len(p.turns)-1].err == "") {
-				ui.Text(c.Key("aiError"), p.err).TextColor(colors.Danger).FontSize(design.TextSmall).Selectable()
-				if len(a.configuredAIProfiles()) == 0 {
-					ui.Row(c).Justify(ui.Start).Children(func() {
-						ui.Button(c.Key("aiGoSettingsBtn"), "前往配置模型").Height(26).Padding(0, 10).OnClick(a.openAISettings)
+				if p.contextError != "" && len(p.turns) == 0 {
+					ui.Column(c).Padding(10).Gap(6).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+						ui.Text(c, "已捕获终端输出上下文").FontSize(design.TextSmall).FontWeight(600).TextColor(t.Accent)
+						ui.Text(c, p.contextError).FontSize(design.TextSmall).Font(design.FontTerminal).TextColor(t.TextMuted).Selectable()
 					})
 				}
-			}
+
+				for i := range p.turns {
+					a.renderAITurn(c, colors, i, &p.turns[i])
+				}
+
+				if p.err != "" && (len(p.turns) == 0 || p.turns[len(p.turns)-1].err == "") {
+					ui.Text(c.Key("aiError"), p.err).TextColor(colors.Danger).FontSize(design.TextSmall).Selectable()
+					if len(a.configuredAIProfiles()) == 0 {
+						ui.Row(c).Justify(ui.Start).Children(func() {
+							ui.Button(c.Key("aiGoSettingsBtn"), "前往配置模型").Height(26).Padding(0, 10).OnClick(a.openAISettings)
+						})
+					}
+				}
+			})
 		})
-	})
-	if !pinnedBottom && p.scroll.MaxY > 0 && len(p.turns) > 0 {
-		ui.Row(c).Justify(ui.End).Padding(0, 12, 4, 12).Shrink(0).Children(func() {
-			ui.Button(c.Key("aiScrollBottom"), "回到底部").Height(24).Padding(0, 10).OnClick(func() {
+		if p.scroll.Y > 2 {
+			ui.Box(c).Absolute().Top(0).Left(0).Right(0).Height(18).PassThrough().AccessHidden(true).
+				Material(glass.ScrollEdge{Background: colors.Card})
+		}
+		if p.scroll.MaxY > 0 && p.scroll.Y < p.scroll.MaxY-2 {
+			ui.Box(c).Absolute().Bottom(0).Left(0).Right(0).Height(18).PassThrough().AccessHidden(true).
+				Material(glass.ScrollEdge{Bottom: true, Background: colors.Card})
+		}
+		if !pinnedBottom && p.scroll.MaxY > 0 && len(p.turns) > 0 {
+			btn := ui.ButtonBase(c.Key("aiScrollBottom")).Absolute().Right(14).Bottom(12).
+				Label("回到底部").Tooltip("滚动到最新消息").Height(28).Padding(0, 12).Gap(5).Radius(14).Center().
+				Material(glass.Glass{Interactive: true}).Border(1, colors.CardBorder).
+				Shadow(0, 4, 14, -4, colors.CardShadow)
+			btn.Children(func() {
+				ui.Icon(c, design.Icon("arrow-down")).FontSize(12).TextColor(t.Accent)
+				ui.Text(c, "回到底部").FontSize(design.TextSmall).FontWeight(500).TextColor(t.Text).NoWrap()
+			}).OnClick(func() {
 				p.autoScroll = true
 				p.scroll.Y = math.MaxFloat32
 			})
-		})
-	}
+		}
+	})
 }
 
 func (a *app) aiWelcomeView(c *ui.Context, colors design.Colors) {
 	t := c.Theme()
 	ui.Column(c).Gap(10).Padding(8, 2).Children(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(2, 0, 4, 0).Children(func() {
+			ui.Box(c).Size(30, 30).Radius(8).Background(t.Accent.Alpha(0.12)).Center().Shrink(0).Children(func() {
+				ui.Icon(c, design.Icon("sparkles")).FontSize(15).TextColor(t.Accent)
+			})
+			ui.Column(c).Gap(2).Grow(1).MinWidth(0).Children(func() {
+				ui.Text(c, "AI 运维助手").FontSize(design.TextBody).FontWeight(600)
+				ui.Text(c, "自动探测主机、读取终端并总结结论").FontSize(design.TextSmall).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			})
+		})
 		if len(a.configuredAIProfiles()) == 0 {
 			ui.Row(c).Padding(8, 10).Gap(8).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
 				ui.Text(c, "尚未配置 AI 模型密钥，点击右侧配置后即可开始对话。").
@@ -1775,30 +2154,34 @@ func (a *app) aiWelcomeView(c *ui.Context, colors design.Colors) {
 				ui.Button(c.Key("aiWelcomeSettingsBtn"), "前往配置模型").Height(26).Padding(0, 10).Shrink(0).OnClick(a.openAISettings)
 			})
 		}
-		ui.Text(c, "直接用自然语言提问，Agent 会自动探测主机、读取终端并总结结论：").
-			FontSize(design.TextSmall).TextColor(t.TextMuted)
+		ui.Text(c, "常用快捷排查：").
+			FontSize(design.TextSmall).TextColor(colors.TextFaint)
 		starters := []struct {
 			key    string
 			label  string
+			desc   string
 			prompt string
 			attach []string
 		}{
-			{"starterInspect", "这台服务配置如何", "这台服务器配置和当前运行状态如何？请主动检查系统内核、CPU、内存、磁盘、网络接口、关键进程与监听端口并汇总成表格。", []string{"host"}},
-			{"starterDiagnose", "分析当前终端报错", "请读取当前终端最近的输出和报错信息，分析根因并给出排查与修复建议。", []string{"terminal", "host"}},
-			{"starterPorts", "查看监听端口与进程", "请检查当前服务器正在监听的端口和主要进程占用情况，列出端口、协议与对应服务。", []string{"host"}},
-			{"starterDisk", "排查磁盘与内存占用", "请排查这台主机的磁盘分区使用率、大目录及内存占用最高的进程。", []string{"host"}},
+			{"starterInspect", "这台服务配置如何", "检查内核、CPU、内存、磁盘与监听端口", "这台服务器配置和当前运行状态如何？请主动检查系统内核、CPU、内存、磁盘、网络接口、关键进程与监听端口并汇总成表格。", []string{"host"}},
+			{"starterDiagnose", "分析当前终端报错", "读取最近终端输出并定位根因与修复方案", "请读取当前终端最近的输出和报错信息，分析根因并给出排查与修复建议。", []string{"terminal", "host"}},
+			{"starterPorts", "查看监听端口与进程", "列出端口、协议与对应服务进程占用", "请检查当前服务器正在监听的端口和主要进程占用情况，列出端口、协议与对应服务。", []string{"host"}},
+			{"starterDisk", "排查磁盘与内存占用", "定位大目录、分区使用率与高内存进程", "请排查这台主机的磁盘分区使用率、大目录及内存占用最高的进程。", []string{"host"}},
 		}
 		for _, st := range starters {
 			item := st
-			b := ui.ButtonBase(c.Key(item.key)).Padding(8, 10).Radius(design.RadiusRow).
+			b := ui.ButtonBase(c.Key(item.key)).Label(item.label).Padding(8, 10).Radius(design.RadiusRow).
 				Background(colors.Hover).Border(1, colors.Hairline).Transition(design.Hover)
 			if b.Hovered() {
 				b.Background(colors.Selected)
 			}
 			b.Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, design.Icon("sparkles")).FontSize(13).TextColor(t.Accent)
-					ui.Text(c, item.label).FontSize(design.TextBody)
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).MinWidth(0).Children(func() {
+					ui.Icon(c, design.Icon("sparkles")).FontSize(13).TextColor(t.Accent).Shrink(0)
+					ui.Column(c).Gap(1).Grow(1).MinWidth(0).Children(func() {
+						ui.Text(c, item.label).FontSize(design.TextBody).FontWeight(500).SingleLine().Ellipsis("…")
+						ui.Text(c, item.desc).FontSize(design.TextSmall - 0.5).TextColor(colors.TextFaint).SingleLine().Ellipsis("…")
+					})
 				})
 			}).OnClick(func() {
 				for _, att := range item.attach {
@@ -1860,6 +2243,43 @@ func turnAnswerText(turn *aiTurn) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func aiTurnActivityStatus(turn *aiTurn, pendingApproval *aiApproval) (phase string, kind string) {
+	if pendingApproval != nil {
+		return "等待确认下方操作…", "approval"
+	}
+	if turn != nil && len(turn.steps) > 0 {
+		last := turn.steps[len(turn.steps)-1]
+		if last != nil {
+			var runningTools []*aiToolRecord
+			for _, tl := range last.Tools {
+				if tl != nil && tl.Status == toolRunning {
+					runningTools = append(runningTools, tl)
+				}
+			}
+			if len(runningTools) > 1 {
+				return fmt.Sprintf("正在并行执行 %d 项工具…", len(runningTools)), "tool"
+			}
+			if len(runningTools) == 1 {
+				summary := strings.TrimSpace(runningTools[0].Summary)
+				if summary == "" {
+					summary = runningTools[0].Name
+				}
+				return "正在执行：" + summary, "tool"
+			}
+			if strings.TrimSpace(last.Content) != "" {
+				return "正在生成回复…", "stream"
+			}
+			if strings.TrimSpace(last.Thinking) != "" {
+				return fmt.Sprintf("第 %d 步 · 深度思考中…", max(last.Step, 1)), "think"
+			}
+			if len(turn.steps) > 1 {
+				return fmt.Sprintf("第 %d 步 · 正在分析工具结果…", max(last.Step, 1)), "think"
+			}
+		}
+	}
+	return "正在连接模型并分析需求…", "connect"
+}
+
 func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, turn *aiTurn) {
 	t := c.Theme()
 	ui.Column(c).Gap(10).Children(func() {
@@ -1887,7 +2307,23 @@ func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, tur
 			})
 		})
 
+		hasAssistantBody := turn.running || len(turn.steps) > 0 || turn.explanation != "" || len(turn.commands) > 0 || turn.err != ""
+		if hasAssistantBody {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, design.Icon("sparkles")).FontSize(13).TextColor(t.Accent).Shrink(0)
+				ui.Text(c, "AI Agent").FontSize(design.TextSmall).FontWeight(600).TextColor(t.Text).Shrink(0)
+				if turn.modelName != "" {
+					ui.Text(c, turn.modelName).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).SingleLine().Ellipsis("…").MinWidth(0)
+				}
+			})
+		}
+
 		// 多轮推理与工具步骤
+		if turn.compactedNotice != "" {
+			ui.Row(c).Padding(4, 8).Radius(6).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.22)).Children(func() {
+				ui.Text(c, turn.compactedNotice).FontSize(design.TextSmall - 0.5).TextColor(t.Accent)
+			})
+		}
 		for sIdx, step := range turn.steps {
 			if strings.TrimSpace(step.Thinking) != "" {
 				label := "正在思考…"
@@ -1928,9 +2364,32 @@ func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, tur
 			a.renderMarkdown(c, colors, turnIdx, 0, md.String())
 		}
 
-		// 若尚未收到任何 step（刚发出请求等待首包）
-		if turn.running && len(turn.steps) == 0 {
-			ui.Text(c, "Agent 正在连接模型并分析需求…").FontSize(design.TextSmall).TextColor(t.TextMuted)
+		// 运行中始终展示明确阶段反馈与动态指示器（包括首包等待、思考停顿与工具间隙）
+		if turn.running {
+			var activeApproval *aiApproval
+			if turnIdx == len(a.ai.turns)-1 {
+				activeApproval = a.ai.pendingApproval
+			}
+			phase, kind := aiTurnActivityStatus(turn, activeApproval)
+			ui.Row(c.Key(fmt.Sprintf("aiTurnStatus:%d", turnIdx))).Padding(7, 10).Gap(8).AlignItems(ui.Center).
+				Radius(design.RadiusRow).Background(t.Accent.Alpha(0.08)).Border(1, t.Accent.Alpha(0.22)).Children(func() {
+				switch kind {
+				case "think":
+					loading.Orbit(c, loading.Options{Size: 14, Color: t.Accent}).Label(phase).Shrink(0)
+				case "tool":
+					loading.Arc(c, loading.Options{Size: 13, Color: t.Accent}).Label(phase).Shrink(0)
+				case "approval":
+					loading.Pulse(c, loading.Options{Size: 13, Color: t.Accent}).Label(phase).Shrink(0)
+				default:
+					loading.BouncingDots(c, loading.Options{Size: 13, Color: t.Accent}).Label(phase).Shrink(0)
+				}
+				ui.Text(c, phase).FontSize(design.TextSmall).TextColor(t.Text).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+				if !turn.startedAt.IsZero() {
+					if sec := int(time.Since(turn.startedAt).Seconds()); sec > 0 {
+						ui.Text(c, fmt.Sprintf("%ds", sec)).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+					}
+				}
+			})
 		}
 
 		if turn.err != "" {
@@ -1946,6 +2405,11 @@ func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, tur
 							}
 							ui.Button(c.Key(fmt.Sprintf("aiRetryTurn:%d", turnIdx)), locales.AiRetry()).Height(24).Padding(0, 10).OnClick(func() {
 								a.startAgentRunAt(retryQuery, retryPrompt, retryAtt, retryExtra, replaceIdx)
+							})
+						}
+						if turn.reachedMax && turnIdx == len(a.ai.turns)-1 {
+							ui.PrimaryButton(c.Key("aiContinueBtn"), "继续执行").Height(24).Padding(0, 10).OnClick(func() {
+								a.startAgentRun("继续执行排查", "请基于上面的排查进度继续执行剩余步骤。", nil, "")
 							})
 						}
 						if len(a.configuredAIProfiles()) == 0 {
@@ -1973,6 +2437,12 @@ func (a *app) renderAITurn(c *ui.Context, colors design.Colors, turnIdx int, tur
 				} else {
 					ui.Box(c).Grow(1)
 				}
+				if !a.ai.loading && turnIdx == len(a.ai.turns)-1 && turn.prompt != "" {
+					regenPrompt, regenQuery, regenAtt, regenExtra := turn.prompt, turn.query, turn.attachedIDs, turn.extraErr
+					ui.Button(c.Key(fmt.Sprintf("aiRegenerateTurn:%d", turnIdx)), "重新生成").Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
+						a.startAgentRunAt(regenQuery, regenPrompt, regenAtt, regenExtra, turnIdx)
+					})
+				}
 				if answerText != "" {
 					ui.Button(c.Key(fmt.Sprintf("aiCopyAnswer:%d", turnIdx)), locales.AiCopyAnswer()).Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
 						c.WriteClipboard(answerText)
@@ -1988,6 +2458,11 @@ func (a *app) renderToolCard(c *ui.Context, colors design.Colors, turnIdx, sIdx,
 	t := c.Theme()
 	dotColor := t.Accent
 	statusText := "执行中"
+	if tool.Status == toolRunning && !tool.StartedAt.IsZero() {
+		if sec := int(time.Since(tool.StartedAt).Seconds()); sec >= 1 {
+			statusText = fmt.Sprintf("执行中 %ds", sec)
+		}
+	}
 	switch tool.Status {
 	case toolWaitingApproval:
 		dotColor = t.Accent
@@ -2010,9 +2485,16 @@ func (a *app) renderToolCard(c *ui.Context, colors design.Colors, turnIdx, sIdx,
 			})
 		hdr.Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Box(c).Size(7, 7).Radius(4).Background(dotColor).Shrink(0)
+				switch tool.Status {
+				case toolRunning:
+					loading.Arc(c, loading.Options{Size: 12, Color: t.Accent}).Label("工具执行中").Shrink(0)
+				case toolWaitingApproval:
+					loading.Pulse(c, loading.Options{Size: 12, Color: t.Accent}).Label("等待确认").Shrink(0)
+				default:
+					ui.Box(c).Size(7, 7).Radius(4).Background(dotColor).Shrink(0)
+				}
 				ui.Text(c, tool.Summary).FontSize(design.TextSmall).Font(design.FontTerminal).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-				ui.Text(c, statusText).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Shrink(0)
+				ui.Text(c, statusText).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
 				chev := "chevron-right"
 				if tool.Expanded {
 					chev = "chevron-down"
@@ -2020,6 +2502,14 @@ func (a *app) renderToolCard(c *ui.Context, colors design.Colors, turnIdx, sIdx,
 				ui.Icon(c, design.Icon(chev)).FontSize(12).TextColor(colors.TextFaint)
 			})
 		})
+		if tool.Status == toolRunning && !tool.Expanded && strings.TrimSpace(tool.Output) != "" {
+			tail := captureTermTail(tool.Output, 5)
+			if tail != "" {
+				ui.Box(c).Padding(5, 8).Radius(6).Background(colors.Card).Border(1, colors.Hairline).Children(func() {
+					ui.Text(c, tail).FontSize(design.TextSmall - 0.5).Font(design.FontTerminal).TextColor(t.TextMuted).Selectable()
+				})
+			}
+		}
 		if tool.Expanded {
 			if strings.TrimSpace(tool.Args) != "" {
 				ui.Text(c, tool.Args).FontSize(design.TextSmall - 0.5).Font(design.FontTerminal).TextColor(t.TextMuted).Selectable()
@@ -2070,11 +2560,23 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 			curCodeIdx := codeIdx
 			codeIdx++
 			t := c.Theme()
-			ui.Column(c).Gap(6).Children(func() {
-				ui.Box(c).Padding(8, 10).Radius(6).Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
-					ui.Text(c, cmdVal).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
-				})
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			langLabel := strings.TrimSpace(blk.Lang)
+			if langLabel == "" {
+				if isShell {
+					langLabel = "shell"
+				} else {
+					langLabel = "code"
+				}
+			}
+			ui.Column(c).Radius(8).Background(colors.Card).Border(1, colors.CardBorder).Clip().Children(func() {
+				ui.Row(c).Padding(5, 8).Gap(6).AlignItems(ui.Center).Background(colors.Hover).
+					BorderColor(colors.Hairline).BorderWidth(0, 0, 1, 0).Children(func() {
+					ui.Text(c, langLabel).FontSize(design.TextSmall - 1).Font(design.FontTerminal).
+						TextColor(colors.TextFaint).SingleLine().Shrink(0)
+					ui.Spacer(c)
+					if isShell && isMultiline {
+						ui.Text(c, "多行脚本请复制后核对执行").FontSize(design.TextSmall - 1).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+					}
 					copyKey := fmt.Sprintf("aiCopyBtn:%d:%d:%d", turnIdx, sIdx, curCodeIdx)
 					if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
 						copyKey = "aiCopyBtn"
@@ -2085,7 +2587,7 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 						copyLabel = locales.AiCopyCommand()
 						copyToast = "命令已复制到剪贴板"
 					}
-					ui.Button(c.Key(copyKey), copyLabel).Height(26).Padding(0, 10).OnClick(func() {
+					ui.Button(c.Key(copyKey), copyLabel).Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
 						c.WriteClipboard(cmdVal)
 						a.toast(ui.Toast{Title: copyToast})
 					})
@@ -2094,21 +2596,66 @@ func (a *app) renderMarkdown(c *ui.Context, colors design.Colors, turnIdx, sIdx 
 						if turnIdx == len(a.ai.turns)-1 && curCodeIdx == 0 {
 							insertKey = "aiInsertBtn"
 						}
-						ui.PrimaryButton(c.Key(insertKey), locales.AiInsertTerminal()).Height(26).Padding(0, 10).OnClick(func() {
+						ui.PrimaryButton(c.Key(insertKey), locales.AiInsertTerminal()).Height(22).Padding(0, 8).Shrink(0).OnClick(func() {
 							a.insertCommandToTerminal(cmdVal)
 						})
-					} else if isShell && isMultiline {
-						ui.Text(c, "多行脚本请复制后核对执行").FontSize(design.TextSmall).TextColor(t.TextMuted)
 					}
+				})
+				ui.Box(c).Padding(8, 10).Children(func() {
+					ui.Text(c, cmdVal).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
 				})
 			})
 		},
 	})
 }
 
+var (
+	mdCacheMu     sync.Mutex
+	mdBlockCache  = map[string][]ai.MarkdownBlock{}
+	mdInlineCache = map[string][]ai.InlineSpan{}
+)
+
+func cachedParseMarkdown(content string) []ai.MarkdownBlock {
+	mdCacheMu.Lock()
+	if blocks, ok := mdBlockCache[content]; ok {
+		mdCacheMu.Unlock()
+		return blocks
+	}
+	mdCacheMu.Unlock()
+
+	blocks := ai.ParseMarkdown(content)
+
+	mdCacheMu.Lock()
+	if len(mdBlockCache) >= 256 {
+		clear(mdBlockCache)
+	}
+	mdBlockCache[content] = blocks
+	mdCacheMu.Unlock()
+	return blocks
+}
+
+func cachedParseInlineMarkdown(s string) []ai.InlineSpan {
+	mdCacheMu.Lock()
+	if spans, ok := mdInlineCache[s]; ok {
+		mdCacheMu.Unlock()
+		return spans
+	}
+	mdCacheMu.Unlock()
+
+	spans := ai.ParseInlineMarkdown(s)
+
+	mdCacheMu.Lock()
+	if len(mdInlineCache) >= 256 {
+		clear(mdInlineCache)
+	}
+	mdInlineCache[s] = spans
+	mdCacheMu.Unlock()
+	return spans
+}
+
 func renderInlineMarkdown(c *ui.Context, colors design.Colors, raw string, fontSize float32, weight int, textColor ui.Color) ui.Element {
 	s := replaceHTMLBreaks(raw)
-	inlines := ai.ParseInlineMarkdown(s)
+	inlines := cachedParseInlineMarkdown(s)
 	if len(inlines) == 0 {
 		el := ui.Text(c, s).FontSize(fontSize).Selectable()
 		if weight > 0 {
@@ -2152,7 +2699,7 @@ func renderInlineMarkdown(c *ui.Context, colors design.Colors, raw string, fontS
 
 func renderMarkdownBlocks(c *ui.Context, colors design.Colors, content string, opts markdownRenderOptions) {
 	t := c.Theme()
-	blocks := ai.ParseMarkdown(content)
+	blocks := cachedParseMarkdown(content)
 	if len(blocks) == 0 {
 		ui.Text(c, replaceHTMLBreaks(content)).FontSize(opts.bodyFontSize).Selectable()
 		return
@@ -2283,56 +2830,147 @@ func replaceHTMLBreaks(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// aiApprovalCmdMaxHeight 根据窗口高度计算审批卡片内命令预览区的最大高度，避免长脚本把确认按钮挤出视口。
+func aiApprovalCmdMaxHeight(windowH float32) float32 {
+	if windowH <= 0 {
+		return 220
+	}
+	return max(min(min(windowH*0.32, 260), windowH-360), 72)
+}
+
 func (a *app) aiApprovalCard(c *ui.Context, colors design.Colors, ap *aiApproval) {
 	t := c.Theme()
 	bg := colors.Hover
 	border := t.Accent.Alpha(0.45)
 	title := "请求执行命令确认"
+	approveLabel := locales.AiApproveExec()
+	if ap.kind == approvalFileWrite {
+		title = "修改文件确认"
+		approveLabel = "允许写入"
+	}
 	titleColor := t.Accent
 	if ap.dangerous || ap.production {
 		bg = colors.DangerSoft
 		border = colors.Danger.Alpha(0.55)
 		titleColor = colors.Danger
-		if ap.dangerous {
+		if ap.kind == approvalFileWrite {
+			if ap.dangerous {
+				title = "高危文件修改确认"
+			} else {
+				title = "生产环境文件修改确认"
+			}
+		} else if ap.dangerous {
 			title = "高危命令拦截确认"
 		} else {
 			title = "生产环境命令确认"
 		}
 	}
+	_, windowH := c.Size()
+	cmdMaxH := aiApprovalCmdMaxHeight(windowH)
 	ui.Column(c).Margin(0, 10, 6, 10).Padding(10).Gap(8).Radius(design.RadiusRow).Background(bg).Border(1, border).Shrink(0).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(design.TextSmall).FontWeight(600).TextColor(titleColor).Grow(1)
+			ui.Text(c, title).FontSize(design.TextSmall).FontWeight(600).TextColor(titleColor).Grow(1).MinWidth(0)
 			if ap.target != "" {
-				ui.Text(c, ap.target).FontSize(design.TextSmall - 0.5).TextColor(t.TextMuted)
+				ui.Text(c, ap.target).FontSize(design.TextSmall - 0.5).TextColor(t.TextMuted).SingleLine().Ellipsis("…")
+			}
+			copyContent := ap.command
+			if ap.diff != "" {
+				copyContent = ap.diff
+			}
+			ui.Button(c.Key("aiApprovalCopyBtn"), "复制").Height(20).Padding(0, 7).Shrink(0).OnClick(func() {
+				c.WriteClipboard(copyContent)
+				a.toast(ui.Toast{Title: "已复制到剪贴板"})
+			})
+			if ap.kind == approvalExec {
+				editLabel := "编辑"
+				if ap.editing {
+					editLabel = "完成编辑"
+				}
+				ui.Button(c.Key("aiApprovalEditBtn"), editLabel).Height(20).Padding(0, 7).Shrink(0).OnClick(func() {
+					ap.editing = !ap.editing
+				})
 			}
 		})
 		if ap.reason != "" {
 			ui.Text(c, ap.reason).FontSize(design.TextSmall).TextColor(t.TextMuted)
 		}
-		ui.Box(c).Padding(6, 8).Radius(6).Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
-			ui.Text(c, ap.command).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
+		if ap.filePath != "" {
+			ui.Text(c, ap.filePath).FontSize(design.TextSmall - 0.5).Font(design.FontTerminal).TextColor(t.Accent).SingleLine().Ellipsis("…")
+		}
+		ui.Box(c).Radius(6).Background(colors.Card).Border(1, colors.CardBorder).Clip().Children(func() {
+			ui.Scroll(c.Key("aiApprovalCmdScroll")).
+				MaxHeight(cmdMaxH).
+				TrackScroll(&ap.scroll).
+				KeepScrollbars(true).
+				Children(func() {
+					ui.Box(c).Padding(6, 8).Children(func() {
+						switch {
+						case ap.editing && ap.kind == approvalExec:
+							ui.TextArea(c.Key("aiApprovalEditArea"), &ap.command).
+								Height(max(cmdMaxH-16, 96)).
+								Font(design.FontTerminal).
+								FontSize(design.TextSmall)
+						case ap.diff != "":
+							ui.Column(c).Gap(1).Children(func() {
+								for _, line := range strings.Split(ap.diff, "\n") {
+									col := t.Text
+									switch {
+									case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+										col = colors.Live
+									case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+										col = colors.Danger
+									case strings.HasPrefix(line, "@@"):
+										col = t.Accent
+									case strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++"):
+										col = t.TextMuted
+									}
+									ui.Text(c, line).FontSize(design.TextSmall - 0.5).Font(design.FontTerminal).TextColor(col).Selectable()
+								}
+							})
+						default:
+							ui.Text(c, ap.command).FontSize(design.TextSmall).Font(design.FontTerminal).Selectable()
+						}
+					})
+				})
 		})
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 			ui.Button(c.Key("aiDenyBtn"), locales.AiDenyExec()).Height(26).Padding(0, 12).OnClick(func() {
-				a.resolveAgentApproval(ap, false)
+				a.resolveAgentApproval(ap, aiApprovalDecision{})
 			})
+			if !ap.dangerous && ap.kind == approvalExec && ap.baseProg != "" {
+				ui.Button(c.Key("aiAllowSessionBtn"), "本会话允许 "+ap.baseProg).Height(26).Padding(0, 10).OnClick(func() {
+					a.resolveAgentApproval(ap, aiApprovalDecision{
+						approved:     true,
+						editedCmd:    ap.command,
+						allowSession: true,
+					})
+				})
+			}
 			if ap.dangerous || ap.production {
-				btn := ui.Button(c.Key("aiApproveBtn"), "").Label(locales.AiApproveExec()).Height(26).Padding(0, 12).
+				btn := ui.Button(c.Key("aiApproveBtn"), "").Label(approveLabel).Height(26).Padding(0, 12).
 					Background(colors.DangerSoft).Border(1, colors.Danger.Alpha(0.55)).
-					OnClick(func() { a.resolveAgentApproval(ap, true) })
+					OnClick(func() {
+						a.resolveAgentApproval(ap, aiApprovalDecision{
+							approved:  true,
+							editedCmd: ap.command,
+						})
+					})
 				btn.Children(func() {
-					ui.Text(c, locales.AiApproveExec()).FontWeight(600).TextColor(colors.Danger)
+					ui.Text(c, approveLabel).FontWeight(600).TextColor(colors.Danger)
 				})
 			} else {
-				ui.PrimaryButton(c.Key("aiApproveBtn"), locales.AiApproveExec()).Height(26).Padding(0, 12).OnClick(func() {
-					a.resolveAgentApproval(ap, true)
+				ui.PrimaryButton(c.Key("aiApproveBtn"), approveLabel).Height(26).Padding(0, 12).OnClick(func() {
+					a.resolveAgentApproval(ap, aiApprovalDecision{
+						approved:  true,
+						editedCmd: ap.command,
+					})
 				})
 			}
 		})
 	})
 }
 
-func (a *app) resolveAgentApproval(ap *aiApproval, ok bool) {
+func (a *app) resolveAgentApproval(ap *aiApproval, dec aiApprovalDecision) {
 	if a.ai.pendingApproval != ap {
 		return
 	}
@@ -2341,7 +2979,7 @@ func (a *app) resolveAgentApproval(ap *aiApproval, ok bool) {
 		c.PendingApproval = nil
 	}
 	select {
-	case ap.answer <- ok:
+	case ap.answer <- dec:
 	default:
 	}
 }
@@ -2666,7 +3304,7 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 					if m.Item("配置模型与密钥…").ID("openAISettings").Chosen() {
 						a.openAISettings()
 					}
-				}, menuButtonOptions(colors)).Height(24).Padding(0, 8).Shrink(1).MinWidth(0).Tooltip(modelLabel)
+				}, menuButtonOptions(colors)).Height(24).Padding(0, 8).MaxWidth(185).Shrink(1).MinWidth(0).Tooltip(modelLabel)
 
 				ui.Box(c).Grow(1)
 
@@ -2686,7 +3324,11 @@ func (a *app) aiComposer(c *ui.Context, colors design.Colors) {
 				}, menuButtonOptions(colors)).Height(24).Padding(0, 8).Shrink(0)
 
 				if p.loading {
-					ui.Button(c.Key("aiStopBtn"), locales.AiStop()).Height(26).Padding(0, 10).OnClick(a.stopAIRequest)
+					stopBtn := ui.Button(c.Key("aiStopBtn"), "").Label(locales.AiStop()).Height(26).Padding(0, 10).
+						Background(colors.DangerSoft).Border(1, colors.Danger.Alpha(0.45)).OnClick(a.stopAIRequest)
+					stopBtn.Children(func() {
+						ui.Text(c, locales.AiStop()).FontSize(design.TextSmall).FontWeight(600).TextColor(colors.Danger).NoWrap()
+					})
 				} else {
 					sendLabel := locales.AiSubmit()
 					if len(p.turns) == 0 && p.contextError != "" && strings.TrimSpace(p.query) == "" {

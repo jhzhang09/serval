@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -55,27 +58,59 @@ func (m aiPermissionMode) description() string {
 
 // aiSessionSnapshot 在主线程启动 Agent 前抓取当前目标终端/主机的只读快照，避免后台协程直接触碰 app 字段。
 type aiSessionSnapshot struct {
-	tabID      int
-	hasTab     bool
-	isLocal    bool
-	protocol   string // "local", "ssh", "telnet", "serial"
-	connected  bool
-	termAlive  bool
-	hostName   string
-	hostAddr   string
-	hostPort   int
-	hostUser   string
-	distro     string
-	production bool
-	jumpCount  int
-	liveUser   string
-	liveDir    string
-	sftpDir    string
-	client     *sshconn.Client
+	tabID          int
+	hasTab         bool
+	isLocal        bool
+	protocol       string // "local", "ssh", "telnet", "serial"
+	connected      bool
+	termAlive      bool
+	hostName       string
+	hostAddr       string
+	hostPort       int
+	hostUser       string
+	distro         string
+	production     bool
+	jumpCount      int
+	jumpChain      []string
+	activeForwards []string
+	paneCount      int
+	liveUser       string
+	liveDir        string
+	sftpDir        string
+	client         *sshconn.Client
+}
+
+func (a *app) activeForwardsForTab(tabID int) []string {
+	if len(a.tunnels) == 0 || tabID <= 0 {
+		return nil
+	}
+	var out []string
+	for id, lt := range a.tunnels {
+		if lt == nil || lt.tabID != tabID || lt.tunnel == nil {
+			continue
+		}
+		addr := lt.tunnel.Addr()
+		if idx := slices.IndexFunc(a.forwards, func(f hosts.Forward) bool { return f.ID == id }); idx >= 0 {
+			r := a.forwards[idx]
+			desc := fmt.Sprintf("%s %s", r.Kind, addr)
+			if r.TargetHost != "" && r.TargetPort > 0 {
+				desc += fmt.Sprintf(" -> %s:%d", r.TargetHost, r.TargetPort)
+			}
+			out = append(out, desc)
+		} else if addr != "" {
+			out = append(out, addr)
+		}
+	}
+	return out
 }
 
 func (a *app) captureAISessionSnapshot() aiSessionSnapshot {
-	return snapshotFromTab(a.current())
+	cur := a.current()
+	snap := snapshotFromTab(cur)
+	if cur != nil {
+		snap.activeForwards = a.activeForwardsForTab(cur.id)
+	}
+	return snap
 }
 
 func snapshotFromTab(t *tab) aiSessionSnapshot {
@@ -91,6 +126,13 @@ func snapshotFromTab(t *tab) aiSessionSnapshot {
 	}
 	termAlive := t.focus != nil && t.focus.term != nil && !t.focus.ended
 	connected := t.local || t.client != nil || ((proto == hosts.ProtocolTelnet || proto == hosts.ProtocolSerial) && termAlive)
+	jumps := hosts.SplitJumps(t.host.ProxyJump)
+	panes := 1
+	if t.root != nil {
+		if n := t.root.leaves(); n > 0 {
+			panes = n
+		}
+	}
 	snap := aiSessionSnapshot{
 		tabID:      t.id,
 		hasTab:     true,
@@ -104,7 +146,9 @@ func snapshotFromTab(t *tab) aiSessionSnapshot {
 		hostUser:   t.host.User,
 		distro:     t.host.Distro,
 		production: t.host.Production,
-		jumpCount:  len(hosts.SplitJumps(t.host.ProxyJump)),
+		jumpCount:  len(jumps),
+		jumpChain:  jumps,
+		paneCount:  panes,
 		liveUser:   user,
 		liveDir:    dir,
 		sftpDir:    t.dir,
@@ -134,13 +178,16 @@ func localOSName() string {
 
 func agentSystemPrompt(snap aiSessionSnapshot, mode aiPermissionMode) string {
 	var b strings.Builder
+	// 静态指令前缀保持稳定，利于 Anthropic / OpenAI Prompt Caching 命中。
 	b.WriteString("你是 Serval 内置的高级 Linux/Unix 系统运维与故障排查 Agent。\n")
 	b.WriteString("你可以调用提供的工具主动检查当前终端与服务器真实状态，绝不能凭空编造未实际查到的硬件规格、进程、端口或文件内容。\n\n")
 	b.WriteString("工作原则：\n")
 	b.WriteString("1. 当用户询问服务器配置、资源负载、端口进程、服务故障或日志问题时，优先调用工具获取真实输出，再结合多步结果给出结论。\n")
-	b.WriteString("2. 尽量合并轻量级只读探测命令（如一次执行 `uname -a; uptime; lscpu | head -n 20; free -h; df -h`），若输出被截断或需要深入排查再继续补充工具调用。\n")
-	b.WriteString("3. 如果某次工具调用被权限模式拒绝或用户拒绝，尊重该结果并改用只读方法或给出建议命令，不要反复重试被拒命令。\n")
-	b.WriteString("4. 使用清晰的中文 Markdown 总结结果：对比/概览类信息优先使用 Markdown 表格（如 `| 项目 | 配置 |`），关键命令放在 ```bash 代码块中，异常项给出明确建议。\n\n")
+	b.WriteString("2. 尽量合并轻量级只读探测命令（如一次执行 `uname -a; uptime; lscpu | head -n 20; free -h; df -h`）；需要修改或新建配置文件时，优先使用 `sftp_edit` 或 `sftp_write`（带 Diff 审批），不要用 `cat > ... <<'EOF'` 拼写大脚本。\n")
+	b.WriteString("3. 当 `ssh_exec` 或 `sftp_read` 返回结果被截断并附带 `handle_id` 时，可使用 `tool_output_read` 按行号分页或关键词检索完整输出，不要盲目重跑耗时命令。\n")
+	b.WriteString("4. 如果某次工具调用被权限模式拒绝或用户拒绝，尊重该结果并改用只读方法或给出建议命令，不要反复重试被拒命令。\n")
+	b.WriteString("5. 对于需要 3 步及以上的复杂排查、部署或修复任务，先调用 `update_plan` 建立结构化执行计划并在每一步完成后更新状态。\n")
+	b.WriteString("6. 使用清晰的中文 Markdown 总结结果：对比/概览类信息优先使用 Markdown 表格（如 `| 项目 | 配置 |`），关键命令放在 ```bash 代码块中，异常项给出明确建议。\n\n")
 
 	b.WriteString("当前环境状态：\n")
 	b.WriteString(fmt.Sprintf("- 权限模式：%s\n", mode.label()))
@@ -161,7 +208,7 @@ func agentSystemPrompt(snap aiSessionSnapshot, mode aiPermissionMode) string {
 			state = "已断开"
 		}
 		b.WriteString(fmt.Sprintf("- 目标类型：%s 交互终端（%s），状态：%s\n", protoLabel, snap.hostName, state))
-		b.WriteString("- 协议限制：Telnet 与串口终端不支持后台 `ssh_exec` 与 `sftp_list`/`sftp_read`；请使用 `terminal_read` 读取当前屏幕输出，并用 `terminal_insert` 将安全命令填入终端供用户确认执行。\n")
+		b.WriteString("- 协议限制：Telnet 与串口终端不支持后台 `ssh_exec` 与 `sftp_*`；请使用 `terminal_read` 读取当前屏幕输出，并用 `terminal_insert` 将安全命令填入终端供用户确认执行。\n")
 	default:
 		port := snap.hostPort
 		if port == 0 {
@@ -179,6 +226,15 @@ func agentSystemPrompt(snap aiSessionSnapshot, mode aiPermissionMode) string {
 			b.WriteString("，【生产环境】")
 		}
 		b.WriteString("\n")
+		if len(snap.jumpChain) > 0 {
+			b.WriteString("- 跳板机链路：" + strings.Join(snap.jumpChain, " -> ") + "\n")
+		}
+		if len(snap.activeForwards) > 0 {
+			b.WriteString("- 活动端口转发：" + strings.Join(snap.activeForwards, "; ") + "\n")
+		}
+	}
+	if snap.paneCount > 1 {
+		b.WriteString(fmt.Sprintf("- 当前标签分屏窗格数：%d\n", snap.paneCount))
 	}
 	if snap.liveDir != "" {
 		b.WriteString(fmt.Sprintf("- 当前工作目录：%s\n", snap.liveDir))
@@ -192,7 +248,7 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "host_info",
-				Description: "获取当前活动标签页的主机连接状态、协议类型、系统发行版、登录用户、工作目录、是否生产环境（不含密码与私钥等机密）。",
+				Description: "获取当前活动标签页的主机连接状态、协议类型、系统发行版、登录用户、工作目录、跳板机链路、活动端口转发及是否生产环境（不含密码与私钥等机密）。",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 			},
 		},
@@ -208,13 +264,13 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "ssh_exec",
-				Description: "在当前连接的 SSH 主机（或本机终端）上执行非交互式 Shell 命令并返回 stdout、stderr 与 exit_code。",
+				Description: "在当前连接的 SSH 主机（或本机终端）的当前工作目录下执行非交互式 Shell 命令并返回 stdout、stderr 与 exit_code。",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
 						"command":{"type":"string","description":"要执行的单次 Shell 命令"},
 						"reason":{"type":"string","description":"简短说明执行该命令的目的（中文）"},
-						"timeout_sec":{"type":"integer","description":"超时秒数，默认15，最大60"}
+						"timeout_sec":{"type":"integer","description":"超时秒数，默认20，最大300"}
 					},
 					"required":["command"]
 				}`),
@@ -232,7 +288,7 @@ func agentToolDefinitions() []ai.ToolDefinition {
 			Type: "function",
 			Function: ai.ToolFunction{
 				Name:        "sftp_read",
-				Description: "通过 SFTP（或本地文件）只读读取文本文件或日志内容（最大 32KB，自动拒绝二进制文件）；排查大日志时可设 tail=true 读取文件末尾。",
+				Description: "通过 SFTP（或本地文件）只读读取文本文件或日志内容（自动拒绝二进制文件）；排查大日志时可设 tail=true 读取文件末尾。",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
@@ -241,6 +297,84 @@ func agentToolDefinitions() []ai.ToolDefinition {
 						"tail":{"type":"boolean","description":"为 true 时读取文件末尾最新内容，适合排查大日志"}
 					},
 					"required":["path"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.ToolFunction{
+				Name:        "sftp_write",
+				Description: "通过 SFTP（或本地文件）新建或覆盖写入文本文件，并在执行前展示 Unified Diff 供人工审批。",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"目标文件路径"},
+						"content":{"type":"string","description":"完整文件内容（UTF-8 文本）"},
+						"reason":{"type":"string","description":"说明写入或修改目的（中文）"},
+						"mode":{"type":"string","description":"可选八进制文件权限（如 0755、0644）"}
+					},
+					"required":["path","content"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.ToolFunction{
+				Name:        "sftp_edit",
+				Description: "通过 SFTP（或本地文件）对已有文本文件做精确字符串替换（支持 Unified Diff 审批与并发冲突检测），适合修改配置文件或脚本。",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"path":{"type":"string","description":"目标文件路径"},
+						"old_text":{"type":"string","description":"需要被替换的原文本片段（需精确匹配）"},
+						"new_text":{"type":"string","description":"替换后的新文本片段"},
+						"replace_all":{"type":"boolean","description":"是否替换全部匹配项，默认 false（要求唯一匹配）"},
+						"reason":{"type":"string","description":"说明修改目的（中文）"}
+					},
+					"required":["path","old_text","new_text"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.ToolFunction{
+				Name:        "tool_output_read",
+				Description: "分页或按关键词检索之前被截断的工具大输出（需传入返回消息中的 handle_id）。",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"handle_id":{"type":"string","description":"被截断输出附带的句柄 ID（例如 out_1）"},
+						"offset_line":{"type":"integer","description":"起始行号（1-based），默认 1"},
+						"limit_lines":{"type":"integer","description":"读取行数，默认 80，最大 200"},
+						"grep":{"type":"string","description":"可选关键词过滤（不区分大小写）"}
+					},
+					"required":["handle_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: ai.ToolFunction{
+				Name:        "update_plan",
+				Description: "创建或更新当前复杂任务的结构化执行计划（Plan / Todo 进度条），向用户实时展示每一步状态。",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"steps":{
+							"type":"array",
+							"description":"有序执行步骤列表（最多 12 步）",
+							"items":{
+								"type":"object",
+								"properties":{
+									"title":{"type":"string","description":"步骤标题（简短明确）"},
+									"status":{"type":"string","enum":["pending","in_progress","completed","failed"]},
+									"note":{"type":"string","description":"可选的简短状态补充"}
+								},
+								"required":["title","status"]
+							}
+						}
+					},
+					"required":["steps"]
 				}`),
 			},
 		},
@@ -256,6 +390,15 @@ func agentToolDefinitions() []ai.ToolDefinition {
 				}`),
 			},
 		},
+	}
+}
+
+func isReadOnlyAgentTool(tc ai.ToolCall) bool {
+	switch tc.Function.Name {
+	case "host_info", "terminal_read", "sftp_list", "sftp_read", "tool_output_read":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -300,6 +443,59 @@ func summarizeToolCall(tc ai.ToolCall) (summary, argsPretty string) {
 			return "读取文件 " + p.Path, argsPretty
 		}
 		return "读取文件", argsPretty
+	case "sftp_write":
+		var p struct {
+			Path   string `json:"path"`
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal([]byte(rawArgs), &p)
+		if p.Path != "" {
+			if p.Reason != "" {
+				argsPretty = p.Reason + "\n写入 " + p.Path
+			}
+			return "写入文件 " + p.Path, argsPretty
+		}
+		return "写入文件", argsPretty
+	case "sftp_edit":
+		var p struct {
+			Path   string `json:"path"`
+			Reason string `json:"reason"`
+		}
+		_ = json.Unmarshal([]byte(rawArgs), &p)
+		if p.Path != "" {
+			if p.Reason != "" {
+				argsPretty = p.Reason + "\n修改 " + p.Path
+			}
+			return "编辑文件 " + p.Path, argsPretty
+		}
+		return "编辑文件", argsPretty
+	case "tool_output_read":
+		var p struct {
+			HandleID string `json:"handle_id"`
+			Grep     string `json:"grep"`
+		}
+		_ = json.Unmarshal([]byte(rawArgs), &p)
+		if p.HandleID != "" {
+			if p.Grep != "" {
+				return fmt.Sprintf("检索输出 %s (%s)", p.HandleID, p.Grep), argsPretty
+			}
+			return "读取完整输出 " + p.HandleID, argsPretty
+		}
+		return "读取完整输出", argsPretty
+	case "update_plan":
+		var p struct {
+			Steps []aiPlanStep `json:"steps"`
+		}
+		if json.Unmarshal([]byte(rawArgs), &p) == nil && len(p.Steps) > 0 {
+			done := 0
+			for _, st := range p.Steps {
+				if st.Status == planCompleted {
+					done++
+				}
+			}
+			return fmt.Sprintf("更新执行计划（已完成 %d/%d）", done, len(p.Steps)), argsPretty
+		}
+		return "更新执行计划", argsPretty
 	case "terminal_insert":
 		var p struct {
 			Command string `json:"command"`
@@ -312,6 +508,77 @@ func summarizeToolCall(tc ai.ToolCall) (summary, argsPretty string) {
 	default:
 		return tc.Function.Name, argsPretty
 	}
+}
+
+type aiTurnExecState struct {
+	mu             sync.Mutex
+	sftp           *sshconn.Files
+	sftpClient     *sshconn.Client
+	outputStore    *ai.ToolOutputStore
+	sessionAllowed map[string]bool
+	redact         bool
+}
+
+func (st *aiTurnExecState) filesFor(client *sshconn.Client) (*sshconn.Files, error) {
+	if client == nil {
+		return nil, errors.New("当前 SSH 客户端尚未就绪或已断开")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.sftp != nil && st.sftpClient == client {
+		return st.sftp, nil
+	}
+	if st.sftp != nil {
+		_ = st.sftp.Close()
+		st.sftp = nil
+		st.sftpClient = nil
+	}
+	f, err := client.OpenFiles()
+	if err != nil {
+		return nil, err
+	}
+	st.sftp = f
+	st.sftpClient = client
+	return f, nil
+}
+
+func (st *aiTurnExecState) close() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.sftp != nil {
+		_ = st.sftp.Close()
+		st.sftp = nil
+		st.sftpClient = nil
+	}
+}
+
+func (st *aiTurnExecState) isAllowedProg(prog string) bool {
+	if prog == "" {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.sessionAllowed[prog]
+}
+
+func (st *aiTurnExecState) allowProg(prog string) {
+	if prog == "" {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.sessionAllowed == nil {
+		st.sessionAllowed = map[string]bool{}
+	}
+	st.sessionAllowed[prog] = true
+}
+
+func (st *aiTurnExecState) maybeRedact(s string) string {
+	if !st.redact || s == "" {
+		return s
+	}
+	out, _ := ai.RedactSecrets(s)
+	return out
 }
 
 func (a *app) runMainSync(ctx context.Context, fn func()) error {
@@ -335,23 +602,27 @@ func (a *app) targetTabForSnapshot(snap aiSessionSnapshot) *tab {
 	return a.current()
 }
 
-func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string, seq uint64, tool *aiToolRecord, cmd, reason, target string, dangerous, production bool) (bool, error) {
-	ch := make(chan bool, 1)
+func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string, seq uint64, tool *aiToolRecord, kind aiApprovalKind, cmd, reason, target, diff, filePath, baseProg string, dangerous, production bool) (aiApprovalDecision, error) {
+	ch := make(chan aiApprovalDecision, 1)
 	if err := a.runMainSync(ctx, func() {
 		sess := a.aiSessionForTab(tabID)
 		ap := &aiApproval{
 			seq:        seq,
 			tool:       tool,
+			kind:       kind,
 			command:    cmd,
 			reason:     reason,
 			target:     target,
+			diff:       diff,
+			filePath:   filePath,
+			baseProg:   baseProg,
 			dangerous:  dangerous,
 			production: production,
 			answer:     ch,
 		}
 		if conv := sess.convByID(convID); conv != nil {
 			if seq != conv.ReqSeq {
-				ch <- false
+				ch <- aiApprovalDecision{}
 				return
 			}
 			if tool != nil {
@@ -364,7 +635,7 @@ func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string
 			return
 		}
 		if seq != sess.reqSeq {
-			ch <- false
+			ch <- aiApprovalDecision{}
 			return
 		}
 		if tool != nil {
@@ -372,12 +643,12 @@ func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string
 		}
 		sess.pendingApproval = ap
 	}); err != nil {
-		return false, err
+		return aiApprovalDecision{}, err
 	}
 
 	select {
-	case ok := <-ch:
-		return ok, nil
+	case dec := <-ch:
+		return dec, nil
 	case <-ctx.Done():
 		a.post(func() {
 			if tool != nil && tool.Status == toolWaitingApproval {
@@ -391,7 +662,7 @@ func (a *app) requestAgentApproval(ctx context.Context, tabID int, convID string
 				sess.pendingApproval = nil
 			}
 		})
-		return false, ctx.Err()
+		return aiApprovalDecision{}, ctx.Err()
 	}
 }
 
@@ -404,6 +675,7 @@ func (a *app) refreshAISnapshot(ctx context.Context, snap aiSessionSnapshot) aiS
 			return
 		}
 		updated = snapshotFromTab(t)
+		updated.activeForwards = a.activeForwardsForTab(t.id)
 		ok = true
 	}); err != nil || !ok {
 		return snap
@@ -448,55 +720,176 @@ func resolveRemoteAgentPath(p, liveDir string, files *sshconn.Files) string {
 	return p
 }
 
-func readLocalFileTail(f *os.File, limit int64) ([]byte, error) {
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
+func resolveLocalAgentPath(p, liveDir string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		if liveDir != "" {
+			return liveDir
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return "."
 	}
-	size := info.Size()
-	if size <= 0 {
-		return nil, nil
-	}
-	if size > limit {
-		if _, err := f.Seek(-limit, io.SeekEnd); err != nil {
-			return nil, err
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				return home
+			}
+			return filepath.Join(home, strings.TrimPrefix(p, "~/"))
 		}
 	}
-	buf := make([]byte, limit+1)
+	if !filepath.IsAbs(p) && liveDir != "" {
+		return filepath.Join(liveDir, p)
+	}
+	return p
+}
+
+func wrapRemoteCommandWithDir(cmd, liveDir string) string {
+	dir := strings.TrimSpace(liveDir)
+	if !strings.HasPrefix(dir, "/") || strings.ContainsRune(dir, '\x00') {
+		return cmd
+	}
+	quoted := "'" + strings.ReplaceAll(dir, "'", `'\''`) + "'"
+	return "cd " + quoted + " 2>/dev/null; " + cmd
+}
+
+func readLocalFileHead(f *os.File, limit int64) (data []byte, totalSize int64, truncated bool, err error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, false, err
+	}
+	totalSize = info.Size()
+	if totalSize == 0 {
+		return nil, 0, false, nil
+	}
+	toRead := totalSize
+	if toRead > limit {
+		toRead = limit
+		truncated = true
+	}
+	buf := make([]byte, toRead)
 	n, rErr := io.ReadFull(f, buf)
 	if rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF {
-		return nil, rErr
+		return nil, totalSize, false, rErr
 	}
-	data := buf[:n]
-	if size > limit {
+	return buf[:n], totalSize, truncated, nil
+}
+
+func readLocalFileTail(f *os.File, limit int64) (data []byte, totalSize int64, truncated bool, err error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, false, err
+	}
+	totalSize = info.Size()
+	if totalSize <= 0 {
+		return nil, 0, false, nil
+	}
+	if totalSize > limit {
+		truncated = true
+		if _, err := f.Seek(-limit, io.SeekEnd); err != nil {
+			return nil, totalSize, false, err
+		}
+	}
+	buf := make([]byte, min(totalSize, limit))
+	n, rErr := io.ReadFull(f, buf)
+	if rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF {
+		return nil, totalSize, false, rErr
+	}
+	data = buf[:n]
+	if truncated {
 		if idx := bytes.IndexByte(data, '\n'); idx >= 0 && idx+1 < len(data) {
 			data = data[idx+1:]
 		}
 	}
-	return data, nil
+	return data, totalSize, truncated, nil
+}
+
+func writeLocalFileAtomic(targetPath string, data []byte, expectExists bool, expectSize, expectUnix int64, mode fs.FileMode) error {
+	info, err := os.Lstat(targetPath)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return errors.New("目标路径不是普通文件")
+		}
+		if !expectExists || info.Size() != expectSize || info.ModTime().Unix() != expectUnix {
+			return sshconn.ErrRemoteChanged
+		}
+		if mode == 0 {
+			mode = info.Mode().Perm()
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if expectExists {
+			return sshconn.ErrRemoteChanged
+		}
+		if mode == 0 {
+			mode = 0644
+		}
+	default:
+		return err
+	}
+	dir := filepath.Dir(targetPath)
+	tmp, err := os.CreateTemp(dir, ".serval-aiwrite-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if mode != 0 {
+		_ = os.Chmod(tmpName, mode.Perm())
+	}
+	if err = os.Rename(tmpName, targetPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, snap aiSessionSnapshot, mode aiPermissionMode, toolRec *aiToolRecord, tc ai.ToolCall) (string, bool) {
+	return a.executeAgentToolStream(ctx, convID, seq, snap, mode, nil, toolRec, tc, nil)
+}
+
+func (a *app) executeAgentToolStream(ctx context.Context, convID string, seq uint64, snap aiSessionSnapshot, mode aiPermissionMode, turnState *aiTurnExecState, toolRec *aiToolRecord, tc ai.ToolCall, onProgress func(string)) (string, bool) {
+	if turnState == nil {
+		turnState = &aiTurnExecState{outputStore: ai.NewToolOutputStore(), redact: !a.local.DisableAIRedact}
+		defer turnState.close()
+	}
 	snap = a.refreshAISnapshot(ctx, snap)
+
 	switch tc.Function.Name {
 	case "host_info":
 		if !snap.hasTab {
 			return "当前没有打开的终端标签页。", true
 		}
 		info := map[string]any{
-			"is_local":     snap.isLocal,
-			"protocol":     snap.protocol,
-			"connected":    snap.connected,
-			"term_alive":   snap.termAlive,
-			"host_name":    snap.hostName,
-			"host_address": snap.hostAddr,
-			"port":         snap.hostPort,
-			"user":         snap.liveUser,
-			"cwd":          snap.liveDir,
-			"sftp_dir":     snap.sftpDir,
-			"distro":       snap.distro,
-			"production":   snap.production,
-			"jump_count":   snap.jumpCount,
+			"is_local":        snap.isLocal,
+			"protocol":        snap.protocol,
+			"connected":       snap.connected,
+			"term_alive":      snap.termAlive,
+			"host_name":       snap.hostName,
+			"host_address":    snap.hostAddr,
+			"port":            snap.hostPort,
+			"user":            snap.liveUser,
+			"cwd":             snap.liveDir,
+			"sftp_dir":        snap.sftpDir,
+			"distro":          snap.distro,
+			"production":      snap.production,
+			"jump_count":      snap.jumpCount,
+			"jump_chain":      snap.jumpChain,
+			"active_forwards": snap.activeForwards,
+			"pane_count":      snap.paneCount,
 		}
 		b, _ := json.MarshalIndent(info, "", "  ")
 		return string(b), false
@@ -532,7 +925,7 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if strings.TrimSpace(text) == "" {
 			return fmt.Sprintf("user=%s cwd=%s\n（当前终端屏幕暂无输出）", user, dir), false
 		}
-		return fmt.Sprintf("user=%s cwd=%s\n--- 终端最近输出 ---\n%s", user, dir, text), false
+		return fmt.Sprintf("user=%s cwd=%s\n--- 终端最近输出 ---\n%s", user, dir, turnState.maybeRedact(text)), false
 
 	case "ssh_exec":
 		var params struct {
@@ -559,22 +952,53 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if mode == aiModeObserver {
 			return "当前权限模式为「只读观察」，已阻止执行命令。如需执行请提示用户切换到「确认执行」或「自动执行」。", true
 		}
+
 		dangerous := ai.IsDangerousExecCommand(cmd)
-		needConfirm := mode == aiModeConfirm || dangerous || (snap.production && !ai.IsReadOnlyProbeCommand(cmd))
+		baseProg := ""
+		if !dangerous {
+			baseProg = ai.BaseCommandProgram(cmd)
+		}
+		sessionGranted := baseProg != "" && turnState.isAllowedProg(baseProg)
+		needConfirm := dangerous || (!sessionGranted && (mode == aiModeConfirm || (snap.production && !ai.IsReadOnlyProbeCommand(cmd))))
 		if needConfirm {
 			target := snap.hostName
 			if snap.liveUser != "" && snap.hostAddr != "" {
 				target = snap.liveUser + "@" + snap.hostAddr
 			}
-			approved, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, cmd, params.Reason, target, dangerous, snap.production)
+			dec, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, approvalExec, cmd, params.Reason, target, "", "", baseProg, dangerous, snap.production)
 			if err != nil {
 				return "等待确认已取消", true
 			}
-			if !approved {
+			if !dec.approved {
 				if toolRec != nil {
 					_ = a.runMainSync(ctx, func() { toolRec.Status = toolDenied })
 				}
 				return "用户拒绝执行该命令。", true
+			}
+			if edited := strings.TrimSpace(dec.editedCmd); edited != "" && edited != cmd {
+				cmd = edited
+				if toolRec != nil {
+					_ = a.runMainSync(ctx, func() {
+						toolRec.Summary = "$ " + cmd
+						if params.Reason != "" {
+							toolRec.Args = params.Reason + "\n$ " + cmd
+						} else {
+							toolRec.Args = "$ " + cmd
+						}
+					})
+				}
+			}
+			if dec.allowSession && !dangerous && baseProg != "" {
+				turnState.allowProg(baseProg)
+				_ = a.runMainSync(ctx, func() {
+					sess := a.aiSessionForTab(snap.tabID)
+					if conv := sess.convByID(convID); conv != nil {
+						if conv.SessionAllowedProgs == nil {
+							conv.SessionAllowedProgs = map[string]bool{}
+						}
+						conv.SessionAllowedProgs[baseProg] = true
+					}
+				})
 			}
 			if toolRec != nil {
 				_ = a.runMainSync(ctx, func() { toolRec.Status = toolRunning })
@@ -583,25 +1007,53 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 
 		timeout := time.Duration(params.TimeoutSec) * time.Second
 		if timeout <= 0 {
-			timeout = 15 * time.Second
+			timeout = 20 * time.Second
 		}
-		if timeout > 60*time.Second {
-			timeout = 60 * time.Second
+		if timeout > 300*time.Second {
+			timeout = 300 * time.Second
 		}
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
+		var liveMu sync.Mutex
+		var liveBuf strings.Builder
+		var lastEmit time.Time
+		emitChunk := func(stream, chunk string) {
+			if onProgress == nil || chunk == "" {
+				return
+			}
+			liveMu.Lock()
+			if liveBuf.Len() < 8192 {
+				if stream == "stderr" && liveBuf.Len() == 0 {
+					liveBuf.WriteString("[stderr] ")
+				}
+				liveBuf.WriteString(chunk)
+			}
+			now := time.Now()
+			shouldEmit := now.Sub(lastEmit) >= 120*time.Millisecond
+			var snapshot string
+			if shouldEmit {
+				lastEmit = now
+				snapshot = liveBuf.String()
+			}
+			liveMu.Unlock()
+			if shouldEmit {
+				onProgress(turnState.maybeRedact(snapshot))
+			}
+		}
+
 		var res sshconn.ExecResult
 		var err error
 		if snap.isLocal {
-			res, err = execLocalCommand(execCtx, cmd, snap.liveDir, 64<<10)
+			res, err = execLocalCommandStream(execCtx, cmd, snap.liveDir, 256<<10, emitChunk)
 		} else {
-			res, err = snap.client.ExecContext(execCtx, cmd, 64<<10)
+			remoteCmd := wrapRemoteCommandWithDir(cmd, snap.liveDir)
+			res, err = snap.client.ExecContextStream(execCtx, remoteCmd, 256<<10, emitChunk)
 		}
 		if err != nil {
 			return "命令执行失败：" + err.Error(), true
 		}
-		return formatExecResult(res), res.ExitCode != 0
+		return formatExecResultWithStore(res, turnState), res.ExitCode != 0
 
 	case "sftp_list":
 		if !snap.hasTab || !snap.connected {
@@ -616,15 +1068,7 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &params)
 		targetPath := strings.TrimSpace(params.Path)
 		if snap.isLocal {
-			if targetPath == "" {
-				targetPath = snap.liveDir
-			}
-			if targetPath == "" {
-				targetPath, _ = os.UserHomeDir()
-			}
-			if !filepath.IsAbs(targetPath) && snap.liveDir != "" {
-				targetPath = filepath.Join(snap.liveDir, targetPath)
-			}
+			targetPath = resolveLocalAgentPath(targetPath, snap.liveDir)
 			entries, err := os.ReadDir(targetPath)
 			if err != nil {
 				return "读取本地目录失败：" + err.Error(), true
@@ -648,14 +1092,10 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 			return fmt.Sprintf("目录 %s：\n%s", targetPath, strings.Join(lines, "\n")), false
 		}
 
-		if snap.client == nil {
-			return "当前 SSH 客户端尚未就绪或已断开。", true
-		}
-		files, err := snap.client.OpenFiles()
+		files, err := turnState.filesFor(snap.client)
 		if err != nil {
 			return "打开 SFTP 通道失败：" + err.Error(), true
 		}
-		defer files.Close()
 		targetPath = resolveRemoteAgentPath(targetPath, snap.liveDir, files)
 		entries, err := files.List(targetPath)
 		if err != nil {
@@ -701,11 +1141,11 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		}
 
 		var data []byte
+		var totalSize int64
+		var truncated bool
 		var err error
 		if snap.isLocal {
-			if !filepath.IsAbs(p) && snap.liveDir != "" {
-				p = filepath.Join(snap.liveDir, p)
-			}
+			p = resolveLocalAgentPath(p, snap.liveDir)
 			var f *os.File
 			f, err = os.Open(p)
 			if err != nil {
@@ -713,35 +1153,39 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 			}
 			defer f.Close()
 			if params.Tail {
-				data, err = readLocalFileTail(f, limit)
-				if err != nil {
-					return "读取文件末尾失败：" + err.Error(), true
-				}
+				data, totalSize, truncated, err = readLocalFileTail(f, limit)
 			} else {
-				buf := make([]byte, limit+1)
-				n, rErr := f.Read(buf)
-				if rErr != nil && n == 0 {
-					return "读取文件失败：" + rErr.Error(), true
-				}
-				data = buf[:n]
-				if int64(len(data)) > limit {
-					data = data[:limit]
-				}
+				data, totalSize, truncated, err = readLocalFileHead(f, limit)
+			}
+			if err != nil {
+				return "读取文件失败：" + err.Error(), true
 			}
 		} else {
-			if snap.client == nil {
-				return "当前 SSH 客户端尚未就绪或已断开。", true
-			}
-			files, fErr := snap.client.OpenFiles()
+			files, fErr := turnState.filesFor(snap.client)
 			if fErr != nil {
 				return "打开 SFTP 通道失败：" + fErr.Error(), true
 			}
-			defer files.Close()
 			p = resolveRemoteAgentPath(p, snap.liveDir, files)
+			size, _, _, statErr := files.Stat(p)
+			if statErr == nil {
+				totalSize = size
+			}
 			if params.Tail {
-				data, _, _, err = files.ReadTailLimited(ctx, p, limit)
+				data, _, truncated, err = files.ReadTailLimited(ctx, p, limit)
 			} else {
 				data, _, err = files.ReadLimited(ctx, p, limit)
+				if errors.Is(err, sshconn.ErrFileTooLarge) {
+					// 超出 limit 时回退读末尾或前段提示，并尽量把前 256KB 存入 ToolOutputStore 供检索
+					if fullData, _, fullErr := files.ReadLimited(ctx, p, 256<<10); fullErr == nil {
+						truncated = true
+						redactedFull := turnState.maybeRedact(string(fullData))
+						hid := turnState.outputStore.Put("sftp_read:"+p, redactedFull)
+						preview, _ := sanitizeToolText(redactedFull, int(limit))
+						return fmt.Sprintf("[文件 %s 共 %d 字节，已截取前 %d 字节；handle_id: %s，可用 tool_output_read 分页/检索]\n%s",
+							p, totalSize, len(preview), hid, preview), false
+					}
+					return fmt.Sprintf("文件 %s 体积较大（%d 字节，超过 %d 字节上限），请设置 tail=true 读取末尾日志，或使用 ssh_exec 配合 head/grep 查看。", p, totalSize, limit), true
+				}
 			}
 			if err != nil {
 				return "读取远端文件失败：" + err.Error(), true
@@ -750,7 +1194,350 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		if bytes.IndexByte(data, 0) >= 0 {
 			return fmt.Sprintf("文件 %s 包含二进制内容，已拒绝读取。", p), true
 		}
-		return string(data), false
+		text := turnState.maybeRedact(string(data))
+		if truncated {
+			hid := ""
+			if turnState.outputStore != nil {
+				hid = turnState.outputStore.Put("sftp_read:"+p, text)
+			}
+			if hid != "" {
+				return fmt.Sprintf("[文件 %s 共 %d 字节，已按 tail=%v 截取（%d 字节）；handle_id: %s]\n%s",
+					p, totalSize, params.Tail, len(data), hid, text), false
+			}
+			return fmt.Sprintf("[文件 %s 共 %d 字节，已截取 %d 字节]\n%s", p, totalSize, len(data), text), false
+		}
+		return text, false
+
+	case "sftp_write":
+		if !snap.hasTab || !snap.connected {
+			return "当前没有已连接的终端会话。", true
+		}
+		if snap.protocol == hosts.ProtocolTelnet || snap.protocol == hosts.ProtocolSerial {
+			return fmt.Sprintf("当前会话协议为 %s，不支持 SFTP 文件写入。", snap.protocol), true
+		}
+		if mode == aiModeObserver {
+			return "当前权限模式为「只读观察」，已阻止写入文件。", true
+		}
+		var params struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+			Reason  string `json:"reason"`
+			Mode    string `json:"mode"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err != nil {
+			return "参数解析失败：" + err.Error(), true
+		}
+		p := strings.TrimSpace(params.Path)
+		if p == "" {
+			return "path 不能为空", true
+		}
+		if strings.ContainsRune(params.Content, '\x00') {
+			return "拒绝写入包含二进制 NUL 字节的内容", true
+		}
+		var fileMode fs.FileMode
+		if mStr := strings.TrimSpace(params.Mode); mStr != "" {
+			parsed, mErr := strconv.ParseUint(mStr, 8, 32)
+			if mErr != nil {
+				return "无效的文件权限 mode：" + mStr, true
+			}
+			fileMode = fs.FileMode(parsed)
+		}
+
+		var before string
+		var expectExists bool
+		var expectSize, expectUnix int64
+		var files *sshconn.Files
+
+		if snap.isLocal {
+			p = resolveLocalAgentPath(p, snap.liveDir)
+			if info, err := os.Lstat(p); err == nil {
+				if !info.Mode().IsRegular() {
+					return "目标路径不是普通文件，无法写入", true
+				}
+				expectExists = true
+				expectSize = info.Size()
+				expectUnix = info.ModTime().Unix()
+				if expectSize <= 256<<10 {
+					if raw, rErr := os.ReadFile(p); rErr == nil && bytes.IndexByte(raw, 0) < 0 {
+						before = string(raw)
+					}
+				}
+			}
+		} else {
+			var fErr error
+			files, fErr = turnState.filesFor(snap.client)
+			if fErr != nil {
+				return "打开 SFTP 通道失败：" + fErr.Error(), true
+			}
+			p = resolveRemoteAgentPath(p, snap.liveDir, files)
+			if size, mod, fMode, sErr := files.Stat(p); sErr == nil {
+				if !fMode.IsRegular() {
+					return "远端路径不是普通文件，无法写入", true
+				}
+				expectExists = true
+				expectSize = size
+				expectUnix = mod.Unix()
+				if size <= 256<<10 {
+					if raw, _, rErr := files.ReadLimited(ctx, p, 256<<10); rErr == nil {
+						before = string(raw)
+					}
+				}
+			}
+		}
+
+		diffText := ai.UnifiedDiff(p, before, params.Content, 3)
+		if diffText == "" {
+			return "文件内容未发生变化，无需写入。", false
+		}
+		sensitive := ai.IsSensitiveWritePath(p)
+		needConfirm := sensitive || mode == aiModeConfirm || snap.production || expectExists
+		if needConfirm {
+			target := snap.hostName
+			if snap.liveUser != "" && snap.hostAddr != "" {
+				target = snap.liveUser + "@" + snap.hostAddr
+			}
+			dec, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, approvalFileWrite, params.Content, params.Reason, target, diffText, p, "", sensitive, snap.production)
+			if err != nil {
+				return "等待确认已取消", true
+			}
+			if !dec.approved {
+				if toolRec != nil {
+					_ = a.runMainSync(ctx, func() { toolRec.Status = toolDenied })
+				}
+				return "用户拒绝写入该文件。", true
+			}
+			if toolRec != nil {
+				_ = a.runMainSync(ctx, func() { toolRec.Status = toolRunning })
+			}
+		}
+
+		if snap.isLocal {
+			if err := writeLocalFileAtomic(p, []byte(params.Content), expectExists, expectSize, expectUnix, fileMode); err != nil {
+				return "写入本地文件失败：" + err.Error(), true
+			}
+		} else {
+			if err := files.WriteOrCreateFile(ctx, p, []byte(params.Content), expectExists, expectSize, expectUnix, fileMode, false); err != nil {
+				return "写入远端文件失败：" + err.Error(), true
+			}
+		}
+		return fmt.Sprintf("已写入文件 %s（%d 字节）", p, len(params.Content)), false
+
+	case "sftp_edit":
+		if !snap.hasTab || !snap.connected {
+			return "当前没有已连接的终端会话。", true
+		}
+		if snap.protocol == hosts.ProtocolTelnet || snap.protocol == hosts.ProtocolSerial {
+			return fmt.Sprintf("当前会话协议为 %s，不支持 SFTP 文件编辑。", snap.protocol), true
+		}
+		if mode == aiModeObserver {
+			return "当前权限模式为「只读观察」，已阻止编辑文件。", true
+		}
+		var params struct {
+			Path       string `json:"path"`
+			OldText    string `json:"old_text"`
+			NewText    string `json:"new_text"`
+			ReplaceAll bool   `json:"replace_all"`
+			Reason     string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err != nil {
+			return "参数解析失败：" + err.Error(), true
+		}
+		p := strings.TrimSpace(params.Path)
+		if p == "" || params.OldText == "" {
+			return "path 与 old_text 不能为空", true
+		}
+		if strings.ContainsRune(params.NewText, '\x00') {
+			return "拒绝写入包含二进制 NUL 字节的内容", true
+		}
+
+		var before string
+		var expectSize, expectUnix int64
+		var files *sshconn.Files
+
+		if snap.isLocal {
+			p = resolveLocalAgentPath(p, snap.liveDir)
+			info, err := os.Lstat(p)
+			if err != nil {
+				return "读取文件失败：" + err.Error(), true
+			}
+			if !info.Mode().IsRegular() {
+				return "目标路径不是普通文件", true
+			}
+			if info.Size() > 256<<10 {
+				return "文件超过 256KB，请改用分段脚本处理", true
+			}
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				return "读取文件失败：" + err.Error(), true
+			}
+			if bytes.IndexByte(raw, 0) >= 0 || !utf8.Valid(raw) {
+				return "目标文件不是 UTF-8 文本文件，拒绝编辑", true
+			}
+			before = string(raw)
+			expectSize = info.Size()
+			expectUnix = info.ModTime().Unix()
+		} else {
+			var fErr error
+			files, fErr = turnState.filesFor(snap.client)
+			if fErr != nil {
+				return "打开 SFTP 通道失败：" + fErr.Error(), true
+			}
+			p = resolveRemoteAgentPath(p, snap.liveDir, files)
+			size, mod, fMode, sErr := files.Stat(p)
+			if sErr != nil {
+				return "读取远端文件失败：" + sErr.Error(), true
+			}
+			if !fMode.IsRegular() {
+				return "远端路径不是普通文件", true
+			}
+			if size > 256<<10 {
+				return "文件超过 256KB，请改用分段脚本处理", true
+			}
+			raw, mod2, rErr := files.ReadLimited(ctx, p, 256<<10)
+			if rErr != nil {
+				return "读取远端文件失败：" + rErr.Error(), true
+			}
+			before = string(raw)
+			expectSize = size
+			if !mod2.IsZero() {
+				expectUnix = mod2.Unix()
+			} else {
+				expectUnix = mod.Unix()
+			}
+		}
+
+		matches := strings.Count(before, params.OldText)
+		if matches == 0 {
+			return "未在文件中找到完全匹配的 old_text，请先用 sftp_read 核对上下文。", true
+		}
+		if matches > 1 && !params.ReplaceAll {
+			return fmt.Sprintf("old_text 在文件中出现 %d 次，请提供更具体的上下文或设置 replace_all=true。", matches), true
+		}
+		var after string
+		if params.ReplaceAll {
+			after = strings.ReplaceAll(before, params.OldText, params.NewText)
+		} else {
+			after = strings.Replace(before, params.OldText, params.NewText, 1)
+		}
+		if after == before {
+			return "替换后文件内容无变化。", false
+		}
+
+		diffText := ai.UnifiedDiff(p, before, after, 3)
+		sensitive := ai.IsSensitiveWritePath(p)
+		// 修改已有文件始终展示 Unified Diff 供人工确认，防止静默篡改配置
+		target := snap.hostName
+		if snap.liveUser != "" && snap.hostAddr != "" {
+			target = snap.liveUser + "@" + snap.hostAddr
+		}
+		dec, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, approvalFileWrite, after, params.Reason, target, diffText, p, "", sensitive, snap.production)
+		if err != nil {
+			return "等待确认已取消", true
+		}
+		if !dec.approved {
+			if toolRec != nil {
+				_ = a.runMainSync(ctx, func() { toolRec.Status = toolDenied })
+			}
+			return "用户拒绝编辑该文件。", true
+		}
+		if toolRec != nil {
+			_ = a.runMainSync(ctx, func() { toolRec.Status = toolRunning })
+		}
+
+		if snap.isLocal {
+			if err := writeLocalFileAtomic(p, []byte(after), true, expectSize, expectUnix, 0); err != nil {
+				return "保存本地文件失败：" + err.Error(), true
+			}
+		} else {
+			if err := files.WriteFile(ctx, p, []byte(after), expectSize, expectUnix, false); err != nil {
+				return "保存远端文件失败：" + err.Error(), true
+			}
+		}
+		return fmt.Sprintf("已更新文件 %s（替换 %d 处）", p, func() int {
+			if params.ReplaceAll {
+				return matches
+			}
+			return 1
+		}()), false
+
+	case "tool_output_read":
+		var params struct {
+			HandleID   string `json:"handle_id"`
+			OffsetLine int    `json:"offset_line"`
+			LimitLines int    `json:"limit_lines"`
+			Grep       string `json:"grep"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err != nil {
+			return "参数解析失败：" + err.Error(), true
+		}
+		if turnState.outputStore == nil {
+			return "当前会话暂无缓存的完整输出。", true
+		}
+		out, err := turnState.outputStore.Read(params.HandleID, params.OffsetLine, params.LimitLines, params.Grep)
+		if err != nil {
+			return err.Error(), true
+		}
+		return turnState.maybeRedact(out), false
+
+	case "update_plan":
+		var params struct {
+			Steps []aiPlanStep `json:"steps"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err != nil {
+			return "参数解析失败：" + err.Error(), true
+		}
+		clean := make([]aiPlanStep, 0, min(len(params.Steps), 12))
+		done := 0
+		for _, st := range params.Steps {
+			title := strings.TrimSpace(st.Title)
+			if title == "" {
+				continue
+			}
+			status := st.Status
+			switch status {
+			case planPending, planInProgress, planCompleted, planFailed:
+			default:
+				status = planPending
+			}
+			if status == planCompleted {
+				done++
+			}
+			clean = append(clean, aiPlanStep{
+				Title:  title,
+				Status: status,
+				Note:   strings.TrimSpace(st.Note),
+			})
+			if len(clean) >= 12 {
+				break
+			}
+		}
+		if err := a.runMainSync(ctx, func() {
+			sess := a.aiSessionForTab(snap.tabID)
+			if conv := sess.convByID(convID); conv != nil {
+				wasEmpty := len(conv.Plan) == 0
+				conv.Plan = clean
+				if len(clean) == 0 {
+					conv.PlanExpanded = false
+				} else if wasEmpty {
+					conv.PlanExpanded = true
+				}
+				if sess.convID == convID {
+					sess.plan = conv.Plan
+					sess.planExpanded = conv.PlanExpanded
+				}
+			} else if sess.convID == "" || sess.convID == convID {
+				wasEmpty := len(sess.plan) == 0
+				sess.plan = clean
+				if len(clean) == 0 {
+					sess.planExpanded = false
+				} else if wasEmpty {
+					sess.planExpanded = true
+				}
+			}
+		}); err != nil {
+			return "更新执行计划失败：" + err.Error(), true
+		}
+		return fmt.Sprintf("已更新执行计划（共 %d 步，已完成 %d 步）。", len(clean), done), false
 
 	case "terminal_insert":
 		var params struct {
@@ -769,9 +1556,12 @@ func (a *app) executeAgentTool(ctx context.Context, convID string, seq uint64, s
 		}
 		dangerous := ai.IsDangerousCommand(cmd)
 		if mode == aiModeConfirm || dangerous {
-			approved, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, cmd, "填入当前终端输入框（不回车）", snap.hostName, dangerous, snap.production)
-			if err != nil || !approved {
+			dec, err := a.requestAgentApproval(ctx, snap.tabID, convID, seq, toolRec, approvalInsert, cmd, "填入当前终端输入框（不回车）", snap.hostName, "", "", "", dangerous, snap.production)
+			if err != nil || !dec.approved {
 				return "已取消填入终端。", true
+			}
+			if edited := strings.TrimSpace(dec.editedCmd); edited != "" {
+				cmd = edited
 			}
 		}
 		var pasted bool
@@ -807,57 +1597,6 @@ func captureTermTail(raw string, maxLines int) string {
 	return strings.Join(nonEmpty, "\n")
 }
 
-func execLocalCommand(ctx context.Context, command, dir string, maxBytes int) (sshconn.ExecResult, error) {
-	shell := "/bin/sh"
-	if runtime.GOOS == "windows" {
-		shell = "cmd.exe"
-	}
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, shell, "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
-	}
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	outStr := stdout.String()
-	errStr := stderr.String()
-	truncated := false
-	if maxBytes > 0 {
-		if len(outStr) > maxBytes {
-			outStr = outStr[:maxBytes]
-			truncated = true
-		}
-		if len(errStr) > maxBytes {
-			errStr = errStr[:maxBytes]
-			truncated = true
-		}
-	}
-	res := sshconn.ExecResult{
-		Stdout:    outStr,
-		Stderr:    errStr,
-		Truncated: truncated,
-	}
-	if err != nil {
-		if ctx.Err() != nil {
-			res.ExitCode = -1
-			return res, ctx.Err()
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			res.ExitCode = exitErr.ExitCode()
-			return res, nil
-		}
-		return res, err
-	}
-	return res, nil
-}
-
 func sanitizeToolText(s string, maxBytes int) (string, bool) {
 	if s == "" {
 		return "", false
@@ -875,14 +1614,45 @@ func sanitizeToolText(s string, maxBytes int) (string, bool) {
 }
 
 func formatExecResult(res sshconn.ExecResult) string {
+	return formatExecResultWithStore(res, nil)
+}
+
+func formatExecResultWithStore(res sshconn.ExecResult, turnState *aiTurnExecState) string {
 	const maxForLLM = 12000
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("exit_code: %d\n", res.ExitCode))
-	out, outTrunc := sanitizeToolText(strings.TrimRight(res.Stdout, "\r\n"), maxForLLM)
-	errOut, errTrunc := sanitizeToolText(strings.TrimRight(res.Stderr, "\r\n"), 4000)
+
+	rawOut := strings.TrimRight(res.Stdout, "\r\n")
+	rawErr := strings.TrimRight(res.Stderr, "\r\n")
+	if turnState != nil {
+		rawOut = turnState.maybeRedact(rawOut)
+		rawErr = turnState.maybeRedact(rawErr)
+	}
+
+	out, outTrunc := sanitizeToolText(rawOut, maxForLLM)
+	errOut, errTrunc := sanitizeToolText(rawErr, 4000)
+
+	handleNotice := ""
+	if (outTrunc || errTrunc) && turnState != nil && turnState.outputStore != nil {
+		var full strings.Builder
+		if rawOut != "" {
+			full.WriteString("--- stdout ---\n" + rawOut + "\n")
+		}
+		if rawErr != "" {
+			full.WriteString("--- stderr ---\n" + rawErr + "\n")
+		}
+		if hid := turnState.outputStore.Put("ssh_exec", full.String()); hid != "" {
+			handleNotice = fmt.Sprintf("（完整输出已缓存，handle_id: %s，可用 tool_output_read 分页/检索）", hid)
+		}
+	}
+
 	if out != "" {
 		if outTrunc {
-			out += "\n...[stdout 输出过长已截断，建议使用 head/grep 精简查询]"
+			if handleNotice != "" {
+				out += "\n...[stdout 已截断 " + handleNotice + "]"
+			} else {
+				out += "\n...[stdout 输出过长已截断，建议使用 head/grep 精简查询]"
+			}
 		}
 		b.WriteString("--- stdout ---\n")
 		b.WriteString(out)

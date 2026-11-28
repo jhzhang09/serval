@@ -8,6 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -18,6 +21,7 @@ import (
 	"serval/core/ai"
 	"serval/core/hosts"
 	"serval/core/sshconn"
+	"serval/core/syncer"
 	"serval/core/vault"
 	"serval/locales"
 
@@ -1566,7 +1570,7 @@ func TestAIProductionApprovalAndHistoryCompression(t *testing.T) {
 	if !h.a.ai.pendingApproval.production || !h.tt.HasText("生产环境命令确认") {
 		t.Fatalf("确认卡片应标记并渲染为生产环境确认，texts=%q", h.tt.Texts())
 	}
-	h.a.resolveAgentApproval(h.a.ai.pendingApproval, false)
+	h.a.resolveAgentApproval(h.a.ai.pendingApproval, aiApprovalDecision{})
 	if got := <-done; !strings.Contains(got, "用户拒绝") {
 		t.Fatalf("拒绝后应返回拒绝提示: %q", got)
 	}
@@ -1648,8 +1652,8 @@ func TestAIAgentApprovalCanceledResetsToolStatus(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() {
-		ok, _ := h.a.requestAgentApproval(ctx, snap.tabID, h.a.ai.convID, h.a.ai.reqSeq, toolRec, "touch /tmp/x", "测试取消", "dev", false, true)
-		done <- ok
+		dec, _ := h.a.requestAgentApproval(ctx, snap.tabID, h.a.ai.convID, h.a.ai.reqSeq, toolRec, approvalExec, "touch /tmp/x", "测试取消", "dev", "", "", "touch", false, true)
+		done <- dec.approved
 	}()
 
 	h.pump("等待审批卡片出现", func() bool {
@@ -1840,5 +1844,746 @@ func TestAIConversationHistoryPersistsAcrossRestart(t *testing.T) {
 	h.a.lockVault()
 	if len(h.a.aiChats) != 0 || len(h.a.ai.convs) != 0 {
 		t.Fatalf("lockVault 后应清空内存中的 AI 历史: aiChats=%d convs=%d", len(h.a.aiChats), len(h.a.ai.convs))
+	}
+}
+
+func TestAIApprovalCardLongCommandScrolls(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.tt.SetSize(1200, 760)
+
+	var b strings.Builder
+	b.WriteString("cat > /root/script.sh <<'SCRIPT'\n#!/bin/bash\n")
+	for i := 1; i <= 58; i++ {
+		fmt.Fprintf(&b, "echo 'line %02d: checking traffic threshold and service health'\n", i)
+	}
+	b.WriteString("SCRIPT")
+	longCmd := b.String()
+
+	ap := &aiApproval{
+		seq:       1,
+		command:   longCmd,
+		reason:    "写入长脚本并验证",
+		target:    "root@10.0.0.1",
+		dangerous: true,
+		answer:    make(chan aiApprovalDecision, 1),
+	}
+	h.a.ai.pendingApproval = ap
+	h.tt.Frame()
+	h.tt.Frame()
+
+	if !h.tt.HasText("高危命令拦截确认") {
+		t.Fatalf("应渲染高危命令拦截确认卡片: %q", h.tt.Texts())
+	}
+	for _, label := range []string{"拒绝", "允许执行"} {
+		box, ok := h.tt.Find(label)
+		if !ok {
+			t.Fatalf("缺少审批按钮 %q: %q", label, h.tt.Texts())
+		}
+		if box.Y < 0 || box.Y+box.H > 760 || box.H <= 0 {
+			t.Fatalf("长命令审批按钮 %q 超出视口: %+v", label, box)
+		}
+	}
+	if ap.scroll.MaxY <= 0 {
+		t.Fatalf("长命令预览应可垂直滚动，实际 MaxY=%v", ap.scroll.MaxY)
+	}
+
+	reasonBox, ok := h.tt.Find("写入长脚本并验证")
+	if !ok {
+		t.Fatalf("未找到审批原因文本")
+	}
+	denyBox, _ := h.tt.Find("拒绝")
+	scrollX := reasonBox.X + 40
+	scrollY := (reasonBox.Y + reasonBox.H + denyBox.Y) / 2
+	h.tt.Scroll(scrollX, scrollY, 0, 400)
+	h.tt.Frame()
+	if ap.scroll.Y <= 0 {
+		t.Fatalf("滚动长命令预览后 Y 应大于 0，实际 Y=%v (MaxY=%v)", ap.scroll.Y, ap.scroll.MaxY)
+	}
+
+	// 矮窗口下按钮依然保持在视口内且命令区域可滚动
+	h.tt.SetSize(960, 440)
+	h.tt.Frame()
+	for _, label := range []string{"拒绝", "允许执行"} {
+		box, ok := h.tt.Find(label)
+		if !ok {
+			t.Fatalf("矮窗口下缺少审批按钮 %q", label)
+		}
+		if box.Y < 0 || box.Y+box.H > 440 || box.H <= 0 {
+			t.Fatalf("矮窗口下长命令审批按钮 %q 超出视口: %+v", label, box)
+		}
+	}
+	if ap.scroll.MaxY <= 0 {
+		t.Fatalf("矮窗口下长命令预览应可垂直滚动，实际 MaxY=%v", ap.scroll.MaxY)
+	}
+
+	h.click("拒绝")
+	h.tt.Frame()
+	if got := <-ap.answer; got.approved {
+		t.Fatal("点击拒绝后应返回 approved=false")
+	}
+	if h.a.ai.pendingApproval != nil {
+		t.Fatal("处理审批后应清空 pendingApproval")
+	}
+
+	// 短命令不应产生多余滚动条
+	shortAp := &aiApproval{
+		seq:       2,
+		command:   "rm -rf /tmp/demo",
+		reason:    "清理临时目录",
+		target:    "root@10.0.0.1",
+		dangerous: true,
+		answer:    make(chan aiApprovalDecision, 1),
+	}
+	h.a.ai.pendingApproval = shortAp
+	h.tt.Frame()
+	if shortAp.scroll.MaxY != 0 {
+		t.Fatalf("短命令不应产生滚动条，实际 MaxY=%v", shortAp.scroll.MaxY)
+	}
+}
+
+func TestAIAgentSFTPWriteEditDiffApproval(t *testing.T) {
+	workDir := t.TempDir()
+	confPath := filepath.Join(workDir, "app.conf")
+	if err := os.WriteFile(confPath, []byte("port=8080\nmode=dev\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	step := 0
+	var toolOutputs []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []ai.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, m := range req.Messages {
+			if m.Role == "tool" {
+				toolOutputs = append(toolOutputs, m.Content)
+			}
+		}
+		step++
+		w.Header().Set("Content-Type", "application/json")
+		switch step {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "call_edit",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "sftp_edit",
+								"arguments": fmt.Sprintf(`{"path":%q,"old_text":"mode=dev","new_text":"mode=prod","reason":"切换生产配置"}`, confPath),
+							},
+						}},
+					},
+				}},
+			})
+		case 2:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "call_write",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "sftp_write",
+								"arguments": fmt.Sprintf(`{"path":%q,"content":"#!/bin/sh\necho ok\n","reason":"创建健康检查脚本","mode":"0755"}`, filepath.Join(workDir, "health.sh")),
+							},
+						}},
+					},
+				}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"role": "assistant", "content": "已完成文件编辑与新建。"},
+				}},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.ai.mode = aiModeAuto
+	h.a.ai.query = "修改配置并新建健康检查脚本"
+	h.a.runAIGenerate()
+
+	// 覆写已有文件即使在自动模式下也会弹出 Diff 审批卡片
+	h.pump("等待 Diff 审批卡片", func() bool {
+		return h.a.ai.pendingApproval != nil && h.tt.HasText("修改文件确认") && h.tt.HasText("允许写入")
+	})
+	if !strings.Contains(h.a.ai.pendingApproval.diff, "-mode=dev") || !strings.Contains(h.a.ai.pendingApproval.diff, "+mode=prod") {
+		t.Fatalf("期望审批卡片包含 Unified Diff，实际=%q", h.a.ai.pendingApproval.diff)
+	}
+	h.click("允许写入")
+	h.pump("等待全部工具完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+
+	gotConf, err := os.ReadFile(confPath)
+	if err != nil || string(gotConf) != "port=8080\nmode=prod\n" {
+		t.Fatalf("sftp_edit 未生效: err=%v content=%q", err, string(gotConf))
+	}
+	gotScript, err := os.ReadFile(filepath.Join(workDir, "health.sh"))
+	if err != nil || !strings.Contains(string(gotScript), "echo ok") {
+		t.Fatalf("sftp_write 新建文件未生效: err=%v content=%q", err, string(gotScript))
+	}
+	_ = toolOutputs
+}
+
+func TestAIAgentApprovalEditAndSessionAllow(t *testing.T) {
+	var seenOutputs []string
+	step := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []ai.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, m := range req.Messages {
+			if m.Role == "tool" {
+				seenOutputs = append(seenOutputs, m.Content)
+			}
+		}
+		step++
+		w.Header().Set("Content-Type", "application/json")
+		switch step {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "c1",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "ssh_exec",
+								"arguments": `{"command":"echo ORIG_OUT","reason":"测试编辑与会话授权"}`,
+							},
+						}},
+					},
+				}},
+			})
+		case 2:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "c2",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "ssh_exec",
+								"arguments": `{"command":"echo SECOND_AUTO","reason":"验证会话级授权免审批"}`,
+							},
+						}},
+					},
+				}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"role": "assistant", "content": "ok"},
+				}},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.ai.mode = aiModeConfirm
+	h.a.ai.query = "run confirm"
+	h.a.runAIGenerate()
+
+	h.pump("出现确认卡片", func() bool {
+		return h.a.ai.pendingApproval != nil && h.tt.HasText("本会话允许 echo")
+	})
+	h.click("编辑")
+	h.tt.Frame()
+	h.a.ai.pendingApproval.command = "echo EDITED_OUT"
+	h.click("本会话允许 echo")
+
+	h.pump("第二次 echo 应免审批自动完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 1 && !h.a.ai.turns[0].running
+	})
+	joined := strings.Join(seenOutputs, "\n")
+	if !strings.Contains(joined, "EDITED_OUT") || !strings.Contains(joined, "SECOND_AUTO") {
+		t.Fatalf("期望执行编辑后的命令并自动放行第二次同类命令，实际=%q", joined)
+	}
+}
+
+func TestAIAgentStopPreservesContextAndVaultQuota(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.openAI()
+
+	// 1. 验证单作用域最多保留 15 条、总计最多 60 条 AI 会话
+	for i := 0; i < 20; i++ {
+		c := &aiConversation{
+			ID:        fmt.Sprintf("conv-%02d", i),
+			Title:     fmt.Sprintf("会话 %02d", i),
+			CreatedAt: time.Now().Add(time.Duration(i) * time.Minute),
+			UpdatedAt: time.Now().Add(time.Duration(i) * time.Minute),
+			Turns:     []aiTurn{{query: "q", explanation: "a"}},
+		}
+		h.a.persistAIConversation(h.a.currentAITabID(), c)
+	}
+	if len(h.a.aiChats) != 15 {
+		t.Fatalf("单作用域超过 15 条后应自动裁剪为 15 条，实际=%d", len(h.a.aiChats))
+	}
+
+	// 2. 验证中途点击停止会保留已完成的工具历史到 ChatHistory
+	step := 0
+	var sawHistoryAfterStop bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []ai.Message `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		step++
+		w.Header().Set("Content-Type", "application/json")
+		if step == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":       "stop_t1",
+							"type":     "function",
+							"function": map[string]string{"name": "host_info", "arguments": "{}"},
+						}},
+					},
+				}},
+			})
+			return
+		}
+		if step == 2 {
+			// 阻塞等待用户点击停止
+			<-r.Context().Done()
+			return
+		}
+		for _, m := range req.Messages {
+			if m.Role == "tool" && strings.Contains(m.Content, `"is_local": true`) {
+				sawHistoryAfterStop = true
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"role": "assistant", "content": "已衔接上下文。"},
+			}},
+		})
+	}))
+	defer ts.Close()
+
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.a.newAIConversation()
+	h.a.ai.query = "先查主机再继续"
+	h.a.runAIGenerate()
+
+	h.pump("等待第一步 host_info 完成", func() bool {
+		return len(h.a.ai.turns) == 1 && len(h.a.ai.turns[0].steps) > 0 && len(h.a.ai.turns[0].steps[0].Tools) > 0 && h.a.ai.turns[0].steps[0].Tools[0].Status == toolDone
+	})
+	h.a.stopAIRequest()
+	h.pump("停止后历史上下文应保留 host_info", func() bool {
+		for _, m := range h.a.ai.chatHistory {
+			if m.Role == "tool" {
+				return true
+			}
+		}
+		return false
+	})
+
+	h.a.ai.query = "继续"
+	h.a.runAIGenerate()
+	h.pump("追问完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.turns) == 2 && !h.a.ai.turns[1].running
+	})
+	if !sawHistoryAfterStop {
+		t.Fatal("停止后再次追问应携带之前已完成的工具调用结果")
+	}
+}
+
+func TestAIAgentRemoteCWDAndSecretRedaction(t *testing.T) {
+	if got := wrapRemoteCommandWithDir("ls -la", "/var/www/app's"); got != `cd '/var/www/app'\''s' 2>/dev/null; ls -la` {
+		t.Fatalf("unexpected wrapped remote cmd: %q", got)
+	}
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.lastCopiedText = "TOKEN=sk-proj-1234567890abcdef1234567890"
+	_, block := h.a.buildAttachedContextBlock(h.a.captureAISessionSnapshot(), []string{"clipboard"}, "")
+	if strings.Contains(block, "sk-proj-1234567890abcdef1234567890") {
+		t.Fatalf("默认开启脱敏时不应把原始 API Key 发给模型: %q", block)
+	}
+}
+
+func TestAIChatShardStorageMigrationAndOptionalSync(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.openAI()
+
+	// 1. 验证 AI 对话保存在独立加密分片 aichat.vault.json 中，主 vault.json 不含 aichat 记录
+	c1 := &aiConversation{
+		ID:        "shard-conv-1",
+		Title:     "分片存储测试",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Turns:     []aiTurn{{query: "ping", explanation: "pong"}},
+	}
+	h.a.persistAIConversation(h.a.currentAITabID(), c1)
+	shardPath := filepath.Join(h.dir, "aichat.vault.json")
+	rawShard, err := os.ReadFile(shardPath)
+	if err != nil {
+		t.Fatalf("期望生成独立加密分片 aichat.vault.json: %v", err)
+	}
+	if strings.Contains(string(rawShard), "分片存储测试") {
+		t.Fatal("aichat.vault.json 不应包含明文会话标题")
+	}
+	if recs, _ := h.a.vault.List(kindAIChat); len(recs) != 0 {
+		t.Fatalf("主 vault.json 不应再保存 aichat 记录，实际=%d", len(recs))
+	}
+
+	// 2. 模拟旧版 vault.json 中遗留的 aichat 记录，reload 时应自动迁移至分片并从主库清理
+	legacyRec := aiChatRecord{
+		ID:        "legacy-conv-1",
+		Scope:     "local",
+		Title:     "旧版遗留会话",
+		CreatedAt: time.Now().Add(-time.Hour),
+		UpdatedAt: time.Now().Add(-time.Hour),
+		Turns:     []aiSavedTurn{{Query: "old q", Explanation: "old a"}},
+	}
+	if err := h.a.vault.Apply([]vault.Change{aiChatChange(legacyRec)}); err != nil {
+		t.Fatal(err)
+	}
+	h.a.reload()
+	if recs, _ := h.a.vault.List(kindAIChat); len(recs) != 0 {
+		t.Fatalf("reload 后旧版 aichat 记录应已从主库清理，实际=%d", len(recs))
+	}
+	if !slices.ContainsFunc(h.a.aiChats, func(r aiChatRecord) bool { return r.ID == "legacy-conv-1" }) {
+		t.Fatalf("reload 后旧版记录应已迁移至分片并加载到内存: %+v", h.a.aiChats)
+	}
+
+	// 3. 验证 SyncAIChats 默认关闭时不导出 aichat.vault.json 到同步文件夹；开启后自动导出并可合并
+	syncDir := t.TempDir()
+	if err := h.a.setSyncDir(syncDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(syncDir, "aichat.vault.json")); !os.IsNotExist(err) {
+		t.Fatalf("默认关闭同步 AI 会话时不应导出 aichat.vault.json，stat err=%v", err)
+	}
+
+	nextLocal := h.a.local
+	nextLocal.SyncAIChats = true
+	if err := h.a.saveLocal(nextLocal); err != nil {
+		t.Fatal(err)
+	}
+	h.a.exportSyncDir()
+	if _, err := os.Stat(filepath.Join(syncDir, "aichat.vault.json")); err != nil {
+		t.Fatalf("开启 SyncAIChats 后应导出 aichat.vault.json: %v", err)
+	}
+
+	// 4. 验证 aiChatSyncURL 推导与 syncAIChatShard 合并逻辑（WebDAV/S3 通用路径）
+	if u, err := aiChatSyncURL("https://dav.example.com/remote.php/dav/files/u/serval/vault.json"); err != nil || !strings.HasSuffix(u, "/serval/aichat.vault.json") {
+		t.Fatalf("unexpected WebDAV aiChatSyncURL: %q err=%v", u, err)
+	}
+	if u, err := aiChatSyncURL("s3://mybucket/serval/vault.json?region=us-east-1"); err != nil || !strings.Contains(u, "/serval/aichat.vault.json") {
+		t.Fatalf("unexpected S3 aiChatSyncURL: %q err=%v", u, err)
+	}
+
+	// 模拟远端分片同步（memoryRemote）
+	remoteMap := map[string][]byte{}
+	aiRemote := &memSyncRemote{files: remoteMap, key: "aichat.vault.json"}
+	if err := syncAIChatShard(context.Background(), h.a.aiVault, aiRemote); err != nil {
+		t.Fatalf("syncAIChatShard upload failed: %v", err)
+	}
+	if len(remoteMap["aichat.vault.json"]) == 0 {
+		t.Fatal("expected aichat.vault.json uploaded to remote")
+	}
+
+	// 5. 锁定与重新解锁后分片应正常跟随锁定/解锁并恢复历史
+	h.a.lockVault()
+	if h.a.aiVault != nil {
+		t.Fatal("lockVault 后应清空并锁定 aiVault")
+	}
+	h.reopen()
+	if err := h.a.vault.Unlock(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	h.a.reload()
+	if len(h.a.aiChats) != 2 {
+		t.Fatalf("解锁后应从分片恢复 2 条 AI 会话，实际=%d", len(h.a.aiChats))
+	}
+}
+
+type memSyncRemote struct {
+	files map[string][]byte
+	key   string
+	etag  string
+}
+
+func (m *memSyncRemote) Download(context.Context) ([]byte, string, error) {
+	b, ok := m.files[m.key]
+	if !ok {
+		return nil, "", syncer.ErrNotFound
+	}
+	return b, m.etag, nil
+}
+
+func (m *memSyncRemote) Upload(_ context.Context, body []byte, ifMatch string) (string, error) {
+	if ifMatch == "" && m.etag != "" {
+		return "", syncer.ErrConflict
+	}
+	if ifMatch != "" && ifMatch != m.etag {
+		return "", syncer.ErrConflict
+	}
+	m.files[m.key] = append([]byte(nil), body...)
+	m.etag = fmt.Sprintf("etag-%d", len(body))
+	return m.etag, nil
+}
+
+func TestAIAgentPlanProgressBarAndPersistence(t *testing.T) {
+	step := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		step++
+		w.Header().Set("Content-Type", "application/json")
+		switch step {
+		case 1:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "plan_1",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "update_plan",
+								"arguments": `{"steps":[{"title":"检查磁盘","status":"completed"},{"title":"检查内存","status":"in_progress","note":"采样中"},{"title":"汇总报告","status":"pending"}]}`,
+							},
+						}},
+					},
+				}},
+			})
+		case 2:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "plan_2",
+							"type": "function",
+							"function": map[string]string{
+								"name":      "update_plan",
+								"arguments": `{"steps":[{"title":"检查磁盘","status":"completed"},{"title":"检查内存","status":"completed"},{"title":"汇总报告","status":"completed"}]}`,
+							},
+						}},
+					},
+				}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]any{"role": "assistant", "content": "全部排查步骤已完成。"},
+				}},
+			})
+		}
+	}))
+	defer ts.Close()
+
+	h := newHarness(t)
+	h.a.settings.AIBaseURL = ts.URL
+	h.a.settings.AIModel = "gpt-4o"
+	h.a.setAIKey("test-sk")
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.ai.query = "按计划排查服务器"
+	h.a.runAIGenerate()
+
+	h.pump("等待计划全部完成", func() bool {
+		return !h.a.ai.loading && len(h.a.ai.plan) == 3 && h.tt.HasText("执行计划") && h.tt.HasText("3/3")
+	})
+	if !h.tt.HasText("检查磁盘") || !h.tt.HasText("汇总报告") {
+		t.Fatalf("展开态应显示计划步骤标题，texts=%q", h.tt.Texts())
+	}
+
+	// 折叠/展开切换
+	h.click("展开或折叠执行计划")
+	h.tt.Frame()
+	if h.a.ai.planExpanded {
+		t.Fatal("点击切换后计划应折叠")
+	}
+
+	// 重启后从加密分片恢复会话并保留 Plan
+	convID := h.a.ai.convID
+	h.reopen()
+	if err := h.a.vault.Unlock(masterPassword); err != nil {
+		t.Fatal(err)
+	}
+	h.a.reload()
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.selectAIConversation(convID)
+	h.tt.Frame()
+	if len(h.a.ai.plan) != 3 || !h.tt.HasText("3/3") {
+		t.Fatalf("重启恢复后应保留执行计划，plan=%+v texts=%q", h.a.ai.plan, h.tt.Texts())
+	}
+
+	// 清除执行计划
+	h.click("清除执行计划")
+	h.tt.Frame()
+	if _, ok := h.tt.Find("清除执行计划"); len(h.a.ai.plan) != 0 || ok {
+		t.Fatalf("点击清除后应移除执行计划，plan=%+v barVisible=%v", h.a.ai.plan, ok)
+	}
+}
+
+func TestAITurnRunningWithEmptyStepShowsFeedback(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.ai.loading = true
+	h.a.ai.turns = []aiTurn{{
+		query:     "这台服务配置如何",
+		running:   true,
+		startedAt: time.Now().Add(-3 * time.Second),
+		modelName: "gemini-4-neon",
+		steps: []*aiStepRecord{{
+			Step: 1,
+		}},
+	}}
+	h.tt.Frame()
+
+	if !h.tt.HasText("正在连接模型并分析需求…") || !h.tt.HasText("AI 执行中") {
+		t.Fatalf("运行中且收到 EventStepStart 空步时仍应展示实时状态栏与执行中标识，texts=%q", h.tt.Texts())
+	}
+	if !h.tt.HasText("AI Agent") || !h.tt.HasText("gemini-4-neon") {
+		t.Fatalf("应展示助手消息头标与模型名称，texts=%q", h.tt.Texts())
+	}
+}
+
+func TestAITurnActivityStatusPhases(t *testing.T) {
+	cases := []struct {
+		name     string
+		turn     *aiTurn
+		approval *aiApproval
+		wantText string
+		wantKind string
+	}{
+		{
+			name:     "connect",
+			turn:     &aiTurn{running: true, steps: []*aiStepRecord{{Step: 1}}},
+			wantText: "正在连接模型并分析需求…",
+			wantKind: "connect",
+		},
+		{
+			name:     "thinking",
+			turn:     &aiTurn{running: true, steps: []*aiStepRecord{{Step: 1, Thinking: "先检查系统版本"}}},
+			wantText: "第 1 步 · 深度思考中…",
+			wantKind: "think",
+		},
+		{
+			name:     "singleTool",
+			turn:     &aiTurn{running: true, steps: []*aiStepRecord{{Step: 1, Tools: []*aiToolRecord{{Name: "ssh_exec", Summary: "执行 uname -a", Status: toolRunning}}}}},
+			wantText: "正在执行：执行 uname -a",
+			wantKind: "tool",
+		},
+		{
+			name: "parallelTools",
+			turn: &aiTurn{running: true, steps: []*aiStepRecord{{Step: 1, Tools: []*aiToolRecord{
+				{Name: "ssh_exec", Summary: "df -h", Status: toolRunning},
+				{Name: "ssh_exec", Summary: "free -m", Status: toolRunning},
+			}}}},
+			wantText: "正在并行执行 2 项工具…",
+			wantKind: "tool",
+		},
+		{
+			name: "postToolNextStep",
+			turn: &aiTurn{running: true, steps: []*aiStepRecord{
+				{Step: 1, Tools: []*aiToolRecord{{Name: "ssh_exec", Summary: "df -h", Status: toolDone}}},
+				{Step: 2},
+			}},
+			wantText: "第 2 步 · 正在分析工具结果…",
+			wantKind: "think",
+		},
+		{
+			name:     "streaming",
+			turn:     &aiTurn{running: true, steps: []*aiStepRecord{{Step: 1, Content: "正在输出结论"}}},
+			wantText: "正在生成回复…",
+			wantKind: "stream",
+		},
+		{
+			name:     "waitingApproval",
+			turn:     &aiTurn{running: true},
+			approval: &aiApproval{command: "systemctl restart nginx"},
+			wantText: "等待确认下方操作…",
+			wantKind: "approval",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotText, gotKind := aiTurnActivityStatus(tc.turn, tc.approval)
+			if gotText != tc.wantText || gotKind != tc.wantKind {
+				t.Fatalf("got (%q, %q), want (%q, %q)", gotText, gotKind, tc.wantText, tc.wantKind)
+			}
+		})
+	}
+}
+
+func TestAIToolCardRunningOutputNotDuplicated(t *testing.T) {
+	h := newHarness(t)
+	h.a.openLocalTerminal()
+	h.a.openAI()
+	h.a.ai.loading = true
+	h.a.ai.turns = []aiTurn{{
+		query:   "检查磁盘",
+		running: true,
+		steps: []*aiStepRecord{{
+			Step: 1,
+			Tools: []*aiToolRecord{{
+				ID:        "tc-1",
+				Name:      "ssh_exec",
+				Summary:   "执行 df -h",
+				Status:    toolRunning,
+				Output:    "UNIQUE_LIVE_OUTPUT_LINE",
+				StartedAt: time.Now().Add(-2 * time.Second),
+			}},
+		}},
+	}}
+	h.tt.Frame()
+
+	count := 0
+	for _, txt := range h.tt.Texts() {
+		if strings.Contains(txt, "UNIQUE_LIVE_OUTPUT_LINE") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("运行中工具实时输出应仅渲染一次（不重复出现在标题行），实际出现 %d 次: %q", count, h.tt.Texts())
+	}
+}
+
+func TestCachedMarkdownParsingConsistent(t *testing.T) {
+	md := "# 标题\n\n这是 **加粗** 和 `code`。"
+	b1 := cachedParseMarkdown(md)
+	b2 := cachedParseMarkdown(md)
+	if len(b1) != len(b2) || len(b1) == 0 {
+		t.Fatalf("Markdown 块缓存结果不一致: %+v vs %+v", b1, b2)
+	}
+	i1 := cachedParseInlineMarkdown("这是 **加粗** 和 `code`")
+	i2 := cachedParseInlineMarkdown("这是 **加粗** 和 `code`")
+	if len(i1) != len(i2) || len(i1) == 0 {
+		t.Fatalf("行内 Markdown 缓存结果不一致: %+v vs %+v", i1, i2)
 	}
 }

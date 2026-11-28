@@ -267,3 +267,72 @@ func TestKDFDoesNotHoldLock(t *testing.T) {
 	checkNotBlocked("Unlock", func() error { return v.Unlock(password) })
 	checkNotBlocked("ChangePassword", func() error { return v.ChangePassword(password, "another password") })
 }
+
+func TestOpenWithIDAndProtectWithKeyShardMerge(t *testing.T) {
+	mainPath := filepath.Join(t.TempDir(), "vault.json")
+	mainV, err := Open(mainPath, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mainV.Protect(password); err != nil {
+		t.Fatal(err)
+	}
+	vk := mainV.Key()
+	shardID := mainV.ID() + ":aichat"
+
+	shard1Path := filepath.Join(t.TempDir(), "aichat.vault.json")
+	s1, err := OpenWithID(shard1Path, "dev1", shardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s1.ID() != shardID || s1.Path() != shard1Path || s1.Device() != "dev1" || s1.HasRecords() {
+		t.Fatalf("unexpected shard1 metadata: id=%q path=%q dev=%q has=%v", s1.ID(), s1.Path(), s1.Device(), s1.HasRecords())
+	}
+	if err := s1.ProtectWithKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	// 空分片保护后不写盘，写入记录后才落盘
+	if _, err := os.Stat(shard1Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected empty shard not written yet, stat err=%v", err)
+	}
+	if err := s1.Put("aichat", "c1", []byte(`{"title":"hello"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !s1.HasRecords() {
+		t.Fatal("expected HasRecords=true after Put")
+	}
+
+	// 另一台设备以相同 shardID 和 VK 创建分片并 Merge
+	shard2Path := filepath.Join(t.TempDir(), "aichat2.vault.json")
+	s2, err := OpenWithID(shard2Path, "dev2", shardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.ProtectWithKey(vk); err != nil {
+		t.Fatal(err)
+	}
+	s1Bytes, err := s1.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := s2.Merge(s1Bytes)
+	if err != nil || !changed {
+		t.Fatalf("expected Merge success with changed=true, got changed=%v err=%v", changed, err)
+	}
+	rec, ok, err := s2.Get("c1")
+	if err != nil || !ok || string(rec.Data) != `{"title":"hello"}` {
+		t.Fatalf("unexpected merged record: ok=%v err=%v data=%q", ok, err, rec.Data)
+	}
+
+	// 重新打开后能用同一个 VK 解锁
+	s2Reopen, err := OpenWithID(shard2Path, "dev2", shardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s2Reopen.UnlockWithKey(vk); err != nil {
+		t.Fatalf("UnlockWithKey failed: %v", err)
+	}
+	if rec2, ok2, _ := s2Reopen.Get("c1"); !ok2 || string(rec2.Data) != `{"title":"hello"}` {
+		t.Fatalf("unexpected record after reopen: ok=%v data=%q", ok2, rec2.Data)
+	}
+}

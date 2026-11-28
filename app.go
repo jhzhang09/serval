@@ -41,6 +41,7 @@ type app struct {
 	// vault 是全部用户数据（主机、私钥、密码、代码片段、同步设置）的唯一来源，
 	// hosts、keys、snippets、settings 是它解密后的副本。
 	vault      *vault.Vault
+	aiVault    *vault.Vault // 独立加密分片（aichat.vault.json），与主 vault 共享 VK，按需同步
 	hosts      []hosts.Host
 	keys       []keys.Key
 	proxies    []hosts.Proxy
@@ -141,6 +142,7 @@ type app struct {
 	skipNextClickHostID string
 	skipNextClickAt     time.Time
 	lastScrolledTabID   int
+	sidebarScroll       ui.ScrollState
 	customGroups        []string
 	groupSheet          groupDialogState
 	// notice 显示最近一次连接失败的原因。
@@ -473,6 +475,10 @@ func (a *app) lockVault() {
 	if a.vault != nil {
 		a.vault.Lock()
 	}
+	if a.aiVault != nil {
+		a.aiVault.Lock()
+		a.aiVault = nil
+	}
 	a.hosts = nil
 	a.keys = nil
 	a.stopAllTunnels()
@@ -766,11 +772,13 @@ func (a *app) probeDistroAsync(h hosts.Host, client *sshconn.Client) {
 		return
 	}
 	go func() {
-		out, err := client.Output("cat /etc/os-release 2>/dev/null; echo '---SERV-OS---'; uname -s 2>/dev/null")
-		if err != nil || len(out) == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		res, err := client.ExecContext(ctx, "cat /etc/os-release 2>/dev/null; echo '---SERV-OS---'; uname -s 2>/dev/null", 16<<10)
+		if err != nil || len(res.Stdout) == 0 {
 			return
 		}
-		raw := string(out)
+		raw := res.Stdout
 		osRelease, unameStr, _ := strings.Cut(raw, "---SERV-OS---")
 		distro := hosts.DetectDistro(strings.TrimSpace(osRelease), strings.TrimSpace(unameStr))
 		if distro == "" {
@@ -1009,7 +1017,7 @@ func (a *app) connectFailed(ctx context.Context, h hosts.Host, route []hosts.Hos
 		a.askSecret(h, who, hop, creds, false, message)
 		return
 	default:
-		a.notice = err.Error()
+		a.notice = friendlySSHConnectError(who.Name, err)
 	}
 	if a.openFilesOnHostID == h.ID {
 		a.openFilesOnHostID = ""
@@ -1630,7 +1638,7 @@ func (a *app) split(t *tab, vertical bool) {
 		a.post(func() {
 			t.splitting = false
 			if err != nil {
-				a.notice = err.Error()
+				a.notice = "拆分窗格失败：" + strings.TrimPrefix(friendlySSHConnectError("", err), "连接失败：")
 				return
 			}
 			if !slices.Contains(a.tabs, t) {
@@ -2012,7 +2020,7 @@ func (a *app) stopReconnect(t *tab, err error) {
 		a.notice = locales.AppHostKeyMismatchReconnect(t.host.Name)
 		return
 	}
-	a.notice = locales.AppReconnectStopped(t.host.Name, err.Error())
+	a.notice = locales.AppReconnectStopped(t.host.Name, strings.TrimPrefix(friendlySSHConnectError("", err), "连接失败："))
 }
 
 func (a *app) retryReconnect(ctx context.Context, t *tab, attempt int) {
@@ -3041,4 +3049,65 @@ func friendlyTerminalError(err error) string {
 		return locales.AppTerminalMissingLibrary(strings.TrimSpace(before))
 	}
 	return msg
+}
+
+func (a *app) isProbingHosts() bool {
+	for _, h := range a.health {
+		if h.state == probeChecking {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *app) hasRunningAI() bool {
+	if a.ai.loading {
+		return true
+	}
+	for _, s := range a.aiSessions {
+		if s != nil && s.loading {
+			return true
+		}
+	}
+	return false
+}
+
+// friendlySSHConnectError 将底层 SSH/TCP/DNS/代理握手错误转换为清晰的中文提示与排查建议，
+// 避免直接暴露 "handshake failed: EOF" 等底层英文细节。
+func friendlySSHConnectError(hostName string, err error) string {
+	if err == nil {
+		return ""
+	}
+	target := strings.TrimSpace(hostName)
+	prefix := "连接失败"
+	if target != "" {
+		prefix = fmt.Sprintf("无法连接 %s", target)
+	}
+	raw := err.Error()
+	low := strings.ToLower(raw)
+
+	var dnsErr *net.DNSError
+	switch {
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), strings.Contains(low, "handshake failed: eof"), strings.HasSuffix(low, ": eof"):
+		return prefix + "：服务器在 SSH 握手阶段断开了连接，请检查 SSH 服务是否正常、端口是否正确，或是否被防火墙/IP 白名单拦截"
+	case errors.Is(err, syscall.ECONNREFUSED), strings.Contains(low, "connection refused"):
+		return prefix + "：目标端口拒绝连接，请确认 SSH 服务已启动且端口号正确"
+	case errors.Is(err, context.DeadlineExceeded), strings.Contains(low, "i/o timeout"), strings.Contains(low, "timed out"):
+		return prefix + "：连接超时，请检查主机地址、端口、网络连通性或代理设置"
+	case errors.As(err, &dnsErr), strings.Contains(low, "no such host"):
+		return prefix + "：无法解析主机域名，请检查地址拼写或 DNS 设置"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH), strings.Contains(low, "no route to host"), strings.Contains(low, "network is unreachable"):
+		return prefix + "：网络不可达，请检查网络路由、VPN 或跳板机配置"
+	case errors.Is(err, syscall.ECONNRESET), strings.Contains(low, "connection reset by peer"):
+		return prefix + "：连接被远端重置，请检查服务器 SSH 配置或网络稳定性"
+	case strings.Contains(low, "proxy"), strings.Contains(low, "socks"):
+		return prefix + "：代理连接失败，请检查代理地址、端口和认证信息"
+	case strings.Contains(low, "handshake failed"), strings.Contains(low, "unable to authenticate"), strings.Contains(low, "ssh:"):
+		return prefix + "：SSH 握手失败，请检查端口、加密算法或服务器 SSH 配置"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return prefix + "：连接超时，请检查主机地址、端口、网络连通性或代理设置"
+	}
+	return prefix + "：" + raw
 }

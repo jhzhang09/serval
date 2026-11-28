@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"serval/core/sshconn"
@@ -75,7 +76,9 @@ func (a *app) openEditor(t *tab, remotePath, name string) {
 	a.editor.loadingName = name
 	files := t.files
 	go func() {
-		data, mod, err := files.ReadLimited(context.Background(), remotePath, maxEditorBytes)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		data, mod, err := files.ReadLimited(ctx, remotePath, maxEditorBytes)
 		a.post(func() {
 			a.editor.loading = false
 			a.editor.loadingName = ""
@@ -209,6 +212,8 @@ func editorReason(err error, isLocal bool) string {
 		return fmt.Sprintf("文件超过 %d MB，编辑器打不开。请下载后再用别的程序编辑。", maxEditorBytes>>20)
 	case errors.Is(err, sshconn.ErrNotText):
 		return "这不是 UTF-8 文本（或含有二进制数据），编辑器打不开。"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "读取文件超时，请检查网络连接后重试。"
 	default:
 		return transferReason(err)
 	}
@@ -247,7 +252,9 @@ func (a *app) reloadEditor() {
 		if isLocal {
 			data, mod, err = readLocalLimited(targetPath, maxEditorBytes)
 		} else {
-			data, mod, err = files.ReadLimited(context.Background(), targetPath, maxEditorBytes)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			data, mod, err = files.ReadLimited(ctx, targetPath, maxEditorBytes)
 		}
 		a.post(func() {
 			if a.editor.path != targetPath || a.editor.local != isLocal || a.editor.buf == nil {

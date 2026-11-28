@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -194,7 +195,7 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 		t.Fatal("未打开 SSH 会话时不应显示“已连接”圆点")
 	}
 
-	// 验证可达主机图标存在轻微呼吸（推进半个周期后像素透明度发生变化），而不可达主机图标呈置灰（低饱和度）。
+	// 验证可达主机图标保持静止饱和彩色（不再无限循环呼吸），而不可达主机图标呈置灰（低饱和度）。
 	okRow, ok := h.tt.Find("ok-host")
 	if !ok {
 		t.Fatal("找不到 ok-host 行")
@@ -217,8 +218,19 @@ func TestHostHealthProbeAndCancel(t *testing.T) {
 	img1 := h.tt.Image()
 	okIconX := int(okRow.X) + 23
 	okIconY := int(okRow.Y + okRow.H/2)
-	if img0.RGBAAt(okIconX, okIconY) == img1.RGBAAt(okIconX, okIconY) {
-		t.Fatalf("可达主机图标在半个呼吸周期后像素未变化，未见呼吸效果: %+v", img0.RGBAAt(okIconX, okIconY))
+	if img0.RGBAAt(okIconX, okIconY) != img1.RGBAAt(okIconX, okIconY) {
+		t.Fatalf("可达主机图标应保持静态渲染，避免空闲时持续重绘: %+v != %+v", img0.RGBAAt(okIconX, okIconY), img1.RGBAAt(okIconX, okIconY))
+	}
+
+	// 验证重新触发 probeAllHosts 时会清理已移除主机的残留 probeChecking 状态
+	h.a.health["removed-host"] = hostHealth{state: probeChecking, at: time.Now()}
+	if !h.a.isProbingHosts() {
+		t.Fatal("存在 probeChecking 时 isProbingHosts 应返回 true")
+	}
+	h.a.hosts = nil
+	h.a.probeAllHosts(true)
+	if h.a.isProbingHosts() {
+		t.Fatal("清理已移除主机后 isProbingHosts 应返回 false")
 	}
 
 	// closeAll 应安全取消并清理探测状态
@@ -264,4 +276,25 @@ func TestPaneQuickAIButtonAndShortcut(t *testing.T) {
 	h.pump("快捷键触发 AI 分析", func() bool {
 		return h.a.ai.open && h.a.ai.command != ""
 	})
+}
+
+func TestFriendlyProbeError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{errors.New("dial tcp 10.0.0.1:22: i/o timeout"), "连接超时"},
+		{errors.New("dial tcp 10.0.0.1:22: connect: connection refused"), "目标端口拒绝连接"},
+		{errors.New("dial tcp: lookup bad.example.com: no such host"), "无法解析主机域名"},
+		{errors.New("等待 SSH 服务响应超时"), "等待 SSH 服务响应超时"},
+	}
+	for _, tc := range cases {
+		got := friendlyProbeError(tc.err)
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("friendlyProbeError(%q) = %q, want substring %q", tc.err, got, tc.want)
+		}
+		if strings.Contains(got, "dial tcp") {
+			t.Fatalf("should not expose raw dial tcp error: %q", got)
+		}
+	}
 }

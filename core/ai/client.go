@@ -52,15 +52,17 @@ type Config struct {
 	BaseURL           string // 如 https://api.openai.com/v1 或本地 http://localhost:11434/v1
 	APIKey            string // API 访问密钥
 	Model             string // 模型名称，如 gpt-5.4, deepseek-chat, qwen3-max
+	Protocol          string // 可选协议覆盖（如 "anthropic"）
 	Timeout           time.Duration
 	StreamIdleTimeout time.Duration // 流式读取空闲超时，默认 120s
 }
 
-// Client 是 OpenAI 兼容客户端。
+// Client 是 OpenAI / Anthropic 兼容客户端。
 type Client struct {
 	baseURL           string
 	apiKey            string
 	model             string
+	protocol          string
 	httpClient        *http.Client
 	streamClient      *http.Client
 	streamIdleTimeout time.Duration
@@ -106,9 +108,10 @@ func NewClient(cfg Config) *Client {
 		headerTimeout = 5 * time.Minute
 	}
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  strings.TrimSpace(cfg.APIKey),
-		model:   model,
+		baseURL:  baseURL,
+		apiKey:   strings.TrimSpace(cfg.APIKey),
+		model:    model,
+		protocol: strings.TrimSpace(cfg.Protocol),
 		httpClient: &http.Client{
 			Timeout:   timeout,
 			Transport: newAITransport(0),
@@ -316,6 +319,9 @@ func (c *Client) Probe(ctx context.Context) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return ErrInvalidEndpoint
 	}
+	if c.useAnthropic() {
+		return c.probeAnthropic(ctx)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/models", nil)
 	if err != nil {
@@ -352,6 +358,9 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	u, err := url.Parse(c.baseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, ErrInvalidEndpoint
+	}
+	if c.useAnthropic() {
+		return c.listAnthropicModels(ctx)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/models", nil)
@@ -488,6 +497,12 @@ func filterChatModelIDs(raw []string) []string {
 }
 
 var preferredModelRanks = map[string]int{
+	"claude-opus-4-1":    8,
+	"claude-sonnet-4-5":  9,
+	"claude-sonnet-4-0":  10,
+	"claude-3-7-sonnet":  11,
+	"claude-3-5-sonnet":  12,
+	"claude-3-5-haiku":   13,
 	"gpt-5.4":            10,
 	"gpt-5.4-mini":       11,
 	"gpt-5":              12,
@@ -607,6 +622,9 @@ func (c *Client) chatWithOptions(ctx context.Context, messages []Message, maxTok
 	u, err := url.Parse(c.baseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", ErrInvalidEndpoint
+	}
+	if c.useAnthropic() {
+		return c.doAnthropicChat(ctx, messages, maxTokens)
 	}
 
 	endpoint := c.baseURL + "/chat/completions"
@@ -817,526 +835,4 @@ func parseMarkdownCommand(text string) *Result {
 		res.Command = res.Commands[0]
 	}
 	return res
-}
-
-// IsDangerousCommand 通过词法切分识别可能造成系统破坏、数据丢失、意外关机或含隐蔽换行的危险命令。
-// 相比简单子串匹配，能区分 `grep reboot log` 等安全查询与真正的高危调用。
-func IsDangerousCommand(cmd string) bool {
-	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" {
-		return false
-	}
-
-	// 含有换行符的多行指令，粘贴到终端存在首行自动触发执行的风险
-	if strings.ContainsAny(trimmed, "\r\n") {
-		return true
-	}
-
-	// Fork 炸弹
-	if strings.Contains(trimmed, ":(){") && strings.Contains(trimmed, ":|:&") {
-		return true
-	}
-
-	// 递归检查 $(...) 与反引号中的内嵌子命令，防止通过命令替换绕过检测
-	for _, sub := range extractCommandSubstitutions(trimmed) {
-		if IsDangerousCommand(sub) {
-			return true
-		}
-	}
-
-	// 按 shell 分隔符切分子命令
-	segments := splitShellSegments(trimmed)
-	for i, seg := range segments {
-		tokens := shellFields(seg)
-		if len(tokens) == 0 {
-			continue
-		}
-
-		// 检查管道到 shell（如 curl ... | sh, wget ... | bash）
-		if i > 0 {
-			first := normalizeProgName(tokens[0])
-			if first == "sudo" && len(tokens) > 1 {
-				first = normalizeProgName(tokens[1])
-			}
-			if first == "sh" || first == "bash" || first == "zsh" || first == "dash" {
-				return true
-			}
-		}
-
-		// 检查重定向到设备节点或关键系统文件
-		if hasDangerousRedirect(tokens) {
-			return true
-		}
-
-		// 剥离前置 sudo / doas / env 等包装命令
-		idx := skipCommandWrappers(tokens)
-		if idx >= len(tokens) {
-			continue
-		}
-		prog := normalizeProgName(tokens[idx])
-		args := tokens[idx+1:]
-
-		// 递归检查 sh -c "..." / bash -c "..." / eval "..."
-		if (prog == "sh" || prog == "bash" || prog == "zsh" || prog == "dash") && len(args) >= 2 {
-			for ai := 0; ai < len(args)-1; ai++ {
-				if args[ai] == "-c" || args[ai] == "-lc" {
-					if IsDangerousCommand(args[ai+1]) {
-						return true
-					}
-				}
-			}
-		}
-		if prog == "eval" && len(args) > 0 {
-			if IsDangerousCommand(strings.Join(args, " ")) {
-				return true
-			}
-		}
-		if prog == "xargs" && len(args) > 0 {
-			xIdx := 0
-			for xIdx < len(args) && strings.HasPrefix(args[xIdx], "-") {
-				// 跳过带参数的常见 xargs 选项
-				if (args[xIdx] == "-I" || args[xIdx] == "-n" || args[xIdx] == "-P" || args[xIdx] == "-d" || args[xIdx] == "-L") && xIdx+1 < len(args) {
-					xIdx += 2
-					continue
-				}
-				xIdx++
-			}
-			if xIdx < len(args) && isDangerousInvocation(normalizeProgName(args[xIdx]), args[xIdx+1:]) {
-				return true
-			}
-		}
-
-		if isDangerousInvocation(prog, args) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// IsDangerousExecCommand 判断 ssh_exec 传入的命令是否高危。
-// 与 IsDangerousCommand 不同，ssh_exec 是非交互执行，不会因粘贴换行自动回车，
-// 因此折叠续行后逐行做高危词法检查，避免安全的多行只读脚本被误拦。
-func IsDangerousExecCommand(cmd string) bool {
-	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" {
-		return false
-	}
-	if strings.Contains(trimmed, ":(){") && strings.Contains(trimmed, ":|:&") {
-		return true
-	}
-	normalized := strings.ReplaceAll(trimmed, "\\\r\n", " ")
-	normalized = strings.ReplaceAll(normalized, "\\\n", " ")
-	for _, line := range strings.FieldsFunc(normalized, func(r rune) bool { return r == '\r' || r == '\n' }) {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if IsDangerousCommand(line) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsReadOnlyProbeCommand 判断命令是否属于纯只读系统探测命令（无重定向、无命令替换且每段均为只读白名单）。
-// 用于在生产环境主机的「自动执行」模式下放行常规只读诊断，同时对写操作/服务变更强制弹窗确认。
-func IsReadOnlyProbeCommand(cmd string) bool {
-	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" || strings.ContainsAny(trimmed, "\r\n") {
-		return false
-	}
-	if len(extractCommandSubstitutions(trimmed)) > 0 {
-		return false
-	}
-	segments := splitShellSegments(trimmed)
-	if len(segments) == 0 {
-		return false
-	}
-	for _, seg := range segments {
-		tokens := shellFields(seg)
-		if len(tokens) == 0 {
-			return false
-		}
-		// 任何输出重定向（> / >>）均视为非只读
-		for _, tok := range tokens {
-			if strings.HasPrefix(tok, ">") || strings.Contains(tok, ">>") {
-				return false
-			}
-		}
-		idx := skipCommandWrappers(tokens)
-		if idx >= len(tokens) {
-			return false
-		}
-		prog := normalizeProgName(tokens[idx])
-		args := tokens[idx+1:]
-		if !isReadOnlyInvocation(prog, args) {
-			return false
-		}
-	}
-	return true
-}
-
-func isReadOnlyInvocation(prog string, args []string) bool {
-	switch prog {
-	case "ls", "ll", "la", "dir", "pwd", "whoami", "id", "uname", "uptime", "hostname",
-		"date", "df", "du", "free", "top", "htop", "ps", "pgrep", "lscpu", "lsmem",
-		"lsblk", "lsmod", "lspci", "lsusb", "lsof", "cat", "head", "tail", "less", "more",
-		"grep", "egrep", "fgrep", "rg", "awk", "sort", "uniq", "wc", "cut", "tr", "diff",
-		"stat", "file", "readlink", "realpath", "which", "whereis", "type", "ss", "netstat",
-		"ifconfig", "route", "traceroute", "tracepath", "dig", "nslookup", "host",
-		"env", "printenv", "echo", "printf", "journalctl", "dmesg", "last", "who", "w",
-		"vmstat", "iostat", "mpstat", "sar", "sysctl":
-		if prog == "sysctl" {
-			for _, a := range args {
-				if strings.Contains(a, "=") || a == "-w" {
-					return false
-				}
-			}
-		}
-		return true
-	case "sed":
-		for _, a := range args {
-			if a == "-i" || strings.HasPrefix(a, "-i") || a == "--in-place" || strings.HasPrefix(a, "--in-place=") {
-				return false
-			}
-		}
-		return true
-	case "find":
-		for _, a := range args {
-			low := strings.ToLower(a)
-			if low == "-delete" || low == "-exec" || low == "-execdir" || low == "-ok" {
-				return false
-			}
-		}
-		return true
-	case "ip":
-		if len(args) == 0 {
-			return true
-		}
-		for _, a := range args {
-			low := strings.ToLower(a)
-			if low == "add" || low == "del" || low == "delete" || low == "set" || low == "change" || low == "replace" || low == "flush" {
-				return false
-			}
-		}
-		return true
-	case "ping", "ping6":
-		return slices.Contains(args, "-c")
-	case "systemctl":
-		if len(args) == 0 {
-			return false
-		}
-		sub := strings.ToLower(args[0])
-		return sub == "status" || sub == "list-units" || sub == "list-unit-files" ||
-			sub == "is-active" || sub == "is-enabled" || sub == "show" || sub == "cat"
-	case "service":
-		return len(args) >= 2 && strings.ToLower(args[1]) == "status"
-	case "docker", "podman":
-		if len(args) == 0 {
-			return false
-		}
-		sub := strings.ToLower(args[0])
-		return sub == "ps" || sub == "images" || sub == "logs" || sub == "inspect" ||
-			sub == "stats" || sub == "info" || sub == "version" || sub == "top"
-	case "kubectl":
-		if len(args) == 0 {
-			return false
-		}
-		sub := strings.ToLower(args[0])
-		return sub == "get" || sub == "describe" || sub == "logs" || sub == "top" || sub == "version"
-	case "nginx", "apachectl", "httpd":
-		return slices.Contains(args, "-t") || slices.Contains(args, "-T") || slices.Contains(args, "-v") || slices.Contains(args, "-V")
-	case "crontab":
-		return slices.Contains(args, "-l")
-	}
-	return false
-}
-
-func normalizeProgName(tok string) string {
-	tok = strings.TrimLeft(tok, "({")
-	tok = strings.TrimRight(tok, ")}")
-	if idx := strings.LastIndexByte(tok, '/'); idx >= 0 {
-		tok = tok[idx+1:]
-	}
-	return strings.ToLower(tok)
-}
-
-func skipCommandWrappers(tokens []string) int {
-	idx := 0
-	for idx < len(tokens) {
-		low := normalizeProgName(tokens[idx])
-		if low == "sudo" || low == "doas" || low == "env" || low == "nohup" || low == "nice" ||
-			low == "timeout" || strings.Contains(tokens[idx], "=") {
-			if (low == "timeout" || low == "nice") && idx+1 < len(tokens) {
-				idx += 2
-				continue
-			}
-			idx++
-			continue
-		}
-		break
-	}
-	return idx
-}
-
-func extractCommandSubstitutions(s string) []string {
-	var out []string
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if quote == '\'' {
-			if ch == '\'' {
-				quote = 0
-			}
-			continue
-		}
-		if ch == '\\' && i+1 < len(s) {
-			i++
-			continue
-		}
-		if ch == '"' {
-			if quote == '"' {
-				quote = 0
-			} else {
-				quote = '"'
-			}
-			continue
-		}
-		if ch == '\'' && quote == 0 {
-			quote = '\''
-			continue
-		}
-		if ch == '$' && i+1 < len(s) && s[i+1] == '(' {
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				if s[j] == '(' {
-					depth++
-				} else if s[j] == ')' {
-					depth--
-				}
-				j++
-			}
-			if depth == 0 {
-				out = append(out, s[i+2:j-1])
-				i = j - 1
-			}
-			continue
-		}
-		if ch == '`' {
-			j := i + 1
-			for j < len(s) && s[j] != '`' {
-				if s[j] == '\\' && j+1 < len(s) {
-					j += 2
-					continue
-				}
-				j++
-			}
-			if j < len(s) {
-				out = append(out, s[i+1:j])
-				i = j
-			}
-		}
-	}
-	return out
-}
-
-func splitShellSegments(s string) []string {
-	var out []string
-	var cur strings.Builder
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if quote != 0 {
-			cur.WriteByte(ch)
-			if ch == '\\' && quote == '"' && i+1 < len(s) {
-				i++
-				cur.WriteByte(s[i])
-				continue
-			}
-			if ch == quote {
-				quote = 0
-			}
-			continue
-		}
-		if ch == '\'' || ch == '"' {
-			quote = ch
-			cur.WriteByte(ch)
-			continue
-		}
-		if ch == ';' || ch == '|' {
-			out = append(out, cur.String())
-			cur.Reset()
-			if ch == '|' && i+1 < len(s) && s[i+1] == '|' {
-				i++
-			}
-			continue
-		}
-		if ch == '&' && i+1 < len(s) && s[i+1] == '&' {
-			out = append(out, cur.String())
-			cur.Reset()
-			i++
-			continue
-		}
-		cur.WriteByte(ch)
-	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
-func shellFields(s string) []string {
-	var out []string
-	var cur strings.Builder
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if quote != 0 {
-			if ch == quote {
-				quote = 0
-				continue
-			}
-			cur.WriteByte(ch)
-			continue
-		}
-		if ch == '\'' || ch == '"' {
-			quote = ch
-			continue
-		}
-		if ch == ' ' || ch == '\t' {
-			if cur.Len() > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-			}
-			continue
-		}
-		cur.WriteByte(ch)
-	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
-func hasDangerousRedirect(tokens []string) bool {
-	dangerousTargets := []string{
-		"/dev/sd", "/dev/nvme", "/dev/vd", "/dev/hd", "/dev/disk",
-		"/etc/passwd", "/etc/shadow", "/etc/sudoers",
-	}
-	for i, tok := range tokens {
-		target := ""
-		if strings.HasPrefix(tok, ">>") {
-			target = strings.TrimPrefix(tok, ">>")
-			if target == "" && i+1 < len(tokens) {
-				target = tokens[i+1]
-			}
-		} else if strings.HasPrefix(tok, ">") {
-			target = strings.TrimPrefix(tok, ">")
-			if target == "" && i+1 < len(tokens) {
-				target = tokens[i+1]
-			}
-		}
-		if target == "" {
-			continue
-		}
-		low := strings.ToLower(target)
-		for _, dt := range dangerousTargets {
-			if strings.HasPrefix(low, dt) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isDangerousInvocation(prog string, args []string) bool {
-	switch {
-	case prog == "rm":
-		for _, a := range args {
-			low := strings.ToLower(a)
-			if low == "--recursive" || (strings.HasPrefix(low, "-") && !strings.HasPrefix(low, "--") && strings.ContainsRune(low, 'r')) {
-				return true
-			}
-		}
-	case strings.HasPrefix(prog, "mkfs"):
-		return true
-	case prog == "dd":
-		for _, a := range args {
-			if strings.HasPrefix(strings.ToLower(a), "of=/dev/") {
-				return true
-			}
-		}
-	case prog == "shutdown" || prog == "reboot" || prog == "poweroff" || prog == "halt":
-		return true
-	case prog == "init" && len(args) > 0 && (args[0] == "0" || args[0] == "6"):
-		return true
-	case prog == "systemctl" && len(args) > 0:
-		sub := strings.ToLower(args[0])
-		if sub == "poweroff" || sub == "reboot" || sub == "halt" {
-			return true
-		}
-		if (sub == "stop" || sub == "disable") && len(args) > 1 {
-			svc := strings.ToLower(args[1])
-			if svc == "ssh" || svc == "sshd" || svc == "ssh.service" || svc == "sshd.service" ||
-				svc == "networking" || svc == "networkmanager" || svc == "systemd-networkd" {
-				return true
-			}
-		}
-	case prog == "kill":
-		for _, a := range args {
-			if a == "-1" {
-				return true
-			}
-		}
-	case prog == "killall" || prog == "pkill":
-		for _, a := range args {
-			if strings.Contains(strings.ToLower(a), "sshd") {
-				return true
-			}
-		}
-	case prog == "iptables" || prog == "ip6tables":
-		for _, a := range args {
-			if a == "-F" || a == "--flush" || a == "-X" {
-				return true
-			}
-		}
-	case prog == "ufw":
-		return len(args) > 0 && strings.ToLower(args[0]) == "disable"
-	case prog == "nft":
-		return len(args) >= 2 && strings.ToLower(args[0]) == "flush"
-	case prog == "find":
-		for i, a := range args {
-			low := strings.ToLower(a)
-			if low == "-delete" {
-				return true
-			}
-			if (low == "-exec" || low == "-execdir") && i+1 < len(args) {
-				if isDangerousInvocation(normalizeProgName(args[i+1]), args[i+2:]) {
-					return true
-				}
-			}
-		}
-	case prog == "chmod" || prog == "chown":
-		hasRec := false
-		hasWide := false
-		hasRoot := false
-		for _, a := range args {
-			low := strings.ToLower(a)
-			if low == "-r" || low == "--recursive" {
-				hasRec = true
-			}
-			if prog == "chmod" && (low == "777" || low == "000") {
-				hasWide = true
-			}
-			if low == "/" {
-				hasRoot = true
-			}
-		}
-		if hasRec && (hasWide || hasRoot) {
-			return true
-		}
-	}
-	return false
 }

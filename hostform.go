@@ -571,7 +571,7 @@ func (a *app) testHostConnection() {
 			case errors.Is(err, sshconn.ErrAgentUnavailable):
 				finish(false, locales.HostTestAgentUnavailable(who.Name))
 			default:
-				finish(false, err.Error())
+				finish(false, friendlySSHConnectError(who.Name, err))
 			}
 		}()
 	}
@@ -1068,7 +1068,7 @@ func (a *app) hostDialog(c *ui.Context, colors design.Colors) {
 				if f.testBusy {
 					testLabel = locales.HostTestingConn()
 				}
-				ui.Button(c.Key("addTestConn"), testLabel).Disabled(f.testBusy).OnClick(a.testHostConnection)
+				loadingButton(c, "addTestConn", testLabel, false, f.testBusy, a.testHostConnection)
 				ui.Spacer(c)
 				ui.Button(c.Key("addCancel"), locales.Cancel()).OnClick(a.closeHostForm)
 				ui.PrimaryButton(c.Key("addSubmit"), submit).OnClick(a.saveForm)

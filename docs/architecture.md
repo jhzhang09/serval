@@ -18,7 +18,7 @@ flowchart TB
         hosts["hosts<br/>主机结构 · 链路解析"]
         totp["totp<br/>RFC 6238 验证码"]
         syncer["syncer<br/>WebDAV 同步"]
-        ai["ai<br/>OpenAI SSE · Agent 循环 · Markdown"]
+        ai["ai<br/>OpenAI / Anthropic SSE · 并行 Agent · 压缩 · 脱敏 · Diff · 安全分析"]
     end
     mygo["MyGo：窗口、原生 UI、终端插件、玻璃插件、系统安全存储"]
     view --> state

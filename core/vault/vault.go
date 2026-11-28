@@ -120,10 +120,19 @@ type Vault struct {
 // Open 打开 path 处的保险库，文件不存在时新建一个未加密的空保险库（第一次保存时才写文件）。
 // device 是本机的设备 ID，写进每条记录的 rev，用来在同步时区分不同设备的修改。
 func Open(path, device string) (*Vault, error) {
+	return OpenWithID(path, device, "")
+}
+
+// OpenWithID 打开 path 处的保险库；若文件尚不存在且 vaultID 非空，则使用指定的 vaultID 初始化（用于独立分片库）。
+func OpenWithID(path, device, vaultID string) (*Vault, error) {
 	v := &Vault{path: path, device: device, records: map[string]*Record{}}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		v.f = file{Format: formatVersion, VaultID: newID()}
+		id := strings.TrimSpace(vaultID)
+		if id == "" {
+			id = newID()
+		}
+		v.f = file{Format: formatVersion, VaultID: id}
 		return v, nil
 	}
 	if err != nil {
@@ -160,6 +169,27 @@ func (v *Vault) ID() string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.f.VaultID
+}
+
+// Path 返回保险库文件路径。
+func (v *Vault) Path() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.path
+}
+
+// Device 返回创建/打开本保险库时使用的设备 ID。
+func (v *Vault) Device() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.device
+}
+
+// HasRecords 报告保险库是否包含任何记录（含墓碑）。
+func (v *Vault) HasRecords() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.records) > 0 || len(v.f.Records) > 0
 }
 
 // State 返回保险库当前的状态。
@@ -314,6 +344,29 @@ func (v *Vault) Protect(password string) error {
 	if err := v.save(); err != nil {
 		v.f, v.key = previous, nil
 		return err
+	}
+	return nil
+}
+
+// ProtectWithKey 使用已有的保险库密钥（VK）保护尚未加密的分片保险库。
+// 若分片尚无记录则暂不写盘，待首次 Apply 或 Merge 时落盘。
+func (v *Vault) ProtectWithKey(key []byte) error {
+	if len(key) != chacha20poly1305.KeySize {
+		return errors.New("保险库密钥长度无效")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.f.Protected {
+		return ErrAlreadyProtected
+	}
+	previous := v.f
+	v.f.Protected = true
+	v.key = slices.Clone(key)
+	if len(v.records) > 0 {
+		if err := v.save(); err != nil {
+			v.f, v.key = previous, nil
+			return err
+		}
 	}
 	return nil
 }

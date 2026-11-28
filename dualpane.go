@@ -15,6 +15,8 @@ import (
 	"serval/design"
 	"serval/locales"
 
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/plugins/loading"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -828,6 +830,7 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			&t.filesSortBy, &t.filesSortDesc, &t.filesHideHidden, t.local || t.dir == "")
 		if t.scanningFolders > 0 {
 			ui.Row(c.Key("scanningFoldersHint")).Padding(4, 14).Gap(6).AlignItems(ui.Center).Children(func() {
+				loading.Arc(c, loading.Options{Size: 12, Color: theme.Accent}).Label("正在扫描文件夹").Shrink(0)
 				ui.Text(c, "正在扫描文件夹…").FontSize(design.TextSmall).TextColor(theme.TextMuted)
 			})
 		}
@@ -853,7 +856,10 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			})
 		}
 		if t.filesBusy {
-			ui.Text(c, locales.ViewOpeningFiles()).TextColor(theme.TextMuted).Padding(10, 14)
+			ui.Row(c).Padding(10, 14).Gap(6).AlignItems(ui.Center).Children(func() {
+				loading.Arc(c, loading.Options{Size: 13, Color: theme.Accent}).Label(locales.ViewOpeningFiles()).Shrink(0)
+				ui.Text(c, locales.ViewOpeningFiles()).TextColor(theme.TextMuted)
+			})
 		}
 		if t.local {
 			ui.Text(c, locales.ViewLocalFilesHint()).
@@ -889,7 +895,8 @@ func (a *app) remoteColumn(c *ui.Context, colors design.Colors, t *tab) {
 			ui.Box(c.Key("remoteDropOverlay")).Absolute().Top(0).Right(0).Bottom(0).Left(0).
 				Background(theme.Accent.Alpha(0.08)).Border(1.5, theme.Accent.Alpha(0.6)).
 				Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Padding(10, 14).Gap(3).AlignItems(ui.Center).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
+				ui.Column(c).Padding(10, 14).Gap(3).AlignItems(ui.Center).Radius(design.RadiusRow).
+					Material(glass.Glass{}).Border(1, colors.CardBorder).Shadow(0, 8, 24, -8, colors.CardShadow).Children(func() {
 					ui.Text(c, locales.ViewReleaseToUpload()).FontWeight(600).FontSize(design.TextSmall)
 					ui.Text(c, locales.ViewUploadTo(shortPath(t.dir))).FontSize(design.TextSmall - 1).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…").MaxWidth(280)
 				})

@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -33,8 +34,26 @@ var coatHues = []float32{250, 275, 200, 225, 165, 140, 80, 110}
 // productionCoat 是生产环境固定使用的红色渐变，这个信号比“认出是哪台”更重要。
 var productionFrom, productionTo = ui.Oklch(0.64, 0.2, 25), ui.Oklch(0.58, 0.21, 10)
 
-// NewCoat 根据种子（通常是主机标识）生成斑纹。
+type coatCacheKey struct {
+	seed       string
+	production bool
+}
+
+var (
+	coatCacheMu sync.RWMutex
+	coatCache   = map[coatCacheKey]Coat{}
+)
+
+// NewCoat 根据种子（通常是主机标识）生成斑纹（带线程安全内存缓存，避免每帧重复计算）。
 func NewCoat(seed string, production bool) Coat {
+	key := coatCacheKey{seed: seed, production: production}
+	coatCacheMu.RLock()
+	if cached, ok := coatCache[key]; ok {
+		coatCacheMu.RUnlock()
+		return cached
+	}
+	coatCacheMu.RUnlock()
+
 	h := fnv.New64a()
 	h.Write([]byte(seed))
 	state := h.Sum64() | 1
@@ -78,6 +97,12 @@ func NewCoat(seed string, production bool) Coat {
 			coat.Spots = append(coat.Spots, spot)
 		}
 	}
+	coatCacheMu.Lock()
+	if len(coatCache) >= 512 {
+		clear(coatCache)
+	}
+	coatCache[key] = coat
+	coatCacheMu.Unlock()
 	return coat
 }
 

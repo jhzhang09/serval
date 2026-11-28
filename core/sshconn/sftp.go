@@ -553,6 +553,55 @@ func (f *Files) WriteFile(ctx context.Context, remotePath string, data []byte, e
 	return f.Upload(ctx, tmpName, remotePath, nil)
 }
 
+// WriteOrCreateFile 原子写入或新建远端普通文本文件，支持可选权限设置与乐观锁校验。
+// force 为 false 时，若 expectExists 与远端实际情况不符或文件大小/修改时间发生变化，则返回 ErrRemoteChanged。
+func (f *Files) WriteOrCreateFile(ctx context.Context, remotePath string, data []byte, expectExists bool, expectSize, expectUnix int64, mode fs.FileMode, force bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return ErrNotText
+	}
+	info, err := f.client.Lstat(remotePath)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return errors.New("远程路径不是普通文件，无法写入")
+		}
+		if !force && (!expectExists || info.Size() != expectSize || info.ModTime().Unix() != expectUnix) {
+			return ErrRemoteChanged
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if !force && expectExists {
+			return ErrRemoteChanged
+		}
+	default:
+		return fmt.Errorf("检查远程文件失败: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "serval-aiwrite-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err = tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("写入临时文件失败: %w", err)
+	}
+	if err = f.Upload(ctx, tmpName, remotePath, nil); err != nil {
+		return err
+	}
+	if mode != 0 {
+		if chErr := f.Chmod(remotePath, mode.Perm()); chErr != nil {
+			return fmt.Errorf("设置文件权限失败: %w", chErr)
+		}
+	}
+	return nil
+}
+
 // ErrLocalExists 表示要把远程目录下载到的本地路径已经存在。调用方应换位置，而不是覆盖。
 var ErrLocalExists = errors.New("本地已经有同名的文件或文件夹")
 

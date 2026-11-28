@@ -42,6 +42,18 @@ type probeSpec struct {
 	expectSSH bool
 }
 
+// friendlyProbeError 将连通性探测的底层网络错误转换为简洁中文提示，保留已中文化的 SSH 横幅提示。
+func friendlyProbeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	raw := err.Error()
+	if strings.Contains(raw, "SSH 服务响应") || strings.Contains(raw, "未收到有效") {
+		return raw
+	}
+	return strings.TrimPrefix(friendlySSHConnectError("", err), "连接失败：")
+}
+
 // probeTarget 返回主机应探测的目标地址、可选代理及协议校验方式。
 // 配有跳板机时探测链路第一跳；配有代理时会实际经由该代理隧道探测目标端口。
 func (a *app) probeTarget(h hosts.Host) (probeSpec, bool) {
@@ -90,15 +102,21 @@ func (a *app) probeTarget(h hosts.Host) (probeSpec, bool) {
 // probeAllHosts 在后台并发探测侧栏主机的连通性与往返延迟（不阻断主线程，跳过串口主机）。
 // SSH 主机会校验服务端 "SSH-" 版本横幅，避免透明代理/Surge 仅完成本地 TCP 握手造成假阳性。
 func (a *app) probeAllHosts(force bool) {
-	if a.vault == nil || a.post == nil || len(a.hosts) == 0 {
-		return
-	}
 	if a.probeCancel != nil {
 		a.probeCancel()
 		a.probeCancel = nil
 	}
 	if a.health == nil {
 		a.health = map[string]hostHealth{}
+	} else {
+		for id, st := range a.health {
+			if st.state == probeChecking {
+				a.health[id] = hostHealth{state: probeUnknown, at: st.at}
+			}
+		}
+	}
+	if a.vault == nil || a.post == nil || len(a.hosts) == 0 {
+		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.probeCancel = cancel
@@ -162,7 +180,7 @@ func (a *app) probeAllHosts(force bool) {
 					a.health = map[string]hostHealth{}
 				}
 				if err != nil {
-					a.health[id] = hostHealth{state: probeFail, err: err.Error(), at: time.Now()}
+					a.health[id] = hostHealth{state: probeFail, err: friendlyProbeError(err), at: time.Now()}
 					return
 				}
 				a.health[id] = hostHealth{state: probeOK, latency: rtt, at: time.Now()}
@@ -175,6 +193,12 @@ func (a *app) probeAllHosts(force bool) {
 func (a *app) probeOneHost(h hosts.Host) {
 	if a.health == nil {
 		a.health = map[string]hostHealth{}
+	} else {
+		for id, st := range a.health {
+			if st.state == probeChecking {
+				a.health[id] = hostHealth{state: probeUnknown, at: st.at}
+			}
+		}
 	}
 	if h.EffectiveProtocol() == hosts.ProtocolSerial {
 		ports := serial.ListPorts()
@@ -210,8 +234,9 @@ func (a *app) probeOneHost(h hosts.Host) {
 				a.health = map[string]hostHealth{}
 			}
 			if err != nil {
-				a.health[h.ID] = hostHealth{state: probeFail, err: err.Error(), at: time.Now()}
-				a.toast(ui.Toast{Title: fmt.Sprintf("%s 不可达", h.Name), Description: err.Error(), Type: "error"})
+				msg := friendlyProbeError(err)
+				a.health[h.ID] = hostHealth{state: probeFail, err: msg, at: time.Now()}
+				a.toast(ui.Toast{Title: fmt.Sprintf("%s 不可达", h.Name), Description: msg, Type: "error"})
 				return
 			}
 			a.health[h.ID] = hostHealth{state: probeOK, latency: rtt, at: time.Now()}

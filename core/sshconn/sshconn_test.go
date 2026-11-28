@@ -1010,3 +1010,76 @@ func TestExecContextCrossPlatform(t *testing.T) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
+
+func TestExecContextStream(t *testing.T) {
+	requireDevShell(t)
+	server := startServer(t, devsshd.Options{Dir: t.TempDir()})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+
+	var mu sync.Mutex
+	var gotOut, gotErr strings.Builder
+	res, err := client.ExecContextStream(context.Background(), "printf 'part1-'; printf 'err1' >&2; printf 'part2'", 4096, func(stream, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if stream == "stdout" {
+			gotOut.WriteString(text)
+		} else if stream == "stderr" {
+			gotErr.WriteString(text)
+		}
+	})
+	if err != nil {
+		t.Fatalf("ExecContextStream failed: %v", err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "part1-part2" || res.Stderr != "err1" {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	mu.Lock()
+	if gotOut.String() != "part1-part2" || gotErr.String() != "err1" {
+		t.Fatalf("unexpected stream chunks: out=%q err=%q", gotOut.String(), gotErr.String())
+	}
+	mu.Unlock()
+
+	// 超时取消竞态安全验证
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err = client.ExecContextStream(ctx, "while true; do echo tick; sleep 0.02; done", 4096, func(stream, text string) {})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestWriteOrCreateFile(t *testing.T) {
+	dir := t.TempDir()
+	server := startServer(t, devsshd.Options{Dir: dir})
+	client := mustDial(t, dialConfig(server, acceptAll(t)))
+	files, err := client.OpenFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+
+	target := filepath.Join(dir, "new.conf")
+	if err := files.WriteOrCreateFile(context.Background(), target, []byte("hello=1\n"), false, 0, 0, 0640, false); err != nil {
+		t.Fatalf("create new file failed: %v", err)
+	}
+	size, mod, mode, err := files.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != 8 || mode.Perm() != 0640 {
+		t.Fatalf("unexpected stat after create: size=%d mode=%v", size, mode.Perm())
+	}
+
+	// 乐观锁校验通过时覆盖写入
+	if err := files.WriteOrCreateFile(context.Background(), target, []byte("hello=2\n"), true, size, mod.Unix(), 0, false); err != nil {
+		t.Fatalf("overwrite matching stat failed: %v", err)
+	}
+
+	// 乐观锁不匹配时返回 ErrRemoteChanged
+	if err := files.WriteOrCreateFile(context.Background(), target, []byte("hello=3\n"), true, size+1, mod.Unix(), 0, false); !errors.Is(err, ErrRemoteChanged) {
+		t.Fatalf("expected ErrRemoteChanged, got %v", err)
+	}
+	if err := files.WriteOrCreateFile(context.Background(), target, []byte("hello=3\n"), false, 0, 0, 0, false); !errors.Is(err, ErrRemoteChanged) {
+		t.Fatalf("expected ErrRemoteChanged when expectExists=false on existing file, got %v", err)
+	}
+}

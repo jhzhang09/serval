@@ -41,8 +41,69 @@ type deviceStore interface {
 
 func rememberedKeyName(vaultID string) string { return "vault-key/" + vaultID }
 
+// syncAIVaultState 根据主保险库状态同步初始化、解锁或锁定独立 AI 会话分片库（aichat.vault.json），
+// 并在首次迁移时自动把旧版留在 vault.json 内的 aichat 记录迁移到分片库并从主库清理。
+func (a *app) syncAIVaultState() {
+	if a.vault == nil || a.vault.State() != vault.Unlocked || a.vault.Path() == "" {
+		if a.aiVault != nil {
+			a.aiVault.Lock()
+			a.aiVault = nil
+		}
+		return
+	}
+	shardPath := filepath.Join(filepath.Dir(a.vault.Path()), "aichat.vault.json")
+	shardID := a.vault.ID() + ":aichat"
+	if a.aiVault == nil || a.aiVault.Path() != shardPath || a.aiVault.ID() != shardID {
+		if a.aiVault != nil {
+			a.aiVault.Lock()
+			a.aiVault = nil
+		}
+		av, err := vault.OpenWithID(shardPath, a.vault.Device(), shardID)
+		if err != nil {
+			return
+		}
+		a.aiVault = av
+	}
+	vk := a.vault.Key()
+	switch a.aiVault.State() {
+	case vault.Unprotected:
+		_ = a.aiVault.ProtectWithKey(vk)
+	case vault.Locked:
+		_ = a.aiVault.UnlockWithKey(vk)
+	}
+	if a.aiVault.State() != vault.Unlocked {
+		return
+	}
+
+	// 自动迁移旧版 vault.json 中的 aichat 记录到独立分片，减轻主保险库体积
+	legacyRecs, err := a.vault.List(kindAIChat)
+	if err != nil || len(legacyRecs) == 0 {
+		return
+	}
+	var putChanges, delChanges []vault.Change
+	for _, r := range legacyRecs {
+		delChanges = append(delChanges, vault.Change{Kind: kindAIChat, ID: r.ID, Delete: true})
+		if _, exists, _ := a.aiVault.Get(r.ID); !exists {
+			putChanges = append(putChanges, vault.Change{
+				Kind: kindAIChat,
+				ID:   r.ID,
+				Data: r.Data,
+			})
+		}
+	}
+	if len(putChanges) > 0 {
+		if err := a.aiVault.Apply(putChanges); err != nil {
+			return
+		}
+	}
+	if len(delChanges) > 0 {
+		_ = a.vault.Apply(delChanges)
+	}
+}
+
 // reload 从保险库重新读出主机、私钥、代码片段和随同步设置。保险库是唯一的数据来源，界面上的状态只是它的副本。
 func (a *app) reload() {
+	a.syncAIVaultState()
 	a.hosts, a.keys, a.proxies, a.snippets, a.forwards, a.aiChats, a.settings, a.hostsError = nil, nil, nil, nil, nil, nil, settings{}, ""
 	if err := decodeAll(a.vault, kindHost, &a.hosts); err != nil {
 		a.hostsError = err.Error()
@@ -59,8 +120,10 @@ func (a *app) reload() {
 	if err := decodeAll(a.vault, kindSnippet, &a.snippets); err != nil && a.hostsError == "" {
 		a.hostsError = err.Error()
 	}
-	if err := decodeAll(a.vault, kindAIChat, &a.aiChats); err != nil && a.hostsError == "" {
-		a.hostsError = err.Error()
+	if a.aiVault != nil && a.aiVault.State() == vault.Unlocked {
+		if err := decodeAll(a.aiVault, kindAIChat, &a.aiChats); err != nil && a.hostsError == "" {
+			a.hostsError = err.Error()
+		}
 	}
 	slices.SortStableFunc(a.aiChats, func(x, y aiChatRecord) int {
 		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
@@ -336,6 +399,7 @@ func (a *app) submitSetup() {
 			a.rememberOnDevice(s.remember)
 			then := s.then
 			a.setup = setupSheet{}
+			a.syncAIVaultState()
 			a.migrateAIKey()
 			a.noteVaultChanged()
 			a.toast(ui.Toast{Title: locales.LibMasterPasswordSet()})

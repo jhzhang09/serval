@@ -36,10 +36,12 @@ func conflictFingerprint(body []byte) string {
 }
 
 type syncDirSnap struct {
-	vault   []byte
-	missing bool
-	err     error
-	files   []syncConflict
+	vault     []byte
+	missing   bool
+	aiVault   []byte
+	aiMissing bool
+	err       error
+	files     []syncConflict
 }
 
 // conflictCopyName 识别 Dropbox / Nextcloud 的 “conflicted copy” 和 Syncthing 的 .sync-conflict-。
@@ -157,6 +159,7 @@ func (a *app) exportSyncDir() {
 	if dir == "" || !a.vaultOpen() {
 		return
 	}
+	defer a.exportAISyncDir(dir)
 	body, err := a.vault.Bytes()
 	if err != nil {
 		return
@@ -178,6 +181,29 @@ func (a *app) exportSyncDir() {
 	if err := writePrivateFile(path, body); err != nil {
 		a.syncErr = "没能把保险库写进同步文件夹。"
 	}
+}
+
+func (a *app) exportAISyncDir(dir string) {
+	if !a.local.SyncAIChats || a.aiVault == nil || a.aiVault.State() != vault.Unlocked || !a.aiVault.HasRecords() {
+		return
+	}
+	body, err := a.aiVault.Bytes()
+	if err != nil {
+		return
+	}
+	aiPath := filepath.Join(dir, "aichat.vault.json")
+	existing, err := os.ReadFile(aiPath)
+	if err == nil {
+		if bytes.Equal(existing, body) {
+			return
+		}
+		if id := fileVaultID(existing); id != "" && id != a.aiVault.ID() {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	_ = writePrivateFile(aiPath, body)
 }
 
 func (a *app) consumeSyncDir(snap syncDirSnap) {
@@ -225,6 +251,28 @@ func (a *app) consumeSyncDir(snap syncDirSnap) {
 		a.pendingConflicts = fresh
 		a.askConflicts = true
 	}
+
+	if a.local.SyncAIChats && a.aiVault != nil && a.aiVault.State() == vault.Unlocked {
+		if snap.aiMissing {
+			a.exportAISyncDir(a.local.SyncDir)
+		} else if len(snap.aiVault) > 0 {
+			localAI, err := a.aiVault.Bytes()
+			if err == nil && !bytes.Equal(localAI, snap.aiVault) {
+				changed, err := a.aiVault.Merge(snap.aiVault)
+				if err == nil && changed {
+					a.syncErr = ""
+					a.lastSync = time.Now()
+					a.reload()
+				}
+				if err == nil {
+					nowAI, readErr := os.ReadFile(filepath.Join(a.local.SyncDir, "aichat.vault.json"))
+					if readErr == nil && bytes.Equal(nowAI, snap.aiVault) {
+						a.exportAISyncDir(a.local.SyncDir)
+					}
+				}
+			}
+		}
+	}
 }
 
 // syncConflictDialog 在删除冲突副本前请用户确认。默认按钮是取消。
@@ -271,7 +319,11 @@ func (a *app) mergeConflictCopies(files []syncConflict) {
 			a.syncErr = "有一份冲突副本刚被同步软件更新，没有合并，稍后会再问一次。"
 			continue
 		}
-		if _, err := a.vault.Merge(f.body); err != nil {
+		target := a.vault
+		if a.aiVault != nil && a.aiVault.State() == vault.Unlocked && fileVaultID(f.body) == a.aiVault.ID() {
+			target = a.aiVault
+		}
+		if _, err := target.Merge(f.body); err != nil {
 			a.syncErr = "有一份冲突副本没能合并，文件还留在文件夹里。"
 			continue
 		}
@@ -303,6 +355,13 @@ func readSyncDir(dir string) syncDirSnap {
 		return snap
 	default:
 		snap.vault = body
+	}
+	aiBody, aiErr := os.ReadFile(filepath.Join(dir, "aichat.vault.json"))
+	switch {
+	case errors.Is(aiErr, os.ErrNotExist):
+		snap.aiMissing = true
+	case aiErr == nil && len(aiBody) <= 32<<20:
+		snap.aiVault = aiBody
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {

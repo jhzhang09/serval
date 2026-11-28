@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -223,27 +224,43 @@ func (a *app) toggleMonitor(t *tab) {
 	}
 }
 
+func probeMonitor(parent context.Context, client *sshconn.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	res, err := client.ExecContext(ctx, monitorScript, 64<<10)
+	if err != nil {
+		return "", err
+	}
+	return res.Stdout, nil
+}
+
 func (a *app) startTabMonitor(t *tab) {
 	if t.client == nil || t.monitorStop != nil {
 		return
 	}
 	stop := make(chan struct{})
 	t.monitorStop = stop
+	baseCtx, baseCancel := context.WithCancel(context.Background())
 
 	go func(client *sshconn.Client) {
+		defer baseCancel()
+		go func() {
+			<-stop
+			baseCancel()
+		}()
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 
 		var sample statSample
 		// 首次先采一次基准数据
-		if out, err := client.Output(monitorScript); err == nil {
+		if out, err := probeMonitor(baseCtx, client); err == nil {
 			select {
 			case <-stop:
 				return
 			default:
 			}
 			now := time.Now()
-			stats, next := parseProcMetrics(string(out), sample, now)
+			stats, next := parseProcMetrics(out, sample, now)
 			sample = next
 			if a.post != nil {
 				a.post(func() {
@@ -272,7 +289,7 @@ func (a *app) startTabMonitor(t *tab) {
 			case <-stop:
 				return
 			case now := <-ticker.C:
-				out, err := client.Output(monitorScript)
+				out, err := probeMonitor(baseCtx, client)
 				if err != nil {
 					if a.post != nil {
 						a.post(func() {
@@ -283,7 +300,7 @@ func (a *app) startTabMonitor(t *tab) {
 					}
 					continue
 				}
-				stats, next := parseProcMetrics(string(out), sample, now)
+				stats, next := parseProcMetrics(out, sample, now)
 				sample = next
 				if a.post != nil {
 					a.post(func() {

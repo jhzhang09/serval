@@ -14,6 +14,8 @@ import (
 	"serval/design"
 	"serval/locales"
 
+	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/plugins/loading"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
@@ -372,7 +374,11 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 						probeBtn.Background(colors.Hover)
 					}
 					probeBtn.Children(func() {
-						ui.Icon(c, design.Icon("radar")).FontSize(14).TextColor(t.TextMuted)
+						if a.isProbingHosts() {
+							loading.Radar(c, loading.Options{Size: 15, Color: t.Accent}).Label("正在检测连通性")
+						} else {
+							ui.Icon(c, design.Icon("radar")).FontSize(14).TextColor(t.TextMuted)
+						}
 					}).OnClick(func() { a.probeAllHosts(true) })
 				}
 			})
@@ -413,111 +419,121 @@ func (a *app) sidebar(c *ui.Context, colors design.Colors) {
 		})
 
 		filtering := strings.TrimSpace(a.hostFilter) != "" || a.activeTag != ""
-		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-			ui.Column(c).Padding(0, 10, 10, 10).Gap(12).Children(func() {
-				if filtering {
-					ui.Row(c).Padding(4, 8).Radius(design.RadiusRow).Background(colors.Hover).AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Text(c, locales.HostFilterSortHint()).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Grow(1)
-						ui.ButtonBase(c.Key("clearHostFilter")).Label("清空").Children(func() {
-							ui.Text(c, "清空").FontSize(design.TextSmall - 1).TextColor(t.Accent).FontWeight(600)
-						}).OnClick(func() {
-							a.hostFilter = ""
-							a.activeTag = ""
-						})
-					})
-				}
-				if len(a.hosts) == 0 && len(a.customGroups) == 0 {
-					a.sidebarEmpty(c)
-					return
-				}
-				matched := false
-				for _, group := range a.groups() {
-					rows := a.hostsInGroup(group)
-					if len(rows) > 0 || (!filtering && slices.Contains(a.customGroups, group)) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					ui.Text(c, "没有匹配的主机").FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(10, 10)
-					return
-				}
-				for _, group := range a.groups() {
-					rows := a.hostsInGroup(group)
-					isCustomEmpty := !filtering && len(rows) == 0 && slices.Contains(a.customGroups, group)
-					if len(rows) == 0 && !isCustomEmpty {
-						continue
-					}
-					collapsed := a.groupCollapsed(group)
-					ui.Column(c.Key("group:" + group)).Gap(2).Children(func() {
-						iconName, action := "chevron-down", "折叠"
-						if collapsed {
-							iconName, action = "chevron-right", "展开"
-						}
-						header := ui.ButtonBase(c.Key("groupToggle:"+group)).Label(action+" "+group).
-							Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
-							Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group), menuOptions(colors))
-						var groupInsertLine bool
-						if !filtering {
-							if dragged, ok := ui.DragOver[hostDrag](header); ok {
-								if h, ok := a.hostByID(dragged.ID); ok && h.Group != group {
-									groupInsertLine = true
-								}
-							}
-							if dropped, ok := ui.Drop[hostDrag](header); ok {
-								if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
-									a.notice = "调整主机分组失败：" + err.Error()
-								}
-							}
-						}
-						if groupInsertLine {
-							header.DrawOver(func(painter *ui.Painter, r ui.Rect) {
-								painter.Fill(ui.Rect{X: r.X + 4, Y: r.Y + r.H - 2, W: max(0, r.W-8), H: 2}, t.Accent, 1)
+		ui.Box(c).Grow(1).MinHeight(0).Clip().Children(func() {
+			ui.Scroll(c.Key("sidebarHostScroll")).Fill().TrackScroll(&a.sidebarScroll).Children(func() {
+				ui.Column(c).Padding(0, 10, 10, 10).Gap(12).Children(func() {
+					if filtering {
+						ui.Row(c).Padding(4, 8).Radius(design.RadiusRow).Background(colors.Hover).AlignItems(ui.Center).Gap(6).Children(func() {
+							ui.Text(c, locales.HostFilterSortHint()).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).Grow(1)
+							ui.ButtonBase(c.Key("clearHostFilter")).Label("清空").Children(func() {
+								ui.Text(c, "清空").FontSize(design.TextSmall - 1).TextColor(t.Accent).FontWeight(600)
+							}).OnClick(func() {
+								a.hostFilter = ""
+								a.activeTag = ""
 							})
-						}
-						if header.Hovered() {
-							header.Background(colors.Hover)
-						}
-						hasLive := collapsed && slices.ContainsFunc(rows, func(h hosts.Host) bool {
-							return a.hasTabForHost(h.ID)
 						})
-						header.Children(func() {
-							ui.Icon(c, design.Icon(iconName)).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
-							ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
-							if hasLive {
-								ui.Box(c).Size(5, 5).Radius(3).Background(colors.Live).Shrink(0)
-							}
-							if collapsed && len(rows) > 0 {
-								ui.Text(c, fmt.Sprint(len(rows))).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
-							}
-						}).OnClick(func() { a.toggleGroup(group) })
-						if collapsed {
-							return
+					}
+					if len(a.hosts) == 0 && len(a.customGroups) == 0 {
+						a.sidebarEmpty(c)
+						return
+					}
+					matched := false
+					for _, group := range a.groups() {
+						rows := a.hostsInGroup(group)
+						if len(rows) > 0 || (!filtering && slices.Contains(a.customGroups, group)) {
+							matched = true
+							break
 						}
-						for _, h := range rows {
-							a.hostRow(c, colors, h)
+					}
+					if !matched {
+						ui.Text(c, "没有匹配的主机").FontSize(design.TextSmall).TextColor(t.TextMuted).Padding(10, 10)
+						return
+					}
+					for _, group := range a.groups() {
+						rows := a.hostsInGroup(group)
+						isCustomEmpty := !filtering && len(rows) == 0 && slices.Contains(a.customGroups, group)
+						if len(rows) == 0 && !isCustomEmpty {
+							continue
 						}
-						if !filtering && len(rows) > 0 {
-							lastID := rows[len(rows)-1].ID
-							endDrop := ui.Box(c.Key("groupEnd:" + group)).Height(8).Shrink(0)
-							var endInsertLine bool
-							if dragged, ok := ui.DragOver[hostDrag](endDrop); ok && dragged.ID != lastID {
-								endInsertLine = true
+						collapsed := a.groupCollapsed(group)
+						ui.Column(c.Key("group:" + group)).Gap(2).Children(func() {
+							iconName, action := "chevron-down", "折叠"
+							if collapsed {
+								iconName, action = "chevron-right", "展开"
 							}
-							if dropped, ok := ui.Drop[hostDrag](endDrop); ok && dropped.ID != lastID {
-								if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
-									a.notice = "调整主机排序失败：" + err.Error()
+							header := ui.ButtonBase(c.Key("groupToggle:"+group)).Label(action+" "+group).
+								Height(24).Padding(0, 6).Gap(4).Justify(ui.Start).AlignItems(ui.Center).
+								Radius(design.RadiusRow).Transition(design.Hover).PopoverMenu(a.groupMenu(group), menuOptions(colors))
+							var groupInsertLine bool
+							if !filtering {
+								if dragged, ok := ui.DragOver[hostDrag](header); ok {
+									if h, ok := a.hostByID(dragged.ID); ok && h.Group != group {
+										groupInsertLine = true
+									}
+								}
+								if dropped, ok := ui.Drop[hostDrag](header); ok {
+									if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
+										a.notice = "调整主机分组失败：" + err.Error()
+									}
 								}
 							}
-							if endInsertLine {
-								endDrop.DrawOver(func(painter *ui.Painter, r ui.Rect) {
-									painter.Fill(ui.Rect{X: r.X + 8, Y: r.Y + 2, W: max(0, r.W-16), H: 2}, t.Accent, 1)
+							if groupInsertLine {
+								header.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+									painter.Fill(ui.Rect{X: r.X + 4, Y: r.Y + r.H - 2, W: max(0, r.W-8), H: 2}, t.Accent, 1)
 								})
 							}
-						}
-					})
-				}
+							if header.Hovered() {
+								header.Background(colors.Hover)
+							}
+							hasLive := collapsed && slices.ContainsFunc(rows, func(h hosts.Host) bool {
+								return a.hasTabForHost(h.ID)
+							})
+							header.Children(func() {
+								ui.Icon(c, design.Icon(iconName)).FontSize(12).TextColor(colors.TextFaint).Shrink(0)
+								ui.Text(c, group).FontSize(design.TextSmall).FontWeight(500).TextColor(colors.TextFaint).Grow(1).MinWidth(0).SingleLine().Ellipsis("…")
+								if hasLive {
+									ui.Box(c).Size(5, 5).Radius(3).Background(colors.Live).Shrink(0)
+								}
+								if collapsed && len(rows) > 0 {
+									ui.Text(c, fmt.Sprint(len(rows))).FontSize(design.TextSmall - 1).TextColor(colors.TextFaint).FontFeatures("tnum").Shrink(0)
+								}
+							}).OnClick(func() { a.toggleGroup(group) })
+							if collapsed {
+								return
+							}
+							for _, h := range rows {
+								a.hostRow(c, colors, h)
+							}
+							if !filtering && len(rows) > 0 {
+								lastID := rows[len(rows)-1].ID
+								endDrop := ui.Box(c.Key("groupEnd:" + group)).Height(8).Shrink(0)
+								var endInsertLine bool
+								if dragged, ok := ui.DragOver[hostDrag](endDrop); ok && dragged.ID != lastID {
+									endInsertLine = true
+								}
+								if dropped, ok := ui.Drop[hostDrag](endDrop); ok && dropped.ID != lastID {
+									if err := a.moveHostOrder(dropped.ID, "", group); err != nil {
+										a.notice = "调整主机排序失败：" + err.Error()
+									}
+								}
+								if endInsertLine {
+									endDrop.DrawOver(func(painter *ui.Painter, r ui.Rect) {
+										painter.Fill(ui.Rect{X: r.X + 8, Y: r.Y + 2, W: max(0, r.W-16), H: 2}, t.Accent, 1)
+									})
+								}
+							}
+						})
+					}
+				})
 			})
+			if a.sidebarScroll.Y > 2 {
+				ui.Box(c).Absolute().Top(0).Left(0).Right(0).Height(16).PassThrough().AccessHidden(true).
+					Material(glass.ScrollEdge{Background: colors.Wash.Stops[0].Color})
+			}
+			if a.sidebarScroll.MaxY > 0 && a.sidebarScroll.Y < a.sidebarScroll.MaxY-2 {
+				ui.Box(c).Absolute().Bottom(0).Left(0).Right(0).Height(16).PassThrough().AccessHidden(true).
+					Material(glass.ScrollEdge{Bottom: true, Background: colors.Wash.Stops[1].Color})
+			}
 		})
 
 		ui.Column(c).Padding(6, 10, 10, 10).Gap(4).Children(func() {
@@ -633,7 +649,11 @@ func (a *app) syncStatus(c *ui.Context, colors design.Colors) {
 		row.Background(colors.Hover)
 	}
 	row.Children(func() {
-		ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(color)
+		if a.syncing {
+			loading.Arc(c, loading.Options{Size: 13, Color: c.Theme().Accent}).Label("正在同步")
+		} else {
+			ui.Icon(c, design.Icon(icon)).FontSize(13).TextColor(color)
+		}
 		ui.Text(c, caption).FontSize(design.TextSmall).TextColor(color).SingleLine()
 	}).OnClick(func() {
 		if !a.settingsPanel.open {
@@ -765,9 +785,6 @@ func (a *app) hostRow(c *ui.Context, colors design.Colors, h hosts.Host) {
 			if busy {
 				// 连接中斑纹明显呼吸，代替转圈图标：状态就落在这台主机自己的标识上。
 				coat.Opacity(coat.Keyframes("breathe", design.Breathe, design.BreatheOptions))
-			} else if !connected && health.state == probeOK {
-				// 静默连通性探测可达且尚未打开会话时，图标轻微呼吸提示在线可连。
-				coat.Opacity(coat.Keyframes("reachable", design.ReachableBreathe, design.ReachableBreatheOptions))
 			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 				ui.Text(c, h.Name).FontWeight(500).SingleLine().Ellipsis("…")
@@ -873,6 +890,12 @@ func (a *app) tabBar(c *ui.Context, colors design.Colors) {
 		if a.ai.open {
 			aiBtn.Background(c.Theme().Accent.Alpha(0.14))
 		}
+		if a.hasRunningAI() {
+			aiBtn.Children(func() {
+				loading.Pulse(c, loading.Options{Size: 8, Color: c.Theme().Accent}).
+					Absolute().Top(2).Right(2).PassThrough().AccessHidden(true)
+			})
+		}
 	})
 }
 
@@ -899,6 +922,7 @@ func (a *app) connectingTabPill(c *ui.Context, colors design.Colors, hostID stri
 		Background(colors.Card).Border(1, theme.Accent.Alpha(0.35)).Tooltip(phase).Children(func() {
 		design.DistroCoatView(c, h.ID, h.Distro, h.Production, 14)
 		ui.Text(c, name).TextColor(theme.Text).FontWeight(500).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+		loading.Arc(c, loading.Options{Size: 11, Color: theme.Accent}).Label("正在连接").Shrink(0)
 		ui.Text(c, phase).TextColor(theme.TextMuted).FontSize(design.TextSmall - 0.5).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 		ui.ButtonBase(c.Key("cancelConnectTab:"+hostID)).Label("取消连接 "+name).Tooltip("取消连接").
 			Size(16, 16).Center().Radius(4).Shrink(0).Children(func() {
@@ -1198,6 +1222,7 @@ func (a *app) emptyState(c *ui.Context, colors design.Colors) {
 						Background(colors.Card).Border(1, colors.CardBorder).Children(func() {
 						design.DistroCoatView(c, h.ID, h.Distro, h.Production, 18)
 						ui.Text(c, name).FontWeight(500)
+						loading.Arc(c, loading.Options{Size: 12, Color: t.Accent}).Label("正在连接").Shrink(0)
 						ui.Text(c, phase).FontSize(design.TextSmall).TextColor(t.TextMuted)
 						ui.Button(c.Key("cancelConnect:"+hostID), "取消连接").Height(24).Padding(0, 8).OnClick(cancel)
 					})
@@ -1632,7 +1657,9 @@ func (a *app) floatingTransferQueue(c *ui.Context, colors design.Colors, t *tab,
 	}
 	availW := max(float32(240), windowW-sideW-aiUsed-24)
 	queueW := min(float32(340), max(float32(220), availW-24))
-	card := raised(ui.Column(c.Key("floatingTransfers")).Absolute().Right(14).Bottom(14).Width(queueW).Clip(), colors, design.RadiusCard)
+	card := ui.Column(c.Key("floatingTransfers")).Absolute().Right(14).Bottom(14).Width(queueW).
+		Radius(design.RadiusCard).Material(glass.Glass{}).Border(1, colors.CardBorder).
+		Shadow(0, 14, 36, -10, colors.CardShadow).Clip()
 	card.Transition(design.SlideIn(18)).Children(func() {
 		a.transferQueueView(c, colors, t)
 	})
@@ -1940,7 +1967,8 @@ func (a *app) dropLayer(c *ui.Context, colors design.Colors, t *tab, p *pane, vi
 			target = shortPath(resolved)
 		}
 		layer.Children(func() {
-			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).Background(colors.Card).Children(func() {
+			ui.Column(c).Gap(4).AlignItems(ui.Center).Padding(12, 18).Radius(design.RadiusRow).
+				Material(glass.Glass{}).Border(1, colors.CardBorder).Shadow(0, 8, 24, -8, colors.CardShadow).Children(func() {
 				ui.Text(c, locales.ViewReleaseToUpload()).FontWeight(600)
 				ui.Text(c, locales.ViewUploadTo(target)).FontSize(design.TextSmall).TextColor(theme.TextMuted).SingleLine().TruncateStart().Ellipsis("…").MaxWidth(360)
 			})
@@ -1970,7 +1998,10 @@ func (a *app) paneMonitorMetrics(c *ui.Context, colors design.Colors, t *tab, p 
 			})
 			return
 		}
-		ui.Text(c, locales.MonitorProbing()).TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap().Shrink(0)
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Shrink(0).Children(func() {
+			loading.BouncingDots(c, loading.Options{Size: 10, Color: colors.TextFaint}).Label(locales.MonitorProbing()).Shrink(0)
+			ui.Text(c, locales.MonitorProbing()).TextColor(colors.TextFaint).FontSize(design.TextSmall).NoWrap()
+		})
 		return
 	}
 	tTheme := c.Theme()

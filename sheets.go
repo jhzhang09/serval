@@ -8,6 +8,7 @@ import (
 	"serval/locales"
 
 	"github.com/egoist/mygo/plugins/glass"
+	"github.com/egoist/mygo/plugins/loading"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -47,6 +48,40 @@ func menuOptions(colors design.Colors) ui.PopoverMenuOptions {
 
 func menuButtonOptions(colors design.Colors) ui.PopoverMenuButtonOptions {
 	return ui.PopoverMenuButtonOptions{Panel: glassMenuPanel(colors)}
+}
+
+// loadingButton 渲染普通或主操作按钮，并在 busy 为真时展示动态 loading.Arc 指示器且禁用重复点击。
+func loadingButton(c *ui.Context, key, label string, primary, busy bool, onClick func()) ui.Element {
+	var b ui.Element
+	if !busy {
+		if primary {
+			b = ui.PrimaryButton(c.Key(key), label)
+		} else {
+			b = ui.Button(c.Key(key), label)
+		}
+		if onClick != nil {
+			b.OnClick(onClick)
+		}
+		return b
+	}
+	t := c.Theme()
+	spinnerColor := t.TextMuted
+	if primary {
+		b = ui.PrimaryButton(c.Key(key), "")
+		spinnerColor = t.AccentText
+	} else {
+		b = ui.Button(c.Key(key), "")
+	}
+	b.Label(label).Disabled(true).Children(func() {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			loading.Arc(c, loading.Options{Size: 12, Color: spinnerColor}).Shrink(0)
+			ui.Text(c, label).NoWrap()
+		})
+	})
+	if onClick != nil {
+		b.OnClick(onClick)
+	}
+	return b
 }
 
 func (a *app) hostKeyDialog(c *ui.Context) {
@@ -204,7 +239,7 @@ func (a *app) setupDialog(c *ui.Context, colors design.Colors) {
 				if s.busy {
 					label = locales.SheetSetting()
 				}
-				b := ui.PrimaryButton(c.Key("setupSubmit"), label).Disabled(s.busy)
+				b := loadingButton(c, "setupSubmit", label, true, s.busy, nil)
 				if (b.Clicked() || submit) && !s.busy {
 					a.submitSetup()
 				}
@@ -267,7 +302,7 @@ func (a *app) fileOpDialog(c *ui.Context, colors design.Colors) {
 				ui.Button(c.Key("fileOpCancel"), locales.Cancel()).Disabled(op.busy).OnClick(func() {
 					a.fileOp = fileOpState{}
 				})
-				if ui.PrimaryButton(c.Key("fileOpSubmit"), btnText).Disabled(op.busy).Clicked() || (submit && !op.busy) {
+				if loadingButton(c, "fileOpSubmit", btnText, true, op.busy, nil).Clicked() || (submit && !op.busy) {
 					a.submitFileOp()
 				}
 			})
@@ -332,7 +367,7 @@ func (a *app) lockScreen(c *ui.Context, colors design.Colors) {
 				label = locales.SheetUnlocking()
 			}
 			submit := input.Submitted()
-			b := ui.PrimaryButton(c.Key("unlockSubmit"), label).Disabled(u.busy)
+			b := loadingButton(c, "unlockSubmit", label, true, u.busy, nil)
 			if (b.Clicked() || submit) && !u.busy {
 				a.submitUnlock()
 			}

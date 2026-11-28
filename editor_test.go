@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -295,4 +297,11 @@ func TestEditorDoubleClickOpensFile(t *testing.T) {
 	h.pump("双击打开远程编辑器", func() bool {
 		return h.a.editor.open && !h.a.editor.local && h.a.editor.name == "dbl.txt"
 	})
+}
+
+func TestEditorReasonTimeout(t *testing.T) {
+	got := editorReason(context.DeadlineExceeded, false)
+	if !strings.Contains(got, "读取文件超时") {
+		t.Fatalf("editorReason timeout = %q", got)
+	}
 }

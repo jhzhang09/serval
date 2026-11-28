@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -383,6 +384,37 @@ func (c *Client) StreamChat(ctx context.Context, messages []Message, tools []Too
 	u, err := url.Parse(c.baseURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, ErrInvalidEndpoint
+	}
+
+	if c.useAnthropic() {
+		var emittedAny atomic.Bool
+		wrappedProgress := onProgress
+		if onProgress != nil {
+			wrappedProgress = func(p StreamProgress) {
+				if p.Thinking != "" || p.Content != "" || len(p.ToolCalls) > 0 {
+					emittedAny.Store(true)
+				}
+				onProgress(p)
+			}
+		}
+		var aRes *StreamResult
+		var aErr error
+		backoffs := []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
+		for attempt := 0; attempt <= len(backoffs); attempt++ {
+			aRes, aErr = c.doAnthropicStream(ctx, messages, tools, wrappedProgress)
+			if aErr == nil || emittedAny.Load() || ctx.Err() != nil || !isRetryableStreamError(aErr) || attempt == len(backoffs) {
+				break
+			}
+			c.closeIdleConnections()
+			timer := time.NewTimer(backoffs[attempt])
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, mapTransportError(ctx.Err())
+			case <-timer.C:
+			}
+		}
+		return aRes, aErr
 	}
 
 	prepared := prepareMessagesForProvider(c.baseURL, c.model, messages)
@@ -906,8 +938,10 @@ const (
 	EventStepStart AgentEventKind = iota
 	EventStepProgress
 	EventToolStart
+	EventToolProgress
 	EventToolDone
 	EventStepDone
+	EventCompacted
 )
 
 // AgentEvent 描述单次 Agent 循环回调给上层的状态变化。
@@ -920,18 +954,23 @@ type AgentEvent struct {
 	ToolCall        ToolCall
 	ToolOutput      string
 	ToolError       bool
+	CompactedNotice string
 	StepUsage       Usage
 	TotalUsage      Usage
 }
 
 // AgentRunConfig 配置一次多轮工具调用 Agent 执行。
 type AgentRunConfig struct {
-	Client      *Client
-	Messages    []Message
-	Tools       []ToolDefinition
-	MaxSteps    int
-	ExecuteTool func(ctx context.Context, call ToolCall) (output string, isError bool)
-	OnEvent     func(AgentEvent)
+	Client            *Client
+	Messages          []Message
+	Tools             []ToolDefinition
+	MaxSteps          int
+	ContextWindow     int
+	EnableCompaction  bool
+	ExecuteTool       func(ctx context.Context, call ToolCall) (output string, isError bool)
+	ExecuteToolStream func(ctx context.Context, call ToolCall, onProgress func(output string)) (output string, isError bool)
+	IsReadOnlyTool    func(call ToolCall) bool
+	OnEvent           func(AgentEvent)
 }
 
 // AgentRunResult 返回完整的最终消息序列与累计 Token 用量。
@@ -950,11 +989,17 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 	}
 	maxSteps := cfg.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = 12
+		maxSteps = 20
 	}
-	msgs := append([]Message(nil), cfg.Messages...)
+	ctxWindow := cfg.ContextWindow
+	if ctxWindow <= 0 {
+		ctxWindow = ModelContextWindow(cfg.Client.model)
+	}
+	msgs := SanitizeMessageSequence(append([]Message(nil), cfg.Messages...))
 	var totalUsage Usage
 	var finalText string
+	lastSig := ""
+	repeatCount := 0
 
 	emit := func(ev AgentEvent) {
 		if cfg.OnEvent != nil {
@@ -962,26 +1007,84 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 		}
 	}
 
+	partialResult := func(step int, reachedMax bool) *AgentRunResult {
+		return &AgentRunResult{
+			Messages:   SanitizeMessageSequence(msgs),
+			Usage:      totalUsage,
+			FinalText:  finalText,
+			StepCount:  step,
+			ReachedMax: reachedMax,
+		}
+	}
+
+	execOne := func(tctx context.Context, step int, tc ToolCall) (string, bool) {
+		if cfg.ExecuteToolStream != nil {
+			return cfg.ExecuteToolStream(tctx, tc, func(partial string) {
+				emit(AgentEvent{
+					Kind:       EventToolProgress,
+					Step:       step,
+					ToolCall:   tc,
+					ToolOutput: partial,
+					TotalUsage: totalUsage,
+				})
+			})
+		}
+		return cfg.ExecuteTool(tctx, tc)
+	}
+
 	for step := 1; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
-			return nil, mapTransportError(err)
+			return partialResult(step-1, false), mapTransportError(err)
 		}
+
+		if cfg.EnableCompaction {
+			msgs = PruneStaleToolOutputs(msgs, 4)
+			if EstimateMessagesTokens(msgs) > ctxWindow*3/4 {
+				if compacted, ok := CompactMessages(ctx, cfg.Client, msgs, ctxWindow/2); ok {
+					msgs = compacted
+					emit(AgentEvent{
+						Kind:            EventCompacted,
+						Step:            step,
+						CompactedNotice: "上下文接近模型上限，已自动压缩较早历史",
+						TotalUsage:      totalUsage,
+					})
+				}
+			}
+		}
+
 		emit(AgentEvent{Kind: EventStepStart, Step: step, TotalUsage: totalUsage})
 
-		res, err := cfg.Client.StreamChat(ctx, msgs, cfg.Tools, func(p StreamProgress) {
-			runningTotal := totalUsage
-			runningTotal.Add(p.Usage)
-			emit(AgentEvent{
-				Kind:            EventStepProgress,
-				Step:            step,
-				Thinking:        p.Thinking,
-				ThinkingSeconds: p.ThinkingSeconds,
-				Content:         p.Content,
-				TotalUsage:      runningTotal,
+		var res *StreamResult
+		var err error
+		for attempt := 0; attempt < 2; attempt++ {
+			res, err = cfg.Client.StreamChat(ctx, msgs, cfg.Tools, func(p StreamProgress) {
+				runningTotal := totalUsage
+				runningTotal.Add(p.Usage)
+				emit(AgentEvent{
+					Kind:            EventStepProgress,
+					Step:            step,
+					Thinking:        p.Thinking,
+					ThinkingSeconds: p.ThinkingSeconds,
+					Content:         p.Content,
+					TotalUsage:      runningTotal,
+				})
 			})
-		})
+			if err != nil && attempt == 0 && cfg.EnableCompaction && IsContextOverflowError(err) && ctx.Err() == nil {
+				if compacted, ok := CompactMessages(ctx, cfg.Client, msgs, ctxWindow/2); ok {
+					msgs = compacted
+					emit(AgentEvent{
+						Kind:            EventCompacted,
+						Step:            step,
+						CompactedNotice: "请求超出上下文上限，已自动压缩历史并重试",
+						TotalUsage:      totalUsage,
+					})
+					continue
+				}
+			}
+			break
+		}
 		if err != nil {
-			return nil, err
+			return partialResult(step-1, false), err
 		}
 
 		totalUsage.Add(res.Usage)
@@ -1006,21 +1109,114 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 		})
 
 		if len(res.ToolCalls) == 0 {
-			return &AgentRunResult{
-				Messages:  msgs,
-				Usage:     totalUsage,
-				FinalText: finalText,
-				StepCount: step,
-			}, nil
+			return partialResult(step, false), nil
 		}
 
-		if cfg.ExecuteTool == nil {
-			return nil, fmt.Errorf("收到模型工具调用但未配置 ExecuteTool")
+		if cfg.ExecuteTool == nil && cfg.ExecuteToolStream == nil {
+			return partialResult(step, false), fmt.Errorf("收到模型工具调用但未配置 ExecuteTool")
+		}
+
+		// 检查是否所有工具调用均为只读工具；若是且数量 > 1，则并发执行（上限 4 并发）
+		canParallel := len(res.ToolCalls) > 1 && cfg.IsReadOnlyTool != nil
+		if canParallel {
+			for _, tc := range res.ToolCalls {
+				if !cfg.IsReadOnlyTool(tc) {
+					canParallel = false
+					break
+				}
+			}
+		}
+
+		// 重复死循环检测（连续 3 次调用完全相同的工具与参数）
+		allRepeat := true
+		for _, tc := range res.ToolCalls {
+			sig := tc.Function.Name + "\x00" + strings.TrimSpace(tc.Function.Arguments)
+			if sig == lastSig {
+				repeatCount++
+			} else {
+				lastSig = sig
+				repeatCount = 1
+			}
+			if repeatCount < 3 {
+				allRepeat = false
+			}
+		}
+		if allRepeat && repeatCount >= 3 {
+			for _, tc := range res.ToolCalls {
+				emit(AgentEvent{Kind: EventToolStart, Step: step, ToolCall: tc, TotalUsage: totalUsage})
+				guide := "检测到连续重复调用相同工具与参数，请更换排查方案或直接总结当前已知结果。"
+				emit(AgentEvent{
+					Kind:       EventToolDone,
+					Step:       step,
+					ToolCall:   tc,
+					ToolOutput: guide,
+					ToolError:  true,
+					TotalUsage: totalUsage,
+				})
+				msgs = append(msgs, Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    guide,
+				})
+			}
+			continue
+		}
+
+		if canParallel {
+			type toolOut struct {
+				out   string
+				isErr bool
+			}
+			results := make([]toolOut, len(res.ToolCalls))
+			for _, tc := range res.ToolCalls {
+				emit(AgentEvent{
+					Kind:       EventToolStart,
+					Step:       step,
+					ToolCall:   tc,
+					TotalUsage: totalUsage,
+				})
+			}
+			sem := make(chan struct{}, 4)
+			var wg sync.WaitGroup
+			for idx, tc := range res.ToolCalls {
+				wg.Add(1)
+				go func(i int, call ToolCall) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					if ctx.Err() != nil {
+						return
+					}
+					out, isErr := execOne(ctx, step, call)
+					results[i] = toolOut{out: out, isErr: isErr}
+				}(idx, tc)
+			}
+			wg.Wait()
+			if err := ctx.Err(); err != nil {
+				return partialResult(step, false), mapTransportError(err)
+			}
+			for idx, tc := range res.ToolCalls {
+				r := results[idx]
+				emit(AgentEvent{
+					Kind:       EventToolDone,
+					Step:       step,
+					ToolCall:   tc,
+					ToolOutput: r.out,
+					ToolError:  r.isErr,
+					TotalUsage: totalUsage,
+				})
+				msgs = append(msgs, Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    r.out,
+				})
+			}
+			continue
 		}
 
 		for _, tc := range res.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				return nil, mapTransportError(err)
+				return partialResult(step, false), mapTransportError(err)
 			}
 			emit(AgentEvent{
 				Kind:       EventToolStart,
@@ -1028,9 +1224,9 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 				ToolCall:   tc,
 				TotalUsage: totalUsage,
 			})
-			out, isErr := cfg.ExecuteTool(ctx, tc)
+			out, isErr := execOne(ctx, step, tc)
 			if err := ctx.Err(); err != nil {
-				return nil, mapTransportError(err)
+				return partialResult(step, false), mapTransportError(err)
 			}
 			emit(AgentEvent{
 				Kind:       EventToolDone,
@@ -1048,13 +1244,7 @@ func RunAgent(ctx context.Context, cfg AgentRunConfig) (*AgentRunResult, error) 
 		}
 	}
 
-	return &AgentRunResult{
-		Messages:   msgs,
-		Usage:      totalUsage,
-		FinalText:  finalText,
-		StepCount:  maxSteps,
-		ReachedMax: true,
-	}, nil
+	return partialResult(maxSteps, true), nil
 }
 
 func shouldFallbackToResponses(status int, err error) bool {

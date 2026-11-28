@@ -19,6 +19,7 @@ import (
 	"serval/design"
 	"serval/locales"
 
+	"github.com/egoist/mygo/plugins/loading"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
@@ -148,6 +149,10 @@ type deviceSettings struct {
 	AIWidth float32 `json:"aiWidth,omitempty"`
 	// AIMode 是本机记住的 AI Agent 权限模式（0 自动执行、1 确认执行、2 只读观察）。
 	AIMode uint8 `json:"aiMode,omitempty"`
+	// DisableAIRedact 为真时关闭发送给 AI 前的私钥/Token/密码自动脱敏。默认开启脱敏。
+	DisableAIRedact bool `json:"disableAIRedact,omitempty"`
+	// SyncAIChats 为真时将独立的 AI 会话加密分片（aichat.vault.json）纳入云同步与同步文件夹。默认关闭（仅本机加密保存）。
+	SyncAIChats bool `json:"syncAIChats,omitempty"`
 	// DisableDefaultMonitor 为真时，新建 SSH 会话不默认开启顶栏服务器监控。
 	DisableDefaultMonitor bool `json:"disableDefaultMonitor,omitempty"`
 	// HostMonitor 记录各台主机上次的监控开关状态。
@@ -926,7 +931,7 @@ func (a *app) settingsSecuritySection(c *ui.Context, colors design.Colors) {
 					if p.changePwBusy {
 						label = locales.SetSaving()
 					}
-					ui.PrimaryButton(c.Key("settingsSavePw"), label).Disabled(p.changePwBusy).OnClick(func() {
+					loadingButton(c, "settingsSavePw", label, true, p.changePwBusy, func() {
 						a.submitChangePassword()
 					})
 				})
@@ -976,7 +981,7 @@ func (a *app) vaultBackupSection(c *ui.Context, colors design.Colors) {
 			if p.backupBusy {
 				label = locales.SheetUnlocking()
 			}
-			ui.PrimaryButton(c.Key("settingsBackupSubmit"), label).Disabled(p.backupBusy).OnClick(a.submitBackupPassword)
+			loadingButton(c, "settingsBackupSubmit", label, true, p.backupBusy, a.submitBackupPassword)
 		})
 	})
 }
@@ -1241,11 +1246,13 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 		changes = append(changes, ch)
 	}
 
+	var aiChatChanges []vault.Change
 	for _, ch := range bAIChats {
 		if ch.ID == "" || slices.ContainsFunc(a.aiChats, func(x aiChatRecord) bool { return x.ID == ch.ID }) {
 			continue
 		}
-		changes = append(changes, aiChatChange(ch))
+		hasSecrets = true
+		aiChatChanges = append(aiChatChanges, aiChatChange(ch))
 	}
 
 	if _, hasSettings, _ := a.vault.Get(settingsID); !hasSettings {
@@ -1258,7 +1265,8 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 		}
 	}
 
-	if len(changes) == 0 {
+	totalNew := len(changes) + len(aiChatChanges)
+	if totalNew == 0 {
 		a.clearBackupState()
 		a.toast(ui.Toast{Title: locales.SetBackupNothingToAdd()})
 		return
@@ -1269,13 +1277,28 @@ func (a *app) applyBackupRecords(bv *vault.Vault) {
 		return
 	}
 
-	if err := a.apply(changes...); err != nil {
-		a.settingsPanel.backupErr = err.Error()
-		a.settingsPanel.err = err.Error()
-		return
+	if len(aiChatChanges) > 0 {
+		a.syncAIVaultState()
+		if a.aiVault != nil && a.aiVault.State() == vault.Unlocked {
+			if err := a.aiVault.Apply(aiChatChanges); err != nil {
+				a.settingsPanel.backupErr = err.Error()
+				a.settingsPanel.err = err.Error()
+				return
+			}
+			a.noteAIVaultChanged()
+		}
+	}
+	if len(changes) > 0 {
+		if err := a.apply(changes...); err != nil {
+			a.settingsPanel.backupErr = err.Error()
+			a.settingsPanel.err = err.Error()
+			return
+		}
+	} else {
+		a.reload()
 	}
 	a.clearBackupState()
-	a.toast(ui.Toast{Title: locales.SetBackupMergedCount(len(changes))})
+	a.toast(ui.Toast{Title: locales.SetBackupMergedCount(totalNew)})
 }
 
 func uniqueImportedName(name string, used map[string]bool) string {
@@ -1385,7 +1408,7 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 		if p.probeBusy {
 			label = "正在测试连接"
 		}
-		ui.Button(c.Key("syncTest"), label).Disabled(p.probeBusy).OnClick(a.testSyncFromPanel)
+		loadingButton(c, "syncTest", label, false, p.probeBusy, a.testSyncFromPanel)
 		ui.PrimaryButton(c.Key("syncSave"), "保存配置").OnClick(a.saveSyncSettings)
 		if a.local.SyncOn || a.local.SyncURL != "" {
 			ui.Button(c.Key("syncClear"), "清除配置").OnClick(func() {
@@ -1419,7 +1442,10 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 	}
 	switch {
 	case a.syncing:
-		ui.Text(c.Key("syncProgress"), "正在同步…").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			loading.Arc(c, loading.Options{Size: 12, Color: c.Theme().Accent}).Label("正在同步").Shrink(0)
+			ui.Text(c.Key("syncProgress"), "正在同步…").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+		})
 	case !a.lastSync.IsZero():
 		ui.Text(c.Key("syncLast"), "上次同步 "+formatSyncTime(a.lastSync)).FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 	}
@@ -1440,6 +1466,24 @@ func (a *app) syncSettingsSection(c *ui.Context, colors design.Colors) {
 			ui.Text(c, "基于记录版本自动与远端双向合并同步").FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
 		})
 	}
+
+	ui.Column(c).Padding(10, 12).Gap(4).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+		syncAI := a.local.SyncAIChats
+		c.Key("syncAIChatsToggle")
+		if ui.Checkbox(c, &syncAI, "同步 AI 会话历史（独立加密分片）").Changed() {
+			next := a.local
+			next.SyncAIChats = syncAI
+			_ = a.saveLocal(next)
+			if syncAI && a.vaultOpen() {
+				a.exportSyncDir()
+				if a.syncConfigured() {
+					a.syncNow(false)
+				}
+			}
+		}
+		ui.Text(c, "AI 对话加密保存在独立的 aichat.vault.json 中；开启后随云同步与同步文件夹双向合并，关闭时仅在本机加密保存。").
+			FontSize(design.TextSmall).TextColor(c.Theme().TextMuted)
+	})
 
 	ui.Divider(c)
 
@@ -1529,6 +1573,7 @@ type aiPreset struct {
 
 var aiPresets = []aiPreset{
 	{ID: "openai", Name: "OpenAI", Short: "OA", BaseURL: "https://api.openai.com/v1"},
+	{ID: "anthropic", Name: "Claude (Anthropic)", Short: "CL", BaseURL: "https://api.anthropic.com/v1"},
 	{ID: "deepseek", Name: "DeepSeek", Short: "DS", BaseURL: "https://api.deepseek.com/v1"},
 	{ID: "qwen", Name: "通义千问", Short: "QW", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
 	{ID: "kimi", Name: "Kimi", Short: "KM", BaseURL: "https://api.moonshot.cn/v1"},
@@ -1554,6 +1599,8 @@ func aiPresetByID(id string) (aiPreset, bool) {
 func providerIDFor(name, baseURL string) string {
 	lowURL := strings.ToLower(strings.TrimSpace(baseURL))
 	switch {
+	case strings.Contains(lowURL, "anthropic"):
+		return "anthropic"
 	case strings.Contains(lowURL, "deepseek"):
 		return "deepseek"
 	case strings.Contains(lowURL, "dashscope") || strings.Contains(lowURL, "aliyuncs"):
@@ -1581,6 +1628,8 @@ func providerIDFor(name, baseURL string) string {
 	switch lowName {
 	case "deepseek":
 		return "deepseek"
+	case "anthropic", "claude", "claude (anthropic)":
+		return "anthropic"
 	case "openai":
 		return "openai"
 	case "通义千问", "qwen":
@@ -2368,6 +2417,18 @@ func (a *app) aiSettingsSection(c *ui.Context, colors design.Colors) {
 			})
 		}
 	})
+
+	ui.Column(c).Padding(10, 12).Gap(4).Radius(design.RadiusRow).Background(colors.Hover).Border(1, colors.Hairline).Children(func() {
+		redactOn := !a.local.DisableAIRedact
+		c.Key("aiRedactToggle")
+		if ui.Checkbox(c, &redactOn, "发送给 AI 前自动脱敏私钥、Token 与密码").Changed() {
+			next := a.local
+			next.DisableAIRedact = !redactOn
+			_ = a.saveLocal(next)
+		}
+		ui.Text(c, "读取终端输出、日志文件和剪贴板内容时自动遮蔽常见私钥与凭据（保存在本机设置）。").
+			FontSize(design.TextSmall).TextColor(t.TextMuted)
+	})
 }
 
 func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
@@ -2418,9 +2479,9 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, fmt.Sprintf("已自动获取 %d 个可用模型，可在 AI 面板底部菜单直接选择", len(p.aiModels))).
 					FontSize(design.TextSmall).TextColor(colors.Live).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-				ui.Button(c.Key("aiFetchModelsBtn"), fetchLabel).Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+				loadingButton(c, "aiFetchModelsBtn", fetchLabel, false, p.aiFetchBusy, func() {
 					a.fetchAIModels(true)
-				})
+				}).Shrink(0)
 				ui.Button(c.Key("aiToggleManualModel"), "手动输入").Shrink(0).OnClick(func() {
 					p.aiManualModel = true
 				})
@@ -2434,9 +2495,9 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 				ui.TextInput(c, &p.aiModel).Placeholder("自动获取失败或不支持列表时可手动填写模型名").Grow(1).MinWidth(0).OnSubmit(func() {
 					a.commitAISettings()
 				})
-				ui.Button(c.Key("aiFetchModelsBtn"), fetchLabel).Disabled(p.aiFetchBusy).Shrink(0).OnClick(func() {
+				loadingButton(c, "aiFetchModelsBtn", fetchLabel, false, p.aiFetchBusy, func() {
 					a.fetchAIModels(true)
-				})
+				}).Shrink(0)
 				if hasFetchedModels {
 					ui.Button(c.Key("aiToggleManualModel"), "使用自动列表").Shrink(0).OnClick(func() {
 						p.aiManualModel = false
@@ -2451,7 +2512,7 @@ func (a *app) renderAIProfileEditor(c *ui.Context, colors design.Colors) {
 		if p.aiTestBusy {
 			label = "正在测试连接"
 		}
-		ui.Button(c.Key("aiTestBtn"), label).Disabled(p.aiTestBusy).OnClick(func() {
+		loadingButton(c, "aiTestBtn", label, false, p.aiTestBusy, func() {
 			a.commitAISettings()
 			p.aiTestBusy = true
 			p.aiTestMsg = ""

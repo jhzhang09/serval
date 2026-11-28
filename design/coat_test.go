@@ -1,6 +1,8 @@
 package design
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -62,4 +64,23 @@ func TestCoatMutedIsCoolGray(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestNewCoatCacheDeterministicAndConcurrent(t *testing.T) {
+	first := NewCoat("cache-seed-01", false)
+	second := NewCoat("cache-seed-01", false)
+	if first.From != second.From || first.To != second.To || len(first.Spots) != len(second.Spots) {
+		t.Fatalf("缓存前后斑纹应完全一致: %+v vs %+v", first, second)
+	}
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := range 80 {
+				_ = NewCoat(fmt.Sprintf("concurrent-%d-%d", id, i%10), i%2 == 0)
+			}
+		}(g)
+	}
+	wg.Wait()
 }

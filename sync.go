@@ -1086,6 +1086,57 @@ func (a *app) onVaultReady() {
 	}
 }
 
+// aiChatSyncURL 根据主 vault.json 的同步 URL 推导出同目录下独立 AI 会话分片（aichat.vault.json）的同步 URL。
+func aiChatSyncURL(vaultFileURL string) (string, error) {
+	if syncer.IsS3URL(vaultFileURL) {
+		target, err := syncer.ParseS3URL(vaultFileURL)
+		if err != nil {
+			return "", err
+		}
+		dir := path.Dir(strings.TrimPrefix(target.Key, "/"))
+		if dir == "." || dir == "/" || dir == "" {
+			target.Key = "aichat.vault.json"
+		} else {
+			target.Key = dir + "/aichat.vault.json"
+		}
+		return target.FormatURL(), nil
+	}
+	u, err := url.Parse(vaultFileURL)
+	if err != nil {
+		return "", err
+	}
+	dir := path.Dir(u.Path)
+	if dir == "." || dir == "/" {
+		u.Path = "/aichat.vault.json"
+	} else {
+		u.Path = dir + "/aichat.vault.json"
+	}
+	return u.String(), nil
+}
+
+// syncAIChatShard 在开启「同步 AI 会话」时同步独立的 aichat.vault.json 分片。
+// 若本地分片尚无任何记录且远端也不存在，则不上传空分片。
+func syncAIChatShard(ctx context.Context, aiV *vault.Vault, aiRemote syncer.Remote) error {
+	if aiV == nil || aiV.State() != vault.Unlocked {
+		return nil
+	}
+	if !aiV.HasRecords() {
+		body, _, err := aiRemote.Download(ctx)
+		if errors.Is(err, syncer.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if len(strings.TrimSpace(string(body))) == 0 {
+			return nil
+		}
+		_, err = aiV.Merge(body)
+		return err
+	}
+	return syncer.Sync(ctx, aiV, aiRemote)
+}
+
 // noteVaultChanged 在本地写入成功后调用。短时间里的连续修改合成一次同步。
 func (a *app) noteVaultChanged() {
 	if !a.vaultOpen() {
@@ -1108,6 +1159,14 @@ func (a *app) noteVaultChanged() {
 		}
 		a.post(func() { a.syncNow(false) })
 	})
+}
+
+// noteAIVaultChanged 在独立 AI 会话分片写入成功后调用；仅当开启「同步 AI 会话」时触发同步。
+func (a *app) noteAIVaultChanged() {
+	if !a.vaultOpen() || !a.local.SyncAIChats {
+		return
+	}
+	a.noteVaultChanged()
 }
 
 func (a *app) startSyncLoop() {
@@ -1176,13 +1235,29 @@ func (a *app) syncNow(manual bool) {
 	}
 	a.syncing = true
 	fileURL, user, pass := a.local.SyncURL, a.local.SyncUser, a.syncPassword()
+	syncAI := a.local.SyncAIChats
 	v := a.vault
+	aiV := a.aiVault
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		remote, err := newSyncRemote(fileURL, user, pass)
+		mainSynced := false
 		if err == nil {
 			err = syncer.Sync(ctx, v, remote)
+			if err == nil {
+				mainSynced = true
+			}
+		}
+		var aiErr error
+		if mainSynced && syncAI && aiV != nil && aiV.State() == vault.Unlocked {
+			if aiURL, urlErr := aiChatSyncURL(fileURL); urlErr != nil {
+				aiErr = urlErr
+			} else if aiRemote, rErr := newSyncRemote(aiURL, user, pass); rErr != nil {
+				aiErr = rErr
+			} else {
+				aiErr = syncAIChatShard(ctx, aiV, aiRemote)
+			}
 		}
 		a.post(func() {
 			a.syncing = false
@@ -1199,12 +1274,19 @@ func (a *app) syncNow(manual bool) {
 					a.toast(ui.Toast{Title: "没能同步", Description: a.syncErr, Type: "error"})
 				}
 			} else {
-				a.syncErr = ""
 				a.syncDifferentVault = false
 				a.lastSync = time.Now()
 				a.reload()
-				if manual {
-					a.toast(ui.Toast{Title: "已同步"})
+				if aiErr != nil {
+					a.syncErr = "主保险库已同步，AI 会话分片同步失败：" + syncUserMessage(aiErr)
+					if manual {
+						a.toast(ui.Toast{Title: "AI 会话同步失败", Description: a.syncErr, Type: "error"})
+					}
+				} else {
+					a.syncErr = ""
+					if manual {
+						a.toast(ui.Toast{Title: "已同步"})
+					}
 				}
 			}
 			if a.syncAgain {
