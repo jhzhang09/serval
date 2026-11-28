@@ -2,6 +2,21 @@
 
 All notable changes to Serval will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.9] - 2026-11-28
+
+### Added
+
+- **AI Agent Tooling, Safety & Structured Plan (`core/ai/`, `aiagent.go`, `aipanel.go`, `core/sshconn/`)**: Added native Anthropic `/v1/messages` protocol with prompt caching, `sftp_write` and `sftp_edit` with Unified Diff approval cards, `tool_output_read` paging for large outputs, concurrent read-only tool execution, automatic context compaction and secret redaction, lexical dangerous-command guards, structured `update_plan` progress bar, and optional sharded encrypted AI conversation sync (`aichat.vault.json`).
+- **Live Execution Feedback & MyGo Plugins (`aipanel.go`, `view.go`, `dualpane.go`, `sheets.go`, `settings.go`, `hostform.go`)**: Integrated MyGo's `plugins/loading` (`BouncingDots`, `Orbit`, `Arc`, `Pulse`, `Radar`) and `plugins/glass` (`ScrollEdge`, `Glass{Interactive: true}`) for live AI Agent phase/elapsed feedback, tool execution indicators, code block header bars, floating scroll-to-bottom pill, and unified async busy indicators across the app.
+
+### Changed
+
+- **Idle CPU & Render Optimization (`view.go`, `design/motion.go`, `design/coat.go`, `aipanel.go`, `hostactions.go`)**: Removed the infinite `ReachableBreathe` animation loop that forced idle 120 FPS full-window redraws, added bounded caches for `design.NewCoat` and AI Markdown parsing, and cleared stale `probeChecking` states on re-probe.
+
+### Fixed
+
+- **Scrollable Approval Card, Timeouts & Localized Errors (`aipanel.go`, `monitor.go`, `app.go`, `editor.go`, `sync.go`, `hostactions.go`)**: Made long AI approval command previews scrollable without pushing action buttons off-screen, fixed duplicated live tool output in headers, added 5s/15s timeouts and cancellation to SSH monitor, distro probe, and remote editor reads, decoupled AI shard sync failures from main vault reload, and replaced remaining raw English SSH/probe errors with actionable Chinese messages.
+
 ## [0.6.8] - 2026-11-27
 
 ### Added

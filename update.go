@@ -17,7 +17,7 @@ import (
 )
 
 // appVersion 是当前客户端版本号，与 mygo.json 中的 version 保持一致。
-const appVersion = "0.6.8"
+const appVersion = "0.6.9"
 
 // defaultUpdateURL 是默认的 GitHub Releases 最新版本查询端点。
 const defaultUpdateURL = "https://api.github.com/repos/jhzhang09/serval/releases/latest"
